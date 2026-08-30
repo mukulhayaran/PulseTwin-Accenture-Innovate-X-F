@@ -1,0 +1,449 @@
+# Architecture Decision Records
+
+Every deviation from `pulsetwin_final_prompt.md`, with the reasoning. If you think a
+decision here is wrong, **add a superseding ADR** — do not silently revert to the original
+prompt. Each entry maps to a finding in `docs/AUDIT.md`.
+
+Status key: `ACCEPTED` (settled) · `PROVISIONAL` (revisit if time allows) · `SUPERSEDED`
+
+---
+
+### ADR-001 — Inspection false-reject rate drops to 0.002
+**Audit:** B1 · **Status:** ACCEPTED
+
+*Original:* `inspection_false_reject_rate: 0.02` alongside a claim of "~3% label noise".
+
+*Problem:* At a 3% base rate this makes 41% of positive labels wrong, which is
+incompatible with the stated PR-AUC ceiling of 0.75–0.88.
+
+*Decision:* `inspection_false_reject_rate: 0.002`. The 3% independent label flip remains
+as the sole stated noise source, so "label noise ~3%" becomes true.
+
+*Cost:* Slightly less pessimistic inspection. Mitigated by keeping detection at 0.92, so
+escaped defects (the thing that actually motivates the product) are unchanged.
+
+---
+
+### ADR-002 — Station cycle times are 45–62 s, not 45–90 s
+**Audit:** B2 · **Status:** ACCEPTED
+
+*Original:* 55 UPH target with 45–90 s cycles — mutually exclusive, since a 90 s station
+caps the line at 40 UPH.
+
+*Decision:* Nominal cycles 45–62 s. S19 base at 58 s, so the EV 1.4× multiplier yields
+81 s and the Tuesday bottleneck emerges from the physics rather than being asserted.
+
+*Consequence:* Every economic figure is computed from **achieved simulated throughput**,
+read out of the simulator, not from the nominal 55 UPH. `economics.yaml` records the
+nominal as a target and the achieved as the basis, with both sourced.
+
+*Bonus:* This is a better demo. "The constraint moves to S19 because EV battery work makes
+it an 81-second station" is a causal explanation; a hardcoded bottleneck is not.
+
+---
+
+### ADR-003 — The hero demo unit alerts after S18, not between S8 and S12
+**Audit:** B3 · **Status:** ACCEPTED
+
+*Original:* Hero unit crosses threshold between S8 and S12, but its alert card shows paint
+buffer dwell (S14→S16) and S15 checklist time as root causes — features that do not exist
+yet at S8.
+
+*Decision:* The hero alert fires immediately after **S18**. All three demo root causes
+(Mode A paint dwell, Mode B S15 rush, Mode C upstream vibration) are real and computed at
+that point.
+
+*Consequence:* Lead time S18→S30 is ~12 min of processing plus buffer dwell, which lands
+at the ~22 min the demo script already quotes. **The script needs no renumbering.**
+
+*Also:* The hero unit stays a SEDAN. It is caught by the cascade through the shared paint
+buffer despite not being an EV — which is a *stronger* narrative point, since it shows the
+EV-heavy schedule damaging non-EV units. Say that out loud in the demo.
+
+---
+
+### ADR-004 — Publish two thresholds and show that they disagree
+**Audit:** B4 · **Status:** ACCEPTED
+
+*Original:* One "cost-optimal threshold" that also respects a 6-alerts-per-shift budget.
+
+*Problem:* The cost optimum is p\* ≈ 0.0064; the budget implies p ≈ 0.62. Two orders of
+magnitude apart. No single number satisfies both.
+
+*Decision:* Compute, store and display both.
+- `above_cost_threshold` — economics-optimal, in the DB per unit.
+- `alert_fired` — budget-gated (top-N by risk within each shift), what the UI shows.
+
+The Leadership view states the gap explicitly and quantifies the value forgone by
+respecting human attention limits.
+
+*Rationale:* This is a better answer to rubric bullet 7 than a reconciled number. It says
+the binding constraint is human attention, not model quality, and pre-empts the obvious
+judge question instead of hiding from it.
+
+---
+
+### ADR-005 — Event-driven simulation, interval-based state storage
+**Audit:** B5 · **Status:** ACCEPTED
+
+*Original:* 1-second tick loop; record per-station-per-second state.
+
+*Problem:* 36.3 M station-tick updates per plant in pure Python; multi-GB output. Cannot
+meet the "< 5 minutes" acceptance check.
+
+*Decision:* Advance the clock to the next event (completion / breakdown / repair / buffer
+transition). Persist state as `(station_id, state, start_ts, end_ts)` intervals. Per-second
+state is reconstructed by interval lookup wherever a chart needs it.
+
+*Cost:* Slightly more intricate scheduler. Pays for itself immediately — it is also what
+makes the what-if replays in ADR-007 affordable.
+
+---
+
+### ADR-006 — One trained model per plant
+**Audit:** B6 · **Status:** ACCEPTED
+
+*Original:* A single `artifacts/model.npz` serving both plants.
+
+*Problem:* Features are positional (`s3_torque_nm`). Plant B has 42 stations, different
+zones and a TRUCK variant — a different feature space entirely. One ensemble cannot score
+both.
+
+*Decision:* `artifacts/model_plant_a.npz` and `model_plant_b.npz`; the scorer selects on
+`plant_id`. Feature *construction* remains fully config-driven.
+
+*What we claim on stage:* "The same pipeline, given a different YAML, produces a different
+line, a different feature space and a different trained model, with zero code changes."
+That is both true and a stronger engineering claim than one universal model — real
+multi-plant deployments train per site.
+
+---
+
+### ADR-007 — Reduced what-if grid on a short window
+**Audit:** H8 · **Status:** ACCEPTED
+
+*Original:* 30 stations × 13 buffer deltas × 9 cycle deltas = 3,510 full 14-day runs per
+plant (~39 h of compute).
+
+*Decision:* 6 candidate stations (current bottleneck ± neighbours) × 5 buffer deltas
+(−4, −2, 0, +4, +8) × 3 cycle deltas (−10%, 0, +10%) = **90 runs per plant**, each on a
+4-hour window.
+
+*Also:* `new_bottleneck_station` is categorical and is resolved by **nearest-neighbour**,
+never interpolated. The API response labels its `mode` honestly.
+
+*Cost:* The console only offers stations that matter. Defensible — a manager tunes the
+constraint, not station 4.
+
+---
+
+### ADR-008 — `station_readings` covers the replay window only
+**Audit:** H7 · **Status:** ACCEPTED
+
+*Original:* One row per `(unit, station, signal)` across all history — ~3.6 M rows, 220 MB+,
+against a 50 MB cap.
+
+*Decision:* Populate `station_readings` for the 48-hour replay window only (~230 k rows).
+Full-history queries are served from hourly `station_stats` rollups, which is what the
+Manager and Leadership views actually consume.
+
+---
+
+### ADR-009 — Async SSE with proxy-hardening headers
+**Audit:** H9 · **Status:** ACCEPTED
+
+*Original:* `time.sleep(interval / speed)` in the stream handler, `--workers 1`.
+
+*Problem:* Blocking sleep freezes the event loop — one SSE client makes the entire API
+unresponsive to every other request and tab.
+
+*Decision:* `await asyncio.sleep()` in an async generator. Plus, on the streaming response:
+`Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`, and a
+keepalive comment every 15 s.
+
+*Why the headers matter:* Hugging Face Spaces proxies buffer streamed responses. Without
+`X-Accel-Buffering: no` the stream works perfectly on localhost and delivers nothing in
+the deployed demo.
+
+---
+
+### ADR-010 — Leakage is enforced by timestamp assertion, not name scanning
+**Audit:** H10 · **Status:** ACCEPTED
+
+*Original:* `test_no_leakage.py` scans column names for station IDs > 20.
+
+*Problem:* `lot_trailing_defect_rate` selects "the last 100 units of this lot." Selected by
+index, that ingests inspection results from 25–40 minutes in the future. A name scan
+cannot see this.
+
+*Decision:*
+1. The trailing window filters on `inspection_ts <= prediction_ts`. Never by index.
+2. The primary leakage test asserts, per feature per unit, that the maximum source-row
+   timestamp is ≤ that unit's S20 exit timestamp.
+3. The name scan stays as a cheap secondary guard.
+
+*Why this matters most:* An inflated PR-AUC from this bug would trigger the spec's own
+"simulator is too clean" rule and send us rewriting the simulator to fix a feature bug.
+
+---
+
+### ADR-011 — Read-only artifact DB; feedback to a separate writable DB
+**Audit:** H11 · **Status:** ACCEPTED
+
+*Decision:* Open `artifacts/pulsetwin.db` with a `file:...?mode=ro` URI so any accidental
+write raises immediately. Feedback goes to `/tmp/pulsetwin_feedback.db`, created at
+startup. Shared connections use `check_same_thread=False` plus a lock.
+
+`ARCHITECTURE.md` documents the production path (durable event sink) and states plainly
+that feedback is ephemeral on the free tier.
+
+---
+
+### ADR-012 — Alert budget is computed server-side
+**Audit:** H12 · **Status:** ACCEPTED
+
+*Original:* Client-side accumulation, but `localStorage` is banned — so the counter resets
+on every refresh.
+
+*Decision:* The server counts `alert_fired` rows inside the current simulated shift window
+and returns `alerts_used` / `alerts_budget` with the stream. The client renders; it does
+not accumulate.
+
+*Bonus:* Correct by construction — the budget belongs to the shift, not to a browser tab,
+and it survives a judge navigating between the three views.
+
+---
+
+### ADR-013 — Paint zone follows the §4 naming
+**Audit:** M13 · **Status:** ACCEPTED
+
+*Original:* §1 prose (S15 = base coat, S17 = cure) contradicts §4 config
+(S15 = "Paint Surface Prep", S17 = "Clear Coat Application").
+
+*Decision:* §4 wins — the defect physics and demo script both depend on it.
+Canonical paint zone:
+
+| Station | Name |
+|---|---|
+| S13 | Paint Pre-Treatment |
+| S14 | Primer Application |
+| S15 | **Paint Surface Prep** — MANUAL tier, Mode B origin |
+| S16 | Base Coat Application |
+| S17 | **Clear Coat Application** |
+| S18 | Cure Oven + In-Line Gate |
+
+Paint-buffer dwell for Mode A is measured **S14 exit → S16 entry**, spanning the manual
+S15, exactly as the feature spec states.
+
+---
+
+### ADR-014 — Drop the S18 in-line quality gate
+**Audit:** M14 · **Status:** PROVISIONAL
+
+*Original:* Optional gate at S18 catching ~40% of Mode A defects.
+
+*Problem:* Units removed at S18 never reach S30 and never receive a label. The training
+population becomes conditioned on surviving S18, so the model systematically under-observes
+Mode A — the exact mode the whole narrative rests on — and Mode A recall is measured on a
+censored sample.
+
+*Decision:* **Drop the gate for the initial build.** S30 is the sole label source.
+
+*Revisit if time allows:* Reinstate it and train on the union of both label sources; it
+becomes a good "partial early signal" talking point. Not worth the censoring analysis under
+a 24-hour budget. Recorded in `MODEL_CARD.md` either way.
+
+---
+
+### ADR-015 — Exact TreeSHAP in numpy, inside the import wall
+**Audit:** M15 · **Status:** ACCEPTED
+
+*Original:* `/api/predict` returns `top_factors` with `"explanation_mode": "approximate"`,
+never defining "approximate", while `shap` is a banned import in `serve/`.
+
+*Decision:* Implement exact TreeSHAP over the exported ensemble in pure numpy (~100 lines)
+in `serve/scorer.py`. Report `"explanation_mode": "exact"`.
+
+*Verification:* `tests/test_scorer_parity.py` extends to compare the numpy TreeSHAP output
+against the offline `shap` library on the test set, asserting max abs difference < 1e-6 —
+the same discipline already applied to the scores.
+
+*Fallback if it slips:* serve precomputed per-unit SHAP from `unit_factors` for replayed
+units, and label ad-hoc predictions `"global_attribution"`. **Never** invent contributions
+and call them SHAP.
+
+---
+
+### ADR-016 — `OMP_NUM_THREADS=1` for all training
+**Audit:** M16 · **Status:** ACCEPTED
+
+Multithreaded OpenMP reductions are not bit-reproducible. Every training and export entry
+point sets `OMP_NUM_THREADS=1` before importing sklearn. The Makefile exports it. Without
+this the "reproduces byte-for-byte" claim is false.
+
+---
+
+### ADR-017 — Operator identity is bucketed at the API boundary
+**Audit:** M17 · **Status:** ACCEPTED
+
+*Original:* Containment returns `same_operator_s15`; the UI renders `Opr15`.
+
+*Decision:* `genealogy.operator_id` stays internal (containment joins genuinely need it).
+The API emits only an opaque bucket label — `operator_group_C` — derived from a salted
+hash, and no view ever renders a stable operator identifier. Featurisation likewise uses
+8 hashed buckets, as the spec already intended.
+
+*Why:* Design principle 9 is not decoration — it is the union-acceptance argument in the
+business proposal. Violating it in the containment table would undercut a claim we are
+making in writing.
+
+---
+
+### ADR-018 — RSS reporting is platform-guarded; 200 MB is a target, not a gate
+**Audit:** M18 · **Status:** ACCEPTED
+
+*Decision:* `/api/health` reads `/proc/self/statm` when it exists and returns
+`rss_mb: null, rss_source: "unavailable"` otherwise, so **local Windows development does
+not crash**. `serve/requirements.txt` drops `uvicorn[standard]` to plain `uvicorn` (saves
+uvloop + httptools; the demo does not need their throughput).
+
+Measure real RSS in the container before optimising further. If it exceeds 200 MB, report
+the true number honestly rather than weakening the architecture — a free Hugging Face Space
+provides 16 GB, so the constraint is a self-imposed engineering discipline, and it is more
+credible to state the measured figure than to claim a round number.
+
+---
+
+### ADR-019 — Corrected import allowlist
+**Audit:** M19 · **Status:** ACCEPTED
+
+The authoritative list lives in `CLAUDE.md` §2 and adds to the original: `csv` (which §0
+allowed and §3 dropped), `logging`, `re`, `collections`, `functools`, `itertools`,
+`hashlib`, `enum`, `sys`, `io`.
+
+`tests/test_serve_imports.py` parses the AST of files under `serve/` and checks
+**first-party import statements only**. It must not walk the transitive dependency graph —
+fastapi imports starlette and anyio, and a transitive check would fail immediately and
+tempt someone to weaken the test that protects the core constraint.
+
+---
+
+### ADR-020 — Bootstrap CIs on every headline metric; 21 simulated days
+**Audit:** M20 · **Status:** ACCEPTED
+
+A 3-day test split holds ~130 positives, giving PR-AUC a ±0.08 confidence interval — wider
+than the 0.75–0.88 target band, so the spec's control rule can fire on noise.
+
+*Decision:* Report bootstrap CIs (1,000 resamples) alongside every headline metric, in
+`metrics.json`, the API, `MODEL_CARD.md` and the Leadership metrics panel. Simulate
+**21 days** rather than 14 (train 1–14, validate 15–17, test 18–21), raising test positives
+to ~200. Cheap under ADR-005. Treat the 0.75–0.88 band as advisory, never as a tuning target.
+
+---
+
+### ADR-021 — Platt scaling instead of isotonic
+**Audit:** M21 · **Status:** ACCEPTED
+
+~90 positives in the validation fold is far too few for isotonic regression, which would
+fit a coarse step function to that sample's noise and then look miscalibrated on test —
+discrediting the reliability diagram meant to prove calibration.
+
+*Decision:* Platt (logistic) calibration. Exports to just two floats (`A`, `B`) instead of
+a step-function pair of arrays, which also simplifies `model_<plant>.npz` and the numpy
+scorer. Reliability diagram is plotted with confidence bands.
+
+---
+
+### ADR-022 — Environment pins
+**Audit:** L22, L23 · **Status:** ACCEPTED
+
+- `numpy>=2.1` — `1.26.4` has no cp313 wheels and local Python is 3.13.2. The container
+  stays `python:3.11-slim`; the pin range covers both.
+- **Next.js 15** — Next 14 targets Node 18/20 and the installed runtime is Node v24.19.0.
+- `serve/requirements.txt` uses plain `uvicorn` (see ADR-018).
+
+---
+
+### ADR-023 — Additional schema not present in the original
+**Audit:** L26, B4, H12 · **Status:** ACCEPTED
+
+```sql
+CREATE TABLE stream_index (        -- L26: /api/stream needs this to seek to from_ts
+    plant_id TEXT, ts TEXT, byte_offset INTEGER,
+    PRIMARY KEY (plant_id, ts)
+);
+```
+
+Plus two columns on `units`, replacing the single `alert_fired` (ADR-004):
+`above_cost_threshold INTEGER` and `alert_fired INTEGER` (budget-gated).
+
+---
+
+### ADR-024 — Economics gaps closed
+**Audit:** L27, L29 · **Status:** ACCEPTED
+
+`economics.yaml` gains:
+- `discount_rate: 0.10` with a source — required by the 3-year NPV the business proposal
+  promises, and currently the only unsourced figure in a project whose whole discipline is
+  sourcing figures.
+- An explicit `annualisation_basis` reconciling the 24/7 simulation with
+  `operating_days_per_year: 250`. The simulation models continuous operation for signal
+  density; annualisation uses 250 days. Stated in `ASSUMPTIONS.md`, not left implicit.
+
+---
+
+### ADR-025 — Defect propensity normalisation
+**Audit:** L30 · **Status:** ACCEPTED
+
+Mode weights (0.45 / 0.35 / 0.20) sum to 1.0 and are the **mode budget only**. The full
+propensity is:
+
+```
+propensity = bias
+           + mode_scale  * (w_a·mode_a + w_b·mode_b + w_c·mode_c)   # w sum to 1.0
+           + w_lot       * incoming_lot_quality                      # unobservable
+           + w_noise     * gaussian_noise
+```
+
+with `mode_scale`, `w_lot`, `w_noise` and `bias` calibrated so the realised defect rate
+lands in 2.5–4.0%. All four are config fields, not literals, and their fitted values are
+recorded in `ASSUMPTIONS.md`.
+
+---
+
+### ADR-026 — Mode B's behavioural mechanism, stated explicitly
+**Audit:** L31 · **Status:** ACCEPTED
+
+An operator at a **blocked** station gains nothing by rushing — output cannot move
+downstream. The mechanism only makes sense on the **unblocking burst**: the downstream
+buffer drains at once, a queue of waiting units becomes visible, and shift-quota pressure
+drives checklist compression from ~45 s to 20–25 s for the next 3–5 units.
+
+The simulator implements the trigger on the *unblock transition*, not on the blocked state.
+`ASSUMPTIONS.md` states the mechanism and cites queue-pressure behaviour, because a judge
+with manufacturing background will ask, and "the operator rushed while blocked" is not a
+defensible answer.
+
+---
+
+### ADR-027 — Artifacts are committed once, at the end
+**Audit:** P33 · **Status:** ACCEPTED
+
+SQLite does not delta-compress; a ~50 MB blob per phase commit stays in history forever.
+`artifacts/` is gitignored during the build and force-added in a single final commit.
+
+*(Moot for publishing — this repo is never pushed — but it keeps the local repo workable.)*
+
+---
+
+### ADR-028 — Frontend reads its API base at runtime
+**Audit:** L28-adjacent · **Status:** PROVISIONAL
+
+`output: 'export'` bakes `NEXT_PUBLIC_API_BASE` in at build time, so pointing the UI at a
+different backend means a full rebuild — a bad property to discover ten minutes before a
+demo.
+
+*Decision:* Ship `public/config.json` with the API base, fetched client-side on mount, and
+fall back to the env var. One fetch, no rebuild, works with static export.
+
+*Provisional:* If time is short, accept the rebuild and document it. Low risk either way.

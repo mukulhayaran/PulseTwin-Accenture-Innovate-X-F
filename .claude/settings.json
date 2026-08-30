@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(git remote add:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(gh repo create:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh release create:*)"
+    ]
+  }
+}
