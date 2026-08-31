@@ -1,0 +1,118 @@
+# Architecture
+
+## ISA-95 / Purdue placement
+
+```
+ Level 4  ERP / MES                                          (not touched)
+ ─────────────────────────────────────────────────────────────────────────
+ Level 3  MANUFACTURING OPERATIONS          ← PulseTwin lives here
+          ┌──────────────────────────────────────────────┐
+          │  Historian replica (read-only)               │
+          │        │                                     │
+          │        ├─► offline pipeline (batch, nightly) │
+          │        │     simulate / featurise / train    │
+          │        │     → artifacts (db + npz + jsonl)  │
+          │        │                                     │
+          │        └─► serve/  FastAPI + numpy + sqlite  │
+          │                    │                         │
+          │                    └─► dashboards (static)   │
+          └──────────────────────────────────────────────┘
+                     ▲  READ ONLY. No path writes downward.
+ ─────────────────────────────────────────────────────────────────────────
+ Level 2  SCADA / line control        OPC-UA, MQTT  → historian
+ Level 1  PLCs, sensors
+ Level 0  Physical line
+```
+
+**The twin never writes to any production system.** It reads from a historian replica and
+publishes advice to humans. There is no control path, no setpoint write, and no
+interlock. That is an architectural property, not a configuration choice:
+
+- the artifact database is opened with a `file:...?mode=ro` URI, so an accidental write
+  raises immediately rather than mutating a committed artifact (ADR-011);
+- the only writable store is supervisor feedback, in a separate database outside the
+  image;
+- nothing in `serve/` imports an OPC-UA, MQTT or PLC client.
+
+**Why read-only.** Operational risk (a bad write stops the line), regulatory traceability
+(quality actions must have a human decision-maker), and change management — a read-only
+system can be piloted without a safety case, which is what makes shadow-mode rollout
+possible at all.
+
+## Precompute heavy, serve thin
+
+```
+configs/*.yaml → offline/  (pandas, sklearn, scipy — heavy, batch, offline)
+                    │
+                    ▼
+              artifacts/   pulsetwin.db 37 MB · model_<plant>.npz · stream_<plant>.jsonl
+                    │
+                    ▼
+                 serve/    fastapi, uvicorn, pydantic, numpy, orjson, stdlib — NOTHING else
+```
+
+The runtime image contains **no model library**. The trained ensemble is flattened to
+plain numpy arrays and walked by ~90 lines in `serve/scorer.py`, proven identical to
+sklearn across the entire test set to within 1e-6 (`tests/test_scorer_parity.py`).
+
+The import wall is enforced by `tests/test_serve_imports.py`, which parses each file's AST
+and checks **first-party imports only** — a transitive check would fail on fastapi's own
+dependencies and tempt someone to weaken the test that protects the constraint.
+
+## Data flow at runtime
+
+| Endpoint | Reads | Computes at request time |
+|---|---|---|
+| `/api/stream` | `stream_<plant>.jsonl` + `stream_index` | nothing — replay with async pacing |
+| `/api/units/{id}` | `units`, `unit_factors`, `genealogy`, `station_readings` | nothing |
+| `/api/predict/defect` | `model_<plant>.npz` | one ensemble traversal + decision-path attribution |
+| `/api/trace/containment` | `units`, `genealogy` | one SQL join |
+| `/api/metrics`, `/api/economics/roi` | `metrics`, `economics` | arithmetic only |
+
+No training, no model fitting, no dataframe library.
+
+## Streaming
+
+Server-sent events, not WebSockets and not polling — one mechanism, and the one that
+survives a corporate proxy. Three details matter:
+
+- **`await asyncio.sleep`, never `time.sleep`.** Under `--workers 1` a blocking sleep in
+  the stream handler freezes the whole event loop, so a second browser tab would make
+  every other endpoint unresponsive. Verified: with a stream held open, `/api/health`,
+  `/api/metrics` and `/api/bottleneck/current` all answer in ~330 ms.
+- **`X-Accel-Buffering: no`** plus `Cache-Control: no-cache`. Hugging Face Spaces sits
+  behind a proxy that buffers streamed responses; without this the stream works perfectly
+  on localhost and delivers nothing in the deployed demo.
+- **Server-side downsampling above 25×.** At 50× the raw feed is ~1,400 events/second,
+  which no browser will render. The client additionally coalesces with
+  `requestAnimationFrame`.
+
+## Provenance
+
+Every value carries `measured` or `inferred` from the simulator, through the database,
+through the API, to a visibly different UI treatment (amber badge + diagonal hatch).
+Inferred values additionally carry `ci_low`/`ci_high` from quantile regression. There is
+no code path that renders an inferred number as if it were measured.
+
+## Security posture — stated plainly
+
+**This deployment is a demo, and its posture is not production.** CORS allows all origins
+and `/api/feedback` is unauthenticated. That sits awkwardly next to the read-only OT
+argument above, so it is named here rather than left for a reviewer to find.
+
+Production would add: an authenticated reverse proxy on the plant network, origin
+allow-listing, feedback written to a durable event sink with operator identity handled
+under the same group-bucketing rule the API already enforces, and the historian replica
+firewalled to one-way replication.
+
+## Multi-plant
+
+Feature names are positional (`s3_torque_nm`). Plant B has 42 stations, different zone
+boundaries and a TRUCK variant — a genuinely different feature space — so one ensemble
+cannot score both. Each plant gets its own `model_<plant>.npz` and the scorer selects on
+`plant_id` (ADR-006).
+
+What is shared is everything that matters: the same simulator, the same feature
+construction, the same training pipeline, the same serving code. Adding a plant is one
+YAML file. That is a stronger and more honest claim than one universal model, which no
+real multi-site deployment uses anyway.

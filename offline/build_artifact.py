@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS plant_meta (
 
 # Floor-language templates. A supervisor reads these, not feature names.
 PLAIN = {
-    "paint_buffer_dwell_s": "Unit spent {v:.0f}s in the paint buffer (normal ~{n:.0f}s) — extended dwell risks cure defects",
+    "paint_buffer_dwell_s": "Unit spent {v:.0f}s in the paint buffer (normal ~{n:.0f}s) - extended dwell risks cure defects",
     "paint_buffer_dwell_ratio": "Paint buffer dwell was {v:.1f}x the normal window",
     "lot_trailing_defect_rate": "Recent units from this lot inspected at {v:.1%} defect rate",
     "total_blocked_s": "Unit was blocked for {v:.0f}s upstream",

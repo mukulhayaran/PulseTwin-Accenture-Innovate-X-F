@@ -55,11 +55,75 @@ Tuesday scenario. Corrected to **55s**. `check_bottleneck_shift_configured` now 
 config whose constraint does not move with variant mix — the validator caught this on its
 first run. `docs/SPEC.md` and ADR-002 both amended.
 
-**Not yet built.** No simulator, no features, no model, no API, no frontend.
+**Phases 2-8 — COMPLETE** (2026-08-31)
+
+| Phase | What shipped | Evidence |
+|---|---|---|
+| 2 Simulator | Event-driven DES, correlated physics, competing-risks defects | 12/12 acceptance checks, both plants, 98s |
+| 3 Featurise | 253 features, timestamp-based leakage guard | perturbation test passes |
+| 4 Soft sensors | Quantile regressors + masked-station validation | `offline/ml/soft_sensor.py` |
+| 5 Model | HistGB + Platt + dual thresholds + oracle ceiling | PR-AUC 0.256 [0.207-0.308] |
+| 6 Artifacts | SQLite 37.5 MB + numpy models + stream JSONL | parity < 1e-6 |
+| 7 Serve | FastAPI, import wall enforced, async SSE | 330ms under load |
+| 8 Frontend | Supervisor view + landing, static export | control-room UI |
+| 10 Docs | AUDIT, DECISIONS, SPEC, ARCHITECTURE, MODEL_CARD, ASSUMPTIONS, DEMO_SCRIPT, README | — |
+
+**100 tests passing.**
+
+### Headline measured results
+
+| | plant_a | plant_b |
+|---|---|---|
+| Throughput | 53.8 UPH (97.8% of target) | 45.4 UPH (94.5%) |
+| Defect rate | 2.99% | 2.82% |
+| PR-AUC | 0.256 [0.207-0.308] | 0.052 |
+| Oracle ceiling | 0.481 (53% captured) | 0.075 (69% captured) |
+| Bottleneck accuracy | 87.9% | 79.1% |
+| Bottleneck shift | S12 -> S19 | S16 -> S31 |
+
+### Bugs found and fixed during the build
+
+1. **Line deadlock** — a station breaking down while blocked never recovered; throughput
+   collapsed 55 -> 6 UPH. `_on_repair_done` now retries the release.
+2. **Manual stations were accidental bottlenecks** — cycle formula ignored their
+   configured nominal.
+3. **Mode C sign error** — poor lot quality raised torque while raising vibration,
+   anti-correlating the interaction. Mode C fired 5 times in 27k units.
+4. **Additive logistic could not work** — no single mode could clear the intercept alone.
+   Replaced with competing risks; mode shares now track configured weights.
+5. **Test split had no peak days** — 21-day horizon put test on Thu-Sun. Moved to 28 days
+   of whole weeks.
+6. **Circular bottleneck accuracy** — detector and ground truth used the same definition
+   and reported 100%. Ground truth now uses a 2-hour window vs the detector's 15 minutes.
+7. **Explanation additivity** — contributions telescope to `leaf - root`, so they sum to
+   `raw_score - expected_value`, not `- baseline`. Also switched to sample-weighted node
+   values (proper Saabas).
+8. **PR-AUC band unreachable** — see AUDIT B34. Now measured against an oracle ceiling.
+
+### Still open (Tier 2, cut per the ladder)
+
+- Manager and Leadership **views** (their APIs exist and are tested: `/api/bottleneck/*`,
+  `/api/stations/stats`, `/api/economics/roi`, `/api/metrics`)
+- What-if grid (ADR-007)
+- Instrumentation planner
+- Docker Compose (Dockerfile written; `uvicorn` + `next dev` demos identically)
+- `BUSINESS_PROPOSAL.md`
 
 ---
 
-## → NEXT ACTION
+## → NEXT ACTION (if time remains)
+
+1. `npm install && npm run dev` in `frontend/`, then walk the demo script end to end.
+2. Manager view — the APIs are already live and tested; this is presentation only.
+3. Leadership view — `/api/economics/roi` returns everything it needs, sourced.
+4. `docs/BUSINESS_PROPOSAL.md`.
+
+**Do not** retune the model to raise PR-AUC. The oracle framing is stronger than a
+higher number, and ADR-020 makes the band advisory.
+
+---
+
+## Original next action (Phase 1, done)
 
 **Tier 0, item 2: the simulator.** `offline/simulator/`.
 
@@ -93,7 +157,14 @@ re-parse YAML anywhere else, and do not hardcode a station ID outside the config
 
 | # | Item | Est | Done | Notes |
 |---|---|---|---|---|
-| 1 | `configs/` — plant_a, plant_b, economics + Pydantic validation | 1.5h | ✅ | Done. 43 tests. Both plants' bottleneck shift verified |
+| 1 | `configs/` — plant_a, plant_b, economics + Pydantic validation | 1.5h | ✅ | 43 tests. Both plants' bottleneck shift verified |
+| 2 | Simulator | 3.5h | ✅ | 12/12 acceptance checks both plants |
+| 3 | Featurise + leakage test | 1.5h | ✅ | perturbation test, not a name scan |
+| 4 | Defect model + thresholds | 1.5h | ✅ | dual thresholds + oracle ceiling |
+| 5 | Artifacts + numpy export | 1.5h | ✅ | 37.5 MB, parity < 1e-6 |
+| 6 | FastAPI core | 1.5h | ✅ | import wall enforced, async SSE verified |
+| 7 | Supervisor view | 3h | ✅ | line map, alert feed, containment |
+| 8 | README + compliance table | 0.5h | ✅ | all 7 rubric bullets mapped |
 | 2 | Simulator — event-driven, physics, operators, causal engine | 3.5h | ☐ | ADR-005. **The foundation. If it is weak everything above is theatre.** |
 | 3 | `featurize.py` + timestamp-based leakage test | 1.5h | ☐ | ADR-010. Do not skip the real test |
 | 4 | Defect model + Platt calibration + both thresholds | 1.5h | ☐ | ADR-004, ADR-021 |
@@ -174,6 +245,9 @@ knowing whether we are ahead or behind.
 
 ```
 2026-08-31  Phase 0  Bootstrap complete. Audit + ADRs + CLAUDE.md + guardrails + plugins.
+2026-08-31  Ph2-8   Simulator -> API -> Supervisor UI. 100 tests pass.
+                     PR-AUC 0.256 (53% of a measured 0.481 oracle ceiling).
+                     8 real bugs found and fixed; all logged above.
 2026-08-31  Phase 1  Configs complete. plant_a (30 stn) + plant_b (42 stn) + economics.
                      43 tests pass. Bottleneck shift verified on BOTH plants.
                      Caught + fixed: S19 58s->55s (58s deleted the Tuesday scenario).
