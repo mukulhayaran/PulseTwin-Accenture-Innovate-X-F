@@ -30,8 +30,21 @@ escaped defects (the thing that actually motivates the product) are unchanged.
 *Original:* 55 UPH target with 45–90 s cycles — mutually exclusive, since a 90 s station
 caps the line at 40 UPH.
 
-*Decision:* Nominal cycles 45–62 s. S19 base at 58 s, so the EV 1.4× multiplier yields
-81 s and the Tuesday bottleneck emerges from the physics rather than being asserted.
+*Decision:* Nominal cycles 45–62 s. S19 base at **55 s**, so an EV unit takes 77 s and the
+Tuesday bottleneck emerges from the physics rather than being asserted.
+
+*Amended during Phase 1:* the first draft of this ADR said 58 s. That is wrong. The
+constraint is decided by the *variant-weighted mean* cycle, not the EV cycle. At 58 s the
+normal-day mean is `58 × (1 + 0.15 × 0.40) = 62.5 s`, which already exceeds S12's 62.1 s —
+S19 would bind on every day and **the bottleneck would never shift**, deleting the Tuesday
+scenario. At 55 s: normal 59.3 s < S12 62.1 s < peak 64.6 s, roughly 4.5 % margin either
+side, which is crisp enough to demo while still leaving tool-wear drift room to make the
+detection problem genuinely non-trivial.
+
+*Guard:* `PlantConfig.check_bottleneck_shift_configured` fails any plant config whose
+predicted constraint does not move between the base and peak variant mixes. Plant B is
+held to the same rule (S16 → S31), so the mechanism is proven to generalise rather than
+being tuned per plant.
 
 *Consequence:* Every economic figure is computed from **achieved simulated throughput**,
 read out of the simulator, not from the nominal 55 UPH. `economics.yaml` records the

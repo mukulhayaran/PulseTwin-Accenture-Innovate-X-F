@@ -1,0 +1,113 @@
+# PulseTwin — Economics
+#
+# HARD RULE: every value carries a `source`. No dollar figure appears in any API
+# response, UI element, or document without one. Enforced by EconomicsConfig.
+#
+# ANNUALISATION (ADR-024): the simulator runs continuously for signal density.
+# Annualisation uses a 250-day, 3-shift year. Both bases are stated so the two
+# never get silently conflated. See docs/ASSUMPTIONS.md.
+
+costs:
+  scrap_cost_per_unit:
+    value: 4800
+    currency: USD
+    source: "Industry average for mixed-model automotive body-in-white scrap, IHS Markit 2024"
+  rework_cost_per_unit:
+    value: 1200
+    currency: USD
+    source: "Plant engineering estimate, typical body/paint rework labour + materials"
+  warranty_escape_cost_per_unit:
+    value: 8500
+    currency: USD
+    source: "NHTSA recall cost data, averaged across powertrain/body/paint campaigns"
+  downtime_cost_per_hour:
+    value: 5000
+    currency: USD
+    source: "Derived: achieved UPH x ~$90 marginal contribution per unit. Recomputed
+              from simulated achieved throughput at build time, not from the nominal
+              55 UPH target (ADR-002)."
+  supervisor_response_cost_per_alarm:
+    value: 45
+    currency: USD
+    source: "15 min response x fully loaded US manufacturing supervisor rate ($180/hr)"
+
+production:
+  units_per_hour_target: 55
+  hours_per_shift: 8
+  shifts_per_day: 3
+  operating_days_per_year: 250
+  source: "Standard automotive 3-shift, 5-day operation"
+
+finance:
+  discount_rate:
+    value: 0.10
+    source: "Typical automotive manufacturing WACC, 2024-2026 range. Required for the
+              3-year NPV in BUSINESS_PROPOSAL.md (ADR-024)."
+  npv_horizon_years:
+    value: 3
+    source: "Standard capital appraisal horizon for plant-level digital initiatives"
+  annualisation_basis:
+    simulation_mode: continuous
+    annualisation_days: 250
+    source: "ADR-024. The 21-day simulation runs continuously to maximise signal
+              density across shift patterns and ambient cycles; all annual figures
+              scale by a 250-day 3-shift year. Stated explicitly so the continuous
+              simulation and the 250-day economics are never conflated."
+
+instrumentation:
+  sensor_costs:
+    torque_sensor:
+      value: 2800
+      currency: USD
+      source: "Atlas Copco QST series, installed incl. gateway and commissioning"
+    vibration_sensor:
+      value: 1800
+      currency: USD
+      source: "SKF CMSS 2200 accelerometer, installed with IMx gateway"
+    temperature_humidity_logger:
+      value: 1200
+      currency: USD
+      source: "Vaisala HMT120 transmitter, installed"
+    film_thickness_gauge:
+      value: 4500
+      currency: USD
+      source: "ElektroPhysik MiniTest inline gauge, installed"
+    weld_current_monitor:
+      value: 3200
+      currency: USD
+      source: "Bosch Rexroth weld timer current monitoring module, installed"
+  maintenance_windows_per_year: 3
+  hours_per_window: 16
+  source: "Plant shutdown calendar: 3 scheduled windows per year, 16 usable hours each.
+            Read-only architecture means no production interruption outside these."
+
+alarm_budget:
+  max_alerts_per_shift: 6
+  source: "Human factors research: operator alert response degrades beyond 6-8 alerts
+            per shift (Wickens, 2008, 'Multiple Resources and Mental Workload')"
+  note: "ADR-004. This constraint is ~100x tighter than the cost-optimal threshold
+          (p* = 45/7045 = 0.0064). Both are computed and both are published. The
+          system operates at the budget-constrained threshold and quantifies the
+          expected value knowingly forgone. The binding constraint on this system
+          is human attention, not model quality."
+
+system:
+  implementation_cost:
+    value: 350000
+    currency: USD
+    source: "Implementation + first-year operation estimate: 2 FTE-years engineering,
+              historian integration, edge gateway, first-year cloud + support"
+
+sensitivity:
+  # Applied to detection/catch rates to produce the Leadership view's three scenarios.
+  pessimistic:
+    catch_rate_multiplier: 0.50
+    source: "Half the measured test-set catch rate. Models shadow-mode ramp-up,
+              partial operator adoption, and unmodelled drift."
+  base:
+    catch_rate_multiplier: 1.00
+    source: "Measured test-set recall at the operating threshold"
+  optimistic:
+    catch_rate_multiplier: 1.35
+    source: "Post-instrumentation uplift: assumes the Phase 1 retrofit sensors are
+              installed and the model is retrained on the fuller feature set"

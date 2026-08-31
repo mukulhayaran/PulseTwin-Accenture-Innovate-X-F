@@ -51,10 +51,18 @@ A mixed-model line builds **SEDAN** (50%), **SUV** (35%), **EV** (15% normally).
 **Nominal cycle times are 45–62 s, never up to 90 s.** A 90 s station caps the line at
 40 UPH, making the 55 UPH target — and every economic figure derived from it — impossible.
 
-**S19 "Battery/Drivetrain Mount" base cycle = 58 s.** With the EV 1.4× multiplier it
-becomes 81 s, so on EV-heavy days S19 becomes the binding constraint **as a consequence of
-the physics**, not because a config field declares it. S12 sits at ~61 s and is the
+**S19 "Battery/Drivetrain Mount" base cycle = 55 s.** With the EV 1.4× multiplier an EV
+unit takes 77 s, so on EV-heavy days S19 becomes the binding constraint **as a consequence
+of the physics**, not because a config field declares it. S12 sits at 61 s flat and is the
 normal-day constraint.
+
+> **Why 55 s and not 58 s** (corrected during Phase 1). What decides the constraint is the
+> *variant-weighted mean* cycle, not the EV cycle. At base 58 s:
+> `58 × (1 + 0.15 × 0.40) = 62.5 s` on a normal day, which already exceeds S12's 62.1 s —
+> **S19 would bind on every day and the bottleneck would never shift.** The entire Tuesday
+> scenario would be gone. At 55 s: normal 59.3 s < S12 62.1 s < peak 64.6 s, a ~4.5 % margin
+> either side. Caught by `PlantConfig.check_bottleneck_shift_configured`, which fails the
+> config if the constraint does not actually move with variant mix.
 
 All economics are computed from **achieved simulated throughput** read out of the
 simulator, not from the nominal 55 UPH target.
@@ -153,7 +161,8 @@ plant:
 
 stations:
   # 30 stations, nominal_cycle_s in 45..62 ONLY (ADR-002)
-  # S19 "Battery/Drivetrain Mount": nominal_cycle_s: 58, ev_multiplier: 1.4  -> 81s
+  # S19 "Battery/Drivetrain Mount": nominal_cycle_s: 55, ev multiplier 1.4 -> 77s per EV
+  #   variant-weighted mean: normal 59.3s < S12 62.1s < peak 64.6s  -> the shift happens
   # S12 "Body Completion":          nominal_cycle_s: 61                      normal-day constraint
   # manual tier: S10, S15, S22, S27
   # paint zone naming per ADR-013

@@ -1,0 +1,536 @@
+# PulseTwin — Plant A: "Midwest Assembly Plant"
+# The Tuesday Problem line. 30 stations, 4 manual-tier, mixed SEDAN/SUV/EV.
+#
+# CYCLE TIME DISCIPLINE (ADR-002): every nominal_cycle_s is in [45, 62].
+#   Takt at the 55 UPH target = 3600/55 = 65.45s. A station above that caps the line
+#   below target and invalidates every economic figure derived from it.
+#   Enforced by ConfigValidator.check_takt_feasible().
+#
+# THE BOTTLENECK SHIFT is a CONSEQUENCE, not a declaration:
+#   S12 = 61.0s flat                      -> normal-day constraint
+#   S19 = 55.0s x 1.40 for EV = 77.0s     -> EV-heavy-day constraint
+#   Effective mean at S19 = 55 * (1 + ev_fraction * 0.40):
+#     normal  (15% EV): 55 * 1.06 = 58.3s  < 61.0  -> S12 binds
+#     Tuesday (40% EV): 55 * 1.16 = 63.8s  > 61.0  -> S19 binds
+#   The ~5s margin either side is what makes the shift crisp rather than flickering.
+
+plant:
+  id: plant_a
+  name: "Midwest Assembly Plant"
+  units_per_hour_target: 55
+  # Economics use ACHIEVED throughput read from the simulator, never this target (ADR-002).
+
+zones:
+  - id: body
+    name: "Body Construction"
+    stations: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    zone_sensors: [weld_current_a, torque_nm, vibration_mm_s]
+  - id: paint
+    name: "Paint Shop"
+    stations: [13, 14, 15, 16, 17, 18]
+    zone_sensors: [humidity_pct, temperature_c, film_thickness_um]
+  - id: final
+    name: "Final Assembly"
+    stations: [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+    zone_sensors: [torque_nm, vibration_mm_s]
+
+# sensor_tier: full = all zone sensors | manual = NO continuous sensors, checklist only
+# variant_multipliers apply to nominal_cycle_s.
+
+stations:
+  # ---------------- BODY CONSTRUCTION (S1-S12) ----------------
+  - id: 1
+    name: "Frame Load"
+    zone: body
+    nominal_cycle_s: 48.0
+    cycle_cv: 0.06
+    buffer_capacity_after: 4
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 1400
+    repair_time_s: 420
+    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.00}
+
+  - id: 2
+    name: "Underbody Weld A"
+    zone: body
+    nominal_cycle_s: 54.0
+    cycle_cv: 0.07
+    buffer_capacity_after: 3
+    sensor_tier: full
+    sensors: [weld_current_a, vibration_mm_s]
+    mtbf_hours: 900
+    repair_time_s: 660
+    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.00}
+
+  - id: 3
+    name: "Structural Fastening A"
+    zone: body
+    nominal_cycle_s: 56.0
+    cycle_cv: 0.08
+    buffer_capacity_after: 3
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 750
+    repair_time_s: 540
+    variant_multipliers: {sedan: 1.00, suv: 1.06, ev: 1.02}
+    defect_role: mode_c_torque      # torque deficit here is half of the Mode C interaction
+
+  - id: 4
+    name: "Underbody Weld B"
+    zone: body
+    nominal_cycle_s: 52.0
+    cycle_cv: 0.07
+    buffer_capacity_after: 4
+    sensor_tier: full
+    sensors: [weld_current_a, vibration_mm_s]
+    mtbf_hours: 950
+    repair_time_s: 640
+    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.00}
+
+  - id: 5
+    name: "Side Panel Fit"
+    zone: body
+    nominal_cycle_s: 55.0
+    cycle_cv: 0.09
+    buffer_capacity_after: 3
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 1100
+    repair_time_s: 380
+    variant_multipliers: {sedan: 1.00, suv: 1.08, ev: 1.00}
+
+  - id: 6
+    name: "Side Panel Weld"
+    zone: body
+    nominal_cycle_s: 57.0
+    cycle_cv: 0.07
+    buffer_capacity_after: 3
+    sensor_tier: full
+    sensors: [weld_current_a, vibration_mm_s]
+    mtbf_hours: 820
+    repair_time_s: 700
+    variant_multipliers: {sedan: 1.00, suv: 1.07, ev: 1.00}
+
+  - id: 7
+    name: "Roof Assembly"
+    zone: body
+    nominal_cycle_s: 53.0
+    cycle_cv: 0.06
+    buffer_capacity_after: 4
+    sensor_tier: full
+    sensors: [weld_current_a, torque_nm]
+    mtbf_hours: 1250
+    repair_time_s: 450
+    variant_multipliers: {sedan: 1.00, suv: 1.06, ev: 1.00}
+
+  - id: 8
+    name: "Vibration-Critical Weld"
+    zone: body
+    nominal_cycle_s: 58.0
+    cycle_cv: 0.10
+    buffer_capacity_after: 2
+    sensor_tier: full
+    sensors: [weld_current_a, vibration_mm_s, torque_nm]
+    mtbf_hours: 620
+    repair_time_s: 780
+    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.03}
+    defect_role: mode_c_vibration   # vibration excess here is the other half of Mode C
+
+  - id: 9
+    name: "Closure Hang"
+    zone: body
+    nominal_cycle_s: 51.0
+    cycle_cv: 0.07
+    buffer_capacity_after: 5
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 1300
+    repair_time_s: 400
+    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.00}
+    soft_sensor_validation: true    # masked-station validation target (Phase 4)
+
+  - id: 10
+    name: "Legacy Bracket Mount"
+    zone: body
+    nominal_cycle_s: 50.0
+    cycle_cv: 0.14
+    buffer_capacity_after: 3
+    sensor_tier: manual
+    sensors: []
+    checklist_nominal_s: 38.0
+    mtbf_hours: 2000
+    repair_time_s: 300
+    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.00}
+
+  - id: 11
+    name: "Body Geometry Check"
+    zone: body
+    nominal_cycle_s: 47.0
+    cycle_cv: 0.05
+    buffer_capacity_after: 4
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 1600
+    repair_time_s: 350
+    variant_multipliers: {sedan: 1.00, suv: 1.03, ev: 1.00}
+
+  - id: 12
+    name: "Body Completion"
+    zone: body
+    nominal_cycle_s: 61.0            # NORMAL-DAY CONSTRAINT
+    cycle_cv: 0.08
+    buffer_capacity_after: 6
+    sensor_tier: full
+    sensors: [weld_current_a, torque_nm, vibration_mm_s]
+    mtbf_hours: 700
+    repair_time_s: 820
+    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.00}
+
+  # ---------------- PAINT SHOP (S13-S18) ----------------
+  # Canonical naming per ADR-013. Mode A dwell is measured S14 exit -> S16 entry,
+  # spanning the manual S15 -- exactly the window the feature spec defines.
+  - id: 13
+    name: "Paint Pre-Treatment"
+    zone: paint
+    nominal_cycle_s: 50.0
+    cycle_cv: 0.06
+    buffer_capacity_after: 4
+    sensor_tier: full
+    sensors: [humidity_pct, temperature_c]
+    mtbf_hours: 1500
+    repair_time_s: 500
+    variant_multipliers: {sedan: 1.00, suv: 1.04, ev: 1.00}
+
+  - id: 14
+    name: "Primer Application"
+    zone: paint
+    nominal_cycle_s: 53.0
+    cycle_cv: 0.07
+    buffer_capacity_after: 5          # paint buffer entry -- Mode A dwell starts here
+    sensor_tier: full
+    sensors: [humidity_pct, temperature_c, film_thickness_um]
+    mtbf_hours: 1000
+    repair_time_s: 620
+    variant_multipliers: {sedan: 1.00, suv: 1.04, ev: 1.00}
+
+  - id: 15
+    name: "Paint Surface Prep"
+    zone: paint
+    nominal_cycle_s: 45.0
+    cycle_cv: 0.18                    # high CV: human-paced, not machine-paced
+    buffer_capacity_after: 3
+    sensor_tier: manual
+    sensors: []
+    checklist_nominal_s: 45.0         # Mode B: compresses to 20-25s on unblock burst
+    mtbf_hours: 2000
+    repair_time_s: 240
+    variant_multipliers: {sedan: 1.00, suv: 1.06, ev: 1.00}
+    defect_role: mode_b_origin
+
+  - id: 16
+    name: "Base Coat Application"
+    zone: paint
+    nominal_cycle_s: 56.0
+    cycle_cv: 0.06
+    buffer_capacity_after: 4          # Mode A dwell ends at S16 entry
+    sensor_tier: full
+    sensors: [humidity_pct, temperature_c, film_thickness_um]
+    mtbf_hours: 880
+    repair_time_s: 700
+    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.00}
+
+  - id: 17
+    name: "Clear Coat Application"
+    zone: paint
+    nominal_cycle_s: 59.0
+    cycle_cv: 0.06
+    buffer_capacity_after: 3
+    sensor_tier: full
+    sensors: [humidity_pct, temperature_c, film_thickness_um]
+    mtbf_hours: 800
+    repair_time_s: 740
+    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.00}
+    defect_role: mode_a_contributor
+
+  - id: 18
+    name: "Cure Oven"
+    zone: paint
+    nominal_cycle_s: 60.0
+    cycle_cv: 0.04
+    buffer_capacity_after: 8
+    sensor_tier: full
+    sensors: [humidity_pct, temperature_c, film_thickness_um]
+    mtbf_hours: 1800
+    repair_time_s: 900
+    variant_multipliers: {sedan: 1.00, suv: 1.03, ev: 1.00}
+    defect_role: mode_a_contributor
+    # NOTE: no in-line quality gate here (ADR-014). A gate would remove Mode A units
+    # before S30, conditioning the training population on surviving S18 and censoring
+    # exactly the defect mode the whole scenario rests on.
+
+  # ---------------- FINAL ASSEMBLY (S19-S30) ----------------
+  - id: 19
+    name: "Battery/Drivetrain Mount"
+    zone: final
+    nominal_cycle_s: 55.0            # x1.40 EV = 77.0s -> EV-HEAVY-DAY CONSTRAINT
+    cycle_cv: 0.09
+    buffer_capacity_after: 3
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 680
+    repair_time_s: 860
+    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.40}
+
+  - id: 20
+    name: "Powertrain Coupling"
+    zone: final
+    nominal_cycle_s: 52.0
+    cycle_cv: 0.08
+    buffer_capacity_after: 3
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 950
+    repair_time_s: 600
+    variant_multipliers: {sedan: 1.00, suv: 1.04, ev: 1.30}
+
+  - id: 21
+    name: "Suspension Mount"
+    zone: final
+    nominal_cycle_s: 50.0
+    cycle_cv: 0.07
+    buffer_capacity_after: 4
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 1150
+    repair_time_s: 480
+    variant_multipliers: {sedan: 1.00, suv: 1.07, ev: 1.25}
+    soft_sensor_validation: true    # masked-station validation target (Phase 4)
+
+  - id: 22
+    name: "Legacy Interior Fit"
+    zone: final
+    nominal_cycle_s: 54.0
+    cycle_cv: 0.16
+    buffer_capacity_after: 3
+    sensor_tier: manual
+    sensors: []
+    checklist_nominal_s: 41.0
+    mtbf_hours: 2000
+    repair_time_s: 280
+    variant_multipliers: {sedan: 1.00, suv: 1.08, ev: 1.20}
+
+  - id: 23
+    name: "Wiring Harness"
+    zone: final
+    nominal_cycle_s: 51.0
+    cycle_cv: 0.09
+    buffer_capacity_after: 3
+    sensor_tier: full
+    sensors: [torque_nm]
+    mtbf_hours: 1050
+    repair_time_s: 520
+    variant_multipliers: {sedan: 1.00, suv: 1.04, ev: 1.30}
+
+  - id: 24
+    name: "Battery Enclosure Seal"
+    zone: final
+    nominal_cycle_s: 49.0
+    cycle_cv: 0.08
+    buffer_capacity_after: 4
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 1200
+    repair_time_s: 460
+    variant_multipliers: {sedan: 1.00, suv: 1.02, ev: 1.35}
+
+  - id: 25
+    name: "Interior Trim"
+    zone: final
+    nominal_cycle_s: 53.0
+    cycle_cv: 0.10
+    buffer_capacity_after: 4
+    sensor_tier: full
+    sensors: [torque_nm]
+    mtbf_hours: 1400
+    repair_time_s: 400
+    variant_multipliers: {sedan: 1.00, suv: 1.09, ev: 1.00}
+
+  - id: 26
+    name: "Glass & Seals"
+    zone: final
+    nominal_cycle_s: 50.0
+    cycle_cv: 0.08
+    buffer_capacity_after: 3
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 1300
+    repair_time_s: 430
+    variant_multipliers: {sedan: 1.00, suv: 1.07, ev: 1.00}
+
+  - id: 27
+    name: "Legacy Electrical Check"
+    zone: final
+    nominal_cycle_s: 52.0
+    cycle_cv: 0.15
+    buffer_capacity_after: 3
+    sensor_tier: manual
+    sensors: []
+    checklist_nominal_s: 47.0
+    mtbf_hours: 2000
+    repair_time_s: 260
+    variant_multipliers: {sedan: 1.00, suv: 1.03, ev: 1.10}
+
+  - id: 28
+    name: "Fluid Fill"
+    zone: final
+    nominal_cycle_s: 48.0
+    cycle_cv: 0.06
+    buffer_capacity_after: 4
+    sensor_tier: full
+    sensors: [torque_nm]
+    mtbf_hours: 1600
+    repair_time_s: 340
+    variant_multipliers: {sedan: 1.00, suv: 1.04, ev: 0.90}
+
+  - id: 29
+    name: "Wheel & Alignment"
+    zone: final
+    nominal_cycle_s: 56.0
+    cycle_cv: 0.07
+    buffer_capacity_after: 3
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 900
+    repair_time_s: 560
+    variant_multipliers: {sedan: 1.00, suv: 1.06, ev: 1.02}
+
+  - id: 30
+    name: "Final Quality Gate"
+    zone: final
+    nominal_cycle_s: 58.0
+    cycle_cv: 0.05
+    buffer_capacity_after: 2
+    sensor_tier: full
+    sensors: [torque_nm, vibration_mm_s]
+    mtbf_hours: 1700
+    repair_time_s: 380
+    variant_multipliers: {sedan: 1.00, suv: 1.03, ev: 1.05}
+    is_inspection_station: true
+
+variants:
+  - id: sedan
+    name: "Sedan"
+    base_mix_pct: 50
+    tuesday_mix_pct: 30
+  - id: suv
+    name: "SUV"
+    base_mix_pct: 35
+    tuesday_mix_pct: 30
+  - id: ev
+    name: "EV"
+    base_mix_pct: 15
+    tuesday_mix_pct: 40          # THE TUESDAY TRIGGER
+
+shifts:
+  - id: shift_a
+    name: "Morning"
+    start: "06:00"
+    end: "14:00"
+    operator_count: 12
+    skill_distribution: {expert: 0.30, standard: 0.50, junior: 0.20}
+  - id: shift_b
+    name: "Afternoon"
+    start: "14:00"
+    end: "22:00"
+    operator_count: 12
+    skill_distribution: {expert: 0.20, standard: 0.50, junior: 0.30}
+  - id: shift_c
+    name: "Night"
+    start: "22:00"
+    end: "06:00"
+    operator_count: 10
+    skill_distribution: {expert: 0.15, standard: 0.50, junior: 0.35}
+
+ambient:
+  base_temperature_c: 24.0
+  daily_amplitude_c: 6.0
+  base_humidity_pct: 45.0
+  humidity_high_days: [1, 2]        # Tuesday, Wednesday (0 = Monday)
+  humidity_high_add_pct: 20.0
+  hvac_noise_sigma_pct: 3.0
+
+operators:
+  # Skill affects torque bias and checklist thoroughness. Never surfaced individually
+  # anywhere in the API or UI -- hashed to 8 buckets at featurisation (ADR-017).
+  skill_torque_bias_pct: {expert: 0.5, standard: 0.0, junior: -2.5}
+  skill_checklist_multiplier: {expert: 0.92, standard: 1.00, junior: 1.15}
+  rotation_interval_units: 60
+  operator_bucket_count: 8
+
+defect_physics:
+  # ---- Mode weights: these are the MODE BUDGET ONLY and sum to 1.0 (ADR-025) ----
+  mode_a:
+    name: "Paint Micro-Blistering"
+    weight: 0.45
+    contributing_stations: [16, 17, 18]
+    dwell_window: {from_station: 14, from_edge: exit, to_station: 16, to_edge: entry}
+    dwell_threshold_s: 180.0
+    dwell_nominal_s: 120.0
+    humidity_threshold_pct: 55.0
+    paint_batch_weak_fraction: 0.30
+    paint_batch_change_interval_units: 200   # LATENT -- never enters the feature matrix
+
+  mode_b:
+    name: "Surface Prep Adhesion Failure"
+    weight: 0.35
+    contributing_station: 15
+    trigger: unblock_burst                   # ADR-026: NOT the blocked state itself
+    unblock_min_blocked_s: 60.0
+    rush_units_after_unblock: [3, 5]
+    checklist_rush_threshold_s: 25.0
+    checklist_nominal_s: 45.0
+
+  mode_c:
+    name: "Structural Fastening Defect"
+    weight: 0.20
+    contributing_stations: [3, 8]
+    torque_deficit_threshold_pct: 8.0
+    vibration_excess_percentile: 92.0
+    interaction_required: true               # BOTH must co-occur; either alone is inert
+
+  # ---- Propensity normalisation (ADR-025) ----
+  # propensity = bias
+  #            + mode_scale * (w_a*A + w_b*B + w_c*C)
+  #            + w_lot   * incoming_lot_quality      <- UNOBSERVABLE confounder
+  #            + w_noise * gaussian_noise
+  # defect = logistic(propensity) > uniform(0,1)
+  #
+  # bias = logit(0.03) = -3.476 anchors the no-signal case at the base rate.
+  # The four values below are CALIBRATED in Phase 2 to land the realised rate in
+  # [2.5%, 4.0%]; fitted values are recorded in docs/ASSUMPTIONS.md.
+  bias: -3.476
+  mode_scale: 2.50
+  w_lot: 0.80
+  w_noise: 0.50
+
+  base_defect_rate: 0.03
+  lot_quality_change_interval_units: 200     # LATENT -- never enters the feature matrix
+
+  # ---- Inspection (ADR-001) ----
+  label_noise_rate: 0.03
+  inspection_detection_rate: 0.92
+  inspection_false_reject_rate: 0.002        # was 0.02: that made 41% of positive
+                                             # labels wrong, not the claimed 3%
+  inline_gate_s18: false                     # ADR-014
+
+simulation:
+  duration_days: 21                          # ADR-020: 14 gave only ~130 test positives
+  seed: 42
+  lot_change_interval_units: 200
+  warmup_units: 200                          # discarded; line starts empty
+  train_days: [1, 14]
+  validate_days: [15, 17]
+  test_days: [18, 21]
+  replay_window_hours: 48                    # ADR-008: station_readings scope
+  tool_wear_pct_per_hour: [0.1, 0.5]         # resets after repair -> bottleneck drifts

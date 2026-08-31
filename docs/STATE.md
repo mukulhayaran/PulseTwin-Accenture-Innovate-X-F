@@ -11,7 +11,7 @@
 |---|---|
 | Bootstrap session | 2026-08-31 |
 | Budget | **Under 24 hours** |
-| Deadline (fill in) | `____________________` |
+| Deadline (fill in) | `___1 september 2026_________________` |
 | Tier 0 must close by | **T-14h** |
 | Tier 1 must close by | **T-6h** |
 | T-3h onward | Freeze code. Docs, demo rehearsal, screenshots only. |
@@ -32,24 +32,58 @@ with three cut features beats five half-built views.
 - [x] Git guardrails — push denied in `.claude/settings.json`; `includeCoAuthoredBy: false`
 - [x] Plugins installed: frontend-design, feature-dev, pyright-lsp, typescript-lsp,
       playwright, claude-md-management, commit-commands
-- [ ] `docs/SPEC.md` — corrected canonical spec
-- [ ] `git init` + first commit
+- [x] `docs/SPEC.md` — corrected canonical spec
+- [x] `git init` + first commit
 
-**Nothing else is built.** No configs, no simulator, no API, no frontend.
+**Phase 1 — Configs: COMPLETE** (2026-08-31)
+
+- [x] `configs/plant_a.yaml` — 30 stations, 4 manual, cycles 45–61s
+- [x] `configs/plant_b.yaml` — 42 stations, 8 manual, TRUCK variant, cycles 45–70s
+- [x] `configs/economics.yaml` — every figure sourced; discount rate + annualisation basis
+- [x] `offline/config_schema.py` — Pydantic schemas with ADR-enforcing validators
+- [x] `tests/test_configs.py` — **43 passing**
+
+**Verified from config alone:**
+- plant_a: S12 (62.1s) → **S19 (64.6s)** on EV-heavy days ✓
+- plant_b: S16 (72.1s) → **S31 (74.9s)** on truck-heavy days ✓
+- The bottleneck shift mechanism **generalises across both plants** — it is not tuned per plant.
+- Cost-optimal threshold p\* = **0.0052**; alarm budget = 6/shift. Irreconcilable, as ADR-004 predicts.
+
+**Correction made this phase:** ADR-002 originally specified S19 base = 58s. That value makes
+S19 the constraint on *normal* days too (62.5s vs S12's 62.1s), silently deleting the entire
+Tuesday scenario. Corrected to **55s**. `check_bottleneck_shift_configured` now fails any
+config whose constraint does not move with variant mix — the validator caught this on its
+first run. `docs/SPEC.md` and ADR-002 both amended.
+
+**Not yet built.** No simulator, no features, no model, no API, no frontend.
 
 ---
 
 ## → NEXT ACTION
 
-**Start Tier 0, item 1: `configs/plant_a.yaml`.**
+**Tier 0, item 2: the simulator.** `offline/simulator/`.
 
-Write all 30 stations with cycle times in **45–62 s** (ADR-002), S19 base 58 s with
-`ev_multiplier: 1.4`. Manual tier at S10, S15, S22, S27. Paint zone naming per ADR-013.
-`inspection_false_reject_rate: 0.002` (ADR-001). Propensity weights structured per ADR-025.
-Then `configs/economics.yaml` with `discount_rate` and `annualisation_basis` (ADR-024),
-then `configs/plant_b.yaml`, then the Pydantic validator.
+Build in this order, because each stage is testable against the one before:
 
-Before writing YAML, re-read `docs/SPEC.md` §Phase 1 — it carries the corrected values.
+1. `line_model.py` — **event-driven** scheduler (ADR-005), never a 1-second tick loop.
+   States `idle | working | blocked | starved | down`; finite output buffers; exponential
+   breakdowns from MTBF with gamma repair; tool-wear drift 0.1–0.5%/hr resetting after
+   repair. Persist state as **intervals** `(station_id, state, start_ts, end_ts)`.
+2. `physics.py` — temporally autocorrelated signals. Mean-reverting random walks for tool
+   wear, thermal inertia `T(t) = α·T(t-1) + (1-α)·(T_ambient + heat)`, EWMA vibration that
+   spikes on blocking→release bursts. Manual stations emit **NaN + a checklist record**.
+3. `operators.py` — skill pools; the S15 rush fires on the **unblock transition** (ADR-026).
+4. `causal_engine.py` — the ADR-025 propensity formula. `paint_batch_quality` and
+   `incoming_lot_quality` are latent and must never reach the feature matrix.
+5. `inspection.py` — S30 only (ADR-014). 92% detection, 0.2% false reject. `true_defect`
+   stored separately and never shown to the model.
+6. `generate.py` — CLI, writes telemetry / genealogy / checklists / inspections.
+
+Read `docs/SPEC.md` §Phase 2 for the acceptance checks. The one to watch: **achieved UPH
+within 10% of 55** — that is the check that proves ADR-002 actually worked.
+
+Config access is already done — use `offline.config_schema.load_plant_config`. Do not
+re-parse YAML anywhere else, and do not hardcode a station ID outside the config.
 
 ---
 
@@ -59,7 +93,7 @@ Before writing YAML, re-read `docs/SPEC.md` §Phase 1 — it carries the correct
 
 | # | Item | Est | Done | Notes |
 |---|---|---|---|---|
-| 1 | `configs/` — plant_a, plant_b, economics + Pydantic validation | 1.5h | ☐ | Config-driven from hour one; makes Plant B nearly free later |
+| 1 | `configs/` — plant_a, plant_b, economics + Pydantic validation | 1.5h | ✅ | Done. 43 tests. Both plants' bottleneck shift verified |
 | 2 | Simulator — event-driven, physics, operators, causal engine | 3.5h | ☐ | ADR-005. **The foundation. If it is weak everything above is theatre.** |
 | 3 | `featurize.py` + timestamp-based leakage test | 1.5h | ☐ | ADR-010. Do not skip the real test |
 | 4 | Defect model + Platt calibration + both thresholds | 1.5h | ☐ | ADR-004, ADR-021 |
@@ -140,4 +174,7 @@ knowing whether we are ahead or behind.
 
 ```
 2026-08-31  Phase 0  Bootstrap complete. Audit + ADRs + CLAUDE.md + guardrails + plugins.
+2026-08-31  Phase 1  Configs complete. plant_a (30 stn) + plant_b (42 stn) + economics.
+                     43 tests pass. Bottleneck shift verified on BOTH plants.
+                     Caught + fixed: S19 58s->55s (58s deleted the Tuesday scenario).
 ```

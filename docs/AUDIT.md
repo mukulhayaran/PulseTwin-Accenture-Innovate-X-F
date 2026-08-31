@@ -99,6 +99,8 @@ The spec asks for both, computed from the same data, presented as one operating 
 
 That directly answers rubric bullet 7 (false alarms erode trust) with far more sophistication than a single reconciled number, and it pre-empts the obvious judge question. It requires splitting the schema: `above_cost_threshold` (economics) versus `alert_fired` (budget-gated, top-N by risk per shift).
 
+> **Caveat on the 0.62 figure.** `p* = 0.0064` is exact — it comes only from the cost ratios. The budget-side threshold of "around 0.62" is an *estimate*: the threshold that admits exactly 6 units per shift depends on the model's score distribution, which does not exist until Phase 5. What is provable from config alone is the direction: p\* sits ~6× *below* the 3% base rate (so a calibrated model clears it on a large share of units), while the budget admits 1.4% of units — fewer than there are defects, so it must miss some by construction. The exact operating threshold and the exact value forgone are measured in Phase 5, not asserted here. `tests/test_configs.py::test_cost_optimal_and_budget_are_irreconcilable` guards the direction; the magnitude is a Phase 5 output.
+
 ---
 
 ### B5. The 1-second tick loop cannot meet the "< 5 minutes" acceptance check
