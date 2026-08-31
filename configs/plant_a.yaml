@@ -482,7 +482,7 @@ defect_physics:
     weight: 0.45
     contributing_stations: [16, 17, 18]
     dwell_window: {from_station: 14, from_edge: exit, to_station: 16, to_edge: entry}
-    dwell_threshold_s: 180.0
+    dwell_threshold_s: 480.0
     dwell_nominal_s: 120.0
     humidity_threshold_pct: 55.0
     paint_batch_weak_fraction: 0.30
@@ -532,12 +532,16 @@ defect_physics:
   inline_gate_s18: false                     # ADR-014
 
 simulation:
-  duration_days: 21                          # ADR-020: 14 gave only ~130 test positives
+  duration_days: 28                          # ADR-020 amended: whole-week splits
   seed: 42
   lot_change_interval_units: 200
   warmup_units: 200                          # discarded; line starts empty
+  # WHOLE-WEEK SPLITS. The line starts on a Monday, so days 1-14 / 15-21 / 22-28 are
+  # three complete weeks and EACH contains exactly one Tue/Wed peak pair. At 21 days
+  # the test split was days 18-21 = Thu-Sun: no peak day at all, so it could not
+  # evaluate the scenario the whole project is about, and held only 86 positives.
   train_days: [1, 14]
-  validate_days: [15, 17]
-  test_days: [18, 21]
-  replay_window_hours: 48                    # ADR-008: station_readings scope
+  validate_days: [15, 21]
+  test_days: [22, 28]
+  replay_window_hours: 24                    # ADR-008: station_readings scope
   tool_wear_pct_per_hour: [0.1, 0.5]         # resets after repair -> bottleneck drifts

@@ -47,6 +47,12 @@ from offline.simulator.physics import Latents, _station_targets
 
 MODE_NAMES = ("mode_a", "mode_b", "mode_c")
 
+# Exponent applied to normalised mode intensity. Concentrates hazard onto units that
+# genuinely meet the adverse conditions instead of smearing it thinly across production.
+# At 1.0 the achievable PR-AUC collapsed to ~2.6x the base rate: even a perfect model
+# cannot rank what the physics did not separate.
+INTENSITY_SHARPENING = 3.0
+
 
 @dataclass
 class CausalResult:
@@ -119,24 +125,34 @@ def build_unit_signals(
     df["mode_c_vibration_pctile"] = pct.reindex(df.index)
 
     # ------------------------------------------------------------------- mode signals
+    # HARD GATE. Mode A requires all three conditions to co-occur, so the signal is
+    # exactly zero unless dwell AND humidity are both past threshold. A soft ramp let
+    # every unit carry a little risk, which diluted the hazard across 60% of production
+    # and drove the achievable PR-AUC down to the base rate (see compute_defects).
+    dwell = df["paint_buffer_dwell_s"].fillna(0.0)
+    humid = df["paint_humidity_pct"].fillna(0.0)
+    gate = (dwell > dp.mode_a.dwell_threshold_s) & (humid > dp.mode_a.humidity_threshold_pct)
+
     dwell_excess = np.clip(
-        (df["paint_buffer_dwell_s"] - dp.mode_a.dwell_threshold_s) / dp.mode_a.dwell_nominal_s,
-        0.0,
-        2.0,
-    ).fillna(0.0)
-    hum_factor = _sigmoid((df["paint_humidity_pct"].fillna(0.0) - dp.mode_a.humidity_threshold_pct) / 2.5)
+        (dwell - dp.mode_a.dwell_threshold_s) / dp.mode_a.dwell_nominal_s, 0.0, 2.0
+    )
+    hum_factor = _sigmoid((humid - dp.mode_a.humidity_threshold_pct) / 2.5)
     weak = latents.paint_batch_is_weak[df.index.to_numpy()]
     # A weak batch is far worse, but a strong batch is not immune -- otherwise the latent
-    # would be perfectly recoverable from the outcome.
-    weak_factor = np.where(weak, 1.0, 0.22)
-    df["signal_mode_a"] = dwell_excess * hum_factor * weak_factor
+    # would be perfectly recoverable from the outcome, and the confounder would stop
+    # confounding anything.
+    weak_factor = np.where(weak, 1.0, 0.06)
+    df["signal_mode_a"] = np.where(gate, dwell_excess * hum_factor * weak_factor, 0.0)
 
+    # Mode B likewise fires only on an actual rush, not on any checklist faster than
+    # nominal. A slightly brisk operator is not an adhesion failure.
     nominal_ck = dp.mode_b.checklist_nominal_s
     rush_ck = dp.mode_b.checklist_rush_threshold_s
-    df["signal_mode_b"] = np.clip(
-        (nominal_ck - df["prep_checklist_s"].fillna(nominal_ck)) / (nominal_ck - rush_ck),
+    ck_time = df["prep_checklist_s"].fillna(nominal_ck)
+    df["signal_mode_b"] = np.where(
+        ck_time < rush_ck,
+        np.clip((nominal_ck - ck_time) / (nominal_ck - rush_ck), 0.0, 1.4),
         0.0,
-        1.4,
     )
 
     t_sig = np.clip(
@@ -199,8 +215,11 @@ def compute_defects(
         pos = v[v > 1e-9]
         # Scale by a robust high quantile of the FIRING population, not the mean, so a
         # mode that fires rarely is not penalised for its many zeros.
-        ref = float(np.quantile(pos, 0.95)) if len(pos) > 50 else 1.0
-        scaled = np.clip(v / max(ref, 1e-9), 0.0, 1.0)
+        # Reference at the top of the firing distribution, then a cubic sharpening.
+        # Clipping at the 95th percentile flattened the top 5% into a single value and
+        # destroyed the ordering that PR-AUC depends on.
+        ref = float(np.quantile(pos, 0.995)) if len(pos) > 50 else 1.0
+        scaled = np.clip(v / max(ref, 1e-9), 0.0, 1.0) ** INTENSITY_SHARPENING
         # Divide by mean EXPOSURE (population mean, zeros included) so w_i expresses each
         # mode's share of defects rather than its per-unit hazard. Without this a mode
         # that fires on 60% of units swamps one that fires on 2.7%, whatever the weights

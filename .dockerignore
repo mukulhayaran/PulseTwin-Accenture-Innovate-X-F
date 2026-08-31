@@ -1,0 +1,9 @@
+offline/
+data/
+frontend/
+tests/
+docs/
+.git/
+__pycache__/
+*.pyc
+*.parquet

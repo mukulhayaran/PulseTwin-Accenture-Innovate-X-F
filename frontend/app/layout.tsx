@@ -1,0 +1,15 @@
+import type { Metadata } from "next";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "PulseTwin — Assembly Line Digital Twin",
+  description: "Predictive quality and constraint intelligence for mixed-model assembly",
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body className="bg-bg-primary text-txt-primary antialiased">{children}</body>
+    </html>
+  );
+}

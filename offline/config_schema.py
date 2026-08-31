@@ -352,6 +352,16 @@ class PlantConfig(StrictModel):
                 return s
         raise KeyError(f"no station {station_id} in {self.plant_id}")
 
+    def prediction_cutoff_station(self) -> int:
+        """Last station whose data may be used for prediction.
+
+        Config-derived rather than the hardcoded "S20" of the original spec, so plant B's
+        42-station line gets a proportionate cutoff (S28) with no code change. Two thirds
+        along the line: late enough that the paint-zone evidence exists, early enough to
+        leave real lead time before the end-of-line gate.
+        """
+        return self.station_ids[int(round(0.667 * len(self.stations))) - 1]
+
     def manual_stations(self) -> list[Station]:
         return [s for s in self.stations if s.sensor_tier == "manual"]
 

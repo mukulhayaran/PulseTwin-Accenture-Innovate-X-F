@@ -243,9 +243,16 @@ def test_temporal_splits_are_ordered_and_complete(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", PLANTS)
-def test_simulation_horizon_is_21_days(name: str) -> None:
-    """ADR-020. 14 days left only ~130 test positives; the PR-AUC CI swamped the band."""
-    assert load_plant_config(name).simulation.duration_days == 21
+def test_simulation_horizon_is_whole_weeks(name: str) -> None:
+    """ADR-020 amended. 28 days = 3 whole-week splits, each with one Tue/Wed peak pair.
+
+    At 21 days the test split landed on Thu-Sun with no peak day, so it could not
+    evaluate the EV-heavy scenario at all and held only 86 positives.
+    """
+    sim = load_plant_config(name).simulation
+    assert sim.duration_days == 28
+    for span in (sim.train_days, sim.validate_days, sim.test_days):
+        assert (span[1] - span[0] + 1) % 7 == 0, f"split {span} is not whole weeks"
 
 
 @pytest.mark.parametrize("name", PLANTS)

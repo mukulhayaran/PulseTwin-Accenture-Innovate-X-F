@@ -11,6 +11,15 @@ generate:
 	$(PY) -m offline.simulator.generate --config configs/plant_a.yaml
 	$(PY) -m offline.simulator.generate --config configs/plant_b.yaml
 
+train:
+	$(PY) -m offline.ml.train --config configs/plant_a.yaml
+	$(PY) -m offline.ml.train --config configs/plant_b.yaml
+
+build-artifact:
+	rm -f artifacts/pulsetwin.db
+	$(PY) -m offline.build_artifact --config configs/plant_a.yaml
+	$(PY) -m offline.build_artifact --config configs/plant_b.yaml
+
 test:
 	$(PY) -m pytest tests/ -q
 

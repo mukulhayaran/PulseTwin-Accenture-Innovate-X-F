@@ -263,6 +263,42 @@ But the anti-patterns list forbids `localStorage` and `sessionStorage` in React 
 
 ---
 
+## B34 — The PR-AUC target band contradicts the honest-difficulty requirement
+
+*Found in Phase 5, by measurement rather than by reading.* This one is arithmetic, and it invalidates a headline number the spec repeats four times.
+
+The spec demands both:
+- **"Achievable model ceiling: PR-AUC 0.75–0.88"** — with an instruction to make the world harder above 0.92 and to hunt for bugs below the band, and
+- **"at least two unobservable causes"**, a 3% base rate, and three intermittent, multi-causal defect modes.
+
+These cannot both hold. PR-AUC is bounded by how concentrated the at-risk population is. With perfect ranking and *no model error at all*:
+
+| at-risk share of units | P(defect \| at-risk) | best attainable PR-AUC |
+|---|---|---|
+| 3.8% | 72% | 0.66 |
+| 5% | 54% | 0.47 |
+| 9% | 30% | 0.27 |
+| 15% | 18% | 0.16 |
+| 24% | 11% | 0.10 |
+
+To clear 0.75, roughly 4% of units must carry a **~70%+ defect rate** — a single, near-deterministic condition. That is the opposite of "multi-causal, intermittent, with unobservable confounders." A latent cause that gates 30% of the at-risk population (the weak paint batch) caps Mode A's attainable precision at 30% no matter how good the model is.
+
+Put plainly: **a world that satisfies the brief's realism requirements cannot produce a PR-AUC in the spec's band, and a world that hits the band cannot satisfy the realism requirements.** Chasing 0.85 would mean quietly deleting the latent confounders — exactly the dishonesty the spec's own "honest difficulty" rule exists to prevent.
+
+**Fix — measure the ceiling instead of asserting one.** Every training run now scores the **simulator's own latent propensity** against the same test labels. That is the true data-generating probability including both unobservable causes, so no model can beat it. We report:
+
+```
+PR-AUC        0.xxx  [95% CI ...]
+ORACLE PR-AUC 0.xxx  <- no model can exceed this
+              We capture xx% of it.
+```
+
+This is a strictly stronger claim than any absolute number. "We captured 78% of the information the physics actually left in the data, and here is the ceiling, computed" is a sentence a technical judge can verify and cannot dismiss — whereas "we got 0.85" invites the question of what was thrown away to get there. The `> 0.98 of oracle` case now raises a leakage warning, which is a far better tripwire than the spec's absolute 0.92.
+
+The band is retained in `docs/SPEC.md` as **advisory context only**, explicitly marked not a tuning target.
+
+---
+
 ## What the spec gets right
 
 Worth recording, so none of it gets refactored away under time pressure:
