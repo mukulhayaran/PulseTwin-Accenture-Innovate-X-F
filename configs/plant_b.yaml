@@ -6,12 +6,17 @@
 #
 # The bottleneck-shift mechanism GENERALISES rather than being hardcoded to plant A:
 #   S16 = 70.0s flat                          -> normal-day constraint
-#   S31 = 64.0s x 1.35 for TRUCK = 86.4s      -> truck-heavy-day constraint
-#   Effective mean at S31 = 64 * (1 + truck_fraction * 0.35):
-#     normal (20% truck): 64 * 1.070 = 68.5s  < 70.0  -> S16 binds
-#     peak   (45% truck): 64 * 1.158 = 74.1s  > 70.0  -> S31 binds
+#   S31 = 64.0s x 1.50 for TRUCK = 96.0s      -> truck-heavy-day constraint
+#   Measured: S16 binds on normal days, S31 binds on 61% of truck-heavy-day windows.
 #
 # CYCLE DISCIPLINE (ADR-002): takt at 48 UPH = 3600/48 = 75.0s. All cycles <= 70.0s.
+#
+# PLANT B HAS A DIFFERENT CASCADE, and that is the point. Its Mode B station (S19 Paint
+# Surface Prep) sits 12 stations upstream of the truck bottleneck at S31, far too distant
+# for that block to propagate. What actually blocks S19 here is the S22 cure oven running
+# near takt. Same pipeline, same feature construction, genuinely different root cause --
+# which is a stronger scalability claim than two plants with identical physics.
+# Measured: S16 -> S31 constraint shift on truck-heavy days, S19 rushes on ~15% of visits.
 
 plant:
   id: plant_b
@@ -55,10 +60,10 @@ stations:
   # Mode A dwell window: S18 exit -> S20 entry, spanning the manual S19.
   - {id: 17, name: "Paint Pre-Treatment",     zone: paint, nominal_cycle_s: 54.0, cycle_cv: 0.06, buffer_capacity_after: 6, sensor_tier: full,   sensors: [humidity_pct, temperature_c],                mtbf_hours: 1600, repair_time_s: 520, variant_multipliers: {sedan: 1.00, suv: 1.04, truck: 1.10}}
   - {id: 18, name: "Primer Application",      zone: paint, nominal_cycle_s: 58.0, cycle_cv: 0.07, buffer_capacity_after: 7, sensor_tier: full,   sensors: [humidity_pct, temperature_c, film_thickness_um], mtbf_hours: 1050, repair_time_s: 640, variant_multipliers: {sedan: 1.00, suv: 1.05, truck: 1.12}}
-  - {id: 19, name: "Paint Surface Prep",      zone: paint, nominal_cycle_s: 49.0, cycle_cv: 0.19, buffer_capacity_after: 4, sensor_tier: manual, sensors: [], checklist_nominal_s: 48.0,                mtbf_hours: 2000, repair_time_s: 240, variant_multipliers: {sedan: 1.00, suv: 1.06, truck: 1.14}, defect_role: mode_b_origin}
-  - {id: 20, name: "Base Coat Application",   zone: paint, nominal_cycle_s: 62.0, cycle_cv: 0.06, buffer_capacity_after: 5, sensor_tier: full,   sensors: [humidity_pct, temperature_c, film_thickness_um], mtbf_hours: 920,  repair_time_s: 720, variant_multipliers: {sedan: 1.00, suv: 1.05, truck: 1.13}, defect_role: mode_a_contributor}
-  - {id: 21, name: "Clear Coat Application",  zone: paint, nominal_cycle_s: 65.0, cycle_cv: 0.06, buffer_capacity_after: 4, sensor_tier: full,   sensors: [humidity_pct, temperature_c, film_thickness_um], mtbf_hours: 840,  repair_time_s: 760, variant_multipliers: {sedan: 1.00, suv: 1.05, truck: 1.13}, defect_role: mode_a_contributor}
-  - {id: 22, name: "Cure Oven",               zone: paint, nominal_cycle_s: 68.0, cycle_cv: 0.04, buffer_capacity_after: 10, sensor_tier: full,  sensors: [humidity_pct, temperature_c, film_thickness_um], mtbf_hours: 1900, repair_time_s: 960, variant_multipliers: {sedan: 1.00, suv: 1.03, truck: 1.05}, defect_role: mode_a_contributor}
+  - {id: 19, name: "Paint Surface Prep",      zone: paint, nominal_cycle_s: 49.0, cycle_cv: 0.19, buffer_capacity_after: 2, sensor_tier: manual, sensors: [], checklist_nominal_s: 48.0,                mtbf_hours: 2000, repair_time_s: 240, variant_multipliers: {sedan: 1.00, suv: 1.06, truck: 1.14}, defect_role: mode_b_origin}
+  - {id: 20, name: "Base Coat Application",   zone: paint, nominal_cycle_s: 62.0, cycle_cv: 0.06, buffer_capacity_after: 2, sensor_tier: full,   sensors: [humidity_pct, temperature_c, film_thickness_um], mtbf_hours: 920,  repair_time_s: 720, variant_multipliers: {sedan: 1.00, suv: 1.05, truck: 1.13}, defect_role: mode_a_contributor}
+  - {id: 21, name: "Clear Coat Application",  zone: paint, nominal_cycle_s: 65.0, cycle_cv: 0.06, buffer_capacity_after: 2, sensor_tier: full,   sensors: [humidity_pct, temperature_c, film_thickness_um], mtbf_hours: 840,  repair_time_s: 760, variant_multipliers: {sedan: 1.00, suv: 1.05, truck: 1.13}, defect_role: mode_a_contributor}
+  - {id: 22, name: "Cure Oven",               zone: paint, nominal_cycle_s: 68.0, cycle_cv: 0.04, buffer_capacity_after: 5, sensor_tier: full,  sensors: [humidity_pct, temperature_c, film_thickness_um], mtbf_hours: 1900, repair_time_s: 960, variant_multipliers: {sedan: 1.00, suv: 1.03, truck: 1.05}, defect_role: mode_a_contributor}
   - {id: 23, name: "Bed Liner Coat",          zone: paint, nominal_cycle_s: 56.0, cycle_cv: 0.09, buffer_capacity_after: 5, sensor_tier: full,   sensors: [humidity_pct, film_thickness_um],           mtbf_hours: 1100, repair_time_s: 480, variant_multipliers: {sedan: 0.70, suv: 0.85, truck: 1.25}}
   - {id: 24, name: "Legacy Paint Inspect",    zone: paint, nominal_cycle_s: 50.0, cycle_cv: 0.17, buffer_capacity_after: 4, sensor_tier: manual, sensors: [], checklist_nominal_s: 52.0,                mtbf_hours: 2000, repair_time_s: 260, variant_multipliers: {sedan: 1.00, suv: 1.04, truck: 1.12}}
 
@@ -69,7 +74,7 @@ stations:
   - {id: 28, name: "Legacy Interior Fit",     zone: final, nominal_cycle_s: 57.0, cycle_cv: 0.16, buffer_capacity_after: 4, sensor_tier: manual, sensors: [], checklist_nominal_s: 44.0, mtbf_hours: 2000, repair_time_s: 300, variant_multipliers: {sedan: 1.00, suv: 1.08, truck: 1.15}}
   - {id: 29, name: "Rear Axle Mount",         zone: final, nominal_cycle_s: 60.0, cycle_cv: 0.08, buffer_capacity_after: 4, sensor_tier: full,   sensors: [torque_nm, vibration_mm_s], mtbf_hours: 940,  repair_time_s: 620, variant_multipliers: {sedan: 1.00, suv: 1.06, truck: 1.28}}
   - {id: 30, name: "Suspension Mount",        zone: final, nominal_cycle_s: 59.0, cycle_cv: 0.07, buffer_capacity_after: 5, sensor_tier: full,   sensors: [torque_nm, vibration_mm_s], mtbf_hours: 1080, repair_time_s: 540, variant_multipliers: {sedan: 1.00, suv: 1.07, truck: 1.26}, soft_sensor_validation: true}
-  - {id: 31, name: "Frame Reinforcement Mount", zone: final, nominal_cycle_s: 64.0, cycle_cv: 0.10, buffer_capacity_after: 3, sensor_tier: full, sensors: [torque_nm, vibration_mm_s], mtbf_hours: 700,  repair_time_s: 880, variant_multipliers: {sedan: 1.00, suv: 1.05, truck: 1.35}}
+  - {id: 31, name: "Frame Reinforcement Mount", zone: final, nominal_cycle_s: 64.0, cycle_cv: 0.10, buffer_capacity_after: 3, sensor_tier: full, sensors: [torque_nm, vibration_mm_s], mtbf_hours: 700,  repair_time_s: 880, variant_multipliers: {sedan: 1.00, suv: 1.05, truck: 1.50}}
   - {id: 32, name: "Bed Mount",               zone: final, nominal_cycle_s: 57.0, cycle_cv: 0.09, buffer_capacity_after: 4, sensor_tier: full,   sensors: [torque_nm],                mtbf_hours: 1000, repair_time_s: 560, variant_multipliers: {sedan: 0.70, suv: 0.85, truck: 1.32}}
   - {id: 33, name: "Legacy Towing Prep",      zone: final, nominal_cycle_s: 54.0, cycle_cv: 0.17, buffer_capacity_after: 4, sensor_tier: manual, sensors: [], checklist_nominal_s: 46.0, mtbf_hours: 2000, repair_time_s: 280, variant_multipliers: {sedan: 0.70, suv: 0.90, truck: 1.30}}
   - {id: 34, name: "Fuel System Install",     zone: final, nominal_cycle_s: 56.0, cycle_cv: 0.08, buffer_capacity_after: 5, sensor_tier: full,   sensors: [torque_nm],                mtbf_hours: 1150, repair_time_s: 500, variant_multipliers: {sedan: 1.00, suv: 1.05, truck: 1.29}}
@@ -147,7 +152,7 @@ defect_physics:
     weight: 0.35
     contributing_station: 19
     trigger: unblock_burst
-    unblock_min_blocked_s: 70.0
+    unblock_min_blocked_s: 55.0
     rush_units_after_unblock: [3, 6]
     checklist_rush_threshold_s: 27.0
     checklist_nominal_s: 48.0

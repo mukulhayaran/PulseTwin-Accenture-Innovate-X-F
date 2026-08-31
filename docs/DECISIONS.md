@@ -418,9 +418,34 @@ propensity = bias
            + w_noise     * gaussian_noise
 ```
 
-with `mode_scale`, `w_lot`, `w_noise` and `bias` calibrated so the realised defect rate
-lands in 2.5–4.0%. All four are config fields, not literals, and their fitted values are
-recorded in `ASSUMPTIONS.md`.
+**Amended in Phase 2 — the additive logistic does not work.** Built form:
+
+```
+P(defect) = 1 - (1 - h_lot) * (1 - h_noise) * PROD_i (1 - h_i)
+h_i       = k * w_i * intensity_i        intensity in [0,1], normalised by exposure
+```
+
+*Why the change:* the three modes fire at very different frequencies — Mode A on ~60 % of
+units at low intensity, Mode C on ~2.7 % at high intensity. Under an additive logit the
+single intercept needed to hold the rate at 3 % sat so low that **no individual mode could
+clear it alone**; a unit only defected when several modes coincided, and Mode C produced
+**4 defects out of 759** against a configured weight of 0.20. Normalising by the signal
+mean instead caused the opposite failure — rare intense units normalised to ~190,
+saturated the logistic at P = 1.0, and the intercept search pinned at its floor.
+
+Competing risks matches the physics: each mode is an independent hazard and a unit
+survives only if it survives all of them, so any mode can cause a defect on its own.
+Intensity is divided by its population mean (zeros included) so `w_i` expresses each
+mode's **share of defects** rather than its per-unit hazard; the 0.85 hazard cap keeps
+rare-intense modes risky without making them deterministic.
+
+*Measured result (plant A, 21 days, 26,883 units):* rate 2.99 %, and realised mode shares
+of 44.5 / 31.8 / 17.5 % against configured weights of 45 / 35 / 20 %. 6.6 % of defects are
+`unattributed` — caused by the latent lot confounder, and genuinely unpredictable from
+observable data. That residual is a real ceiling on achievable PR-AUC, which is the point.
+
+`k` is the single calibrated scalar (bisection on the target rate). Its fitted value and
+the intensity normalisation constants are recorded in `ASSUMPTIONS.md`.
 
 ---
 

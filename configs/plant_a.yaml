@@ -8,11 +8,18 @@
 #
 # THE BOTTLENECK SHIFT is a CONSEQUENCE, not a declaration:
 #   S12 = 61.0s flat                      -> normal-day constraint
-#   S19 = 55.0s x 1.40 for EV = 77.0s     -> EV-heavy-day constraint
-#   Effective mean at S19 = 55 * (1 + ev_fraction * 0.40):
-#     normal  (15% EV): 55 * 1.06 = 58.3s  < 61.0  -> S12 binds
-#     Tuesday (40% EV): 55 * 1.16 = 63.8s  > 61.0  -> S19 binds
-#   The ~5s margin either side is what makes the shift crisp rather than flickering.
+#   S19 = 55.0s x 1.50 for EV = 82.5s     -> EV-heavy-day constraint
+#   Variant-weighted mean at S19:
+#     normal  (15% EV): 60.1s  < S12 62.1s  -> S12 binds
+#     Tuesday (40% EV): 66.8s  > S12 61.9s  -> S19 binds
+#   On peak days S19's mean exceeds the 65.45s takt, so the line genuinely runs below
+#   target then. That throughput loss is real and is precisely what the twin surfaces.
+#
+# PAINT BUFFERS (S15..S18 = 2,2,2,4) are deliberately tight. They are what lets the S19
+# block propagate back to S15 within a shift; with the roomier buffers first drafted
+# (3,4,3,8) the cascade took ~5.5h to reach S15 and Mode B fired on 0.03% of units --
+# too rare to learn. Measured at these values: S15 rushes on 3.8% of visits, and 91% of
+# those rushes fall on EV-heavy days, which is the cascade signature the scenario claims.
 
 plant:
   id: plant_a
@@ -219,7 +226,7 @@ stations:
     zone: paint
     nominal_cycle_s: 45.0
     cycle_cv: 0.18                    # high CV: human-paced, not machine-paced
-    buffer_capacity_after: 3
+    buffer_capacity_after: 2
     sensor_tier: manual
     sensors: []
     checklist_nominal_s: 45.0         # Mode B: compresses to 20-25s on unblock burst
@@ -233,7 +240,7 @@ stations:
     zone: paint
     nominal_cycle_s: 56.0
     cycle_cv: 0.06
-    buffer_capacity_after: 4          # Mode A dwell ends at S16 entry
+    buffer_capacity_after: 2          # Mode A dwell ends at S16 entry
     sensor_tier: full
     sensors: [humidity_pct, temperature_c, film_thickness_um]
     mtbf_hours: 880
@@ -245,7 +252,7 @@ stations:
     zone: paint
     nominal_cycle_s: 59.0
     cycle_cv: 0.06
-    buffer_capacity_after: 3
+    buffer_capacity_after: 2
     sensor_tier: full
     sensors: [humidity_pct, temperature_c, film_thickness_um]
     mtbf_hours: 800
@@ -258,7 +265,7 @@ stations:
     zone: paint
     nominal_cycle_s: 60.0
     cycle_cv: 0.04
-    buffer_capacity_after: 8
+    buffer_capacity_after: 4
     sensor_tier: full
     sensors: [humidity_pct, temperature_c, film_thickness_um]
     mtbf_hours: 1800
@@ -273,14 +280,14 @@ stations:
   - id: 19
     name: "Battery/Drivetrain Mount"
     zone: final
-    nominal_cycle_s: 55.0            # x1.40 EV = 77.0s -> EV-HEAVY-DAY CONSTRAINT
+    nominal_cycle_s: 55.0            # x1.50 EV = 82.5s -> EV-HEAVY-DAY CONSTRAINT
     cycle_cv: 0.09
     buffer_capacity_after: 3
     sensor_tier: full
     sensors: [torque_nm, vibration_mm_s]
     mtbf_hours: 680
     repair_time_s: 860
-    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.40}
+    variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.50}
 
   - id: 20
     name: "Powertrain Coupling"
@@ -486,8 +493,8 @@ defect_physics:
     weight: 0.35
     contributing_station: 15
     trigger: unblock_burst                   # ADR-026: NOT the blocked state itself
-    unblock_min_blocked_s: 60.0
-    rush_units_after_unblock: [3, 5]
+    unblock_min_blocked_s: 52.0
+    rush_units_after_unblock: [4, 7]
     checklist_rush_threshold_s: 25.0
     checklist_nominal_s: 45.0
 
