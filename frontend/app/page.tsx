@@ -29,6 +29,14 @@ const PERSONAS = [
     body: "Value derived from measured recall, the alarm-budget trade-off, and where the next sensor dollar pays back.",
     accent: "text-signal-purple border-signal-purple/40",
   },
+  {
+    href: "/ops",
+    icon: "◉",
+    title: "OPERATIONS",
+    tag: "SYSTEM",
+    body: "Model health, drift detection, ingestion lag, and infra status -- keeping the twin itself honest, not the line.",
+    accent: "text-signal-amber border-signal-amber/40",
+  },
 ];
 
 export default function Landing() {
@@ -40,7 +48,12 @@ export default function Landing() {
   return (
     <main className="min-h-screen font-mono px-6 py-12 max-w-6xl mx-auto">
       <div className="mb-14">
-        <div className="text-signal-blue tracking-[0.3em] text-xs mb-3">PULSETWIN</div>
+        <div className="flex items-baseline justify-between mb-3">
+          <div className="text-signal-blue tracking-[0.3em] text-xs">PULSETWIN</div>
+          <Link href="/login" className="text-[11px] text-txt-muted hover:text-txt-primary">
+            Login / Role →
+          </Link>
+        </div>
         <h1 className="text-4xl font-semibold mb-3 tracking-tight">
           The constraint moved.<br />
           <span className="text-txt-muted">No single station metric would have told you.</span>
@@ -54,7 +67,7 @@ export default function Landing() {
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3 mb-12">
+      <div className="grid gap-4 md:grid-cols-4 mb-12">
         {PERSONAS.map((p) => (
           <Link key={p.href} href={p.href}
                 className={`block border rounded p-5 bg-bg-card hover:bg-bg-surface transition-colors ${p.accent}`}>

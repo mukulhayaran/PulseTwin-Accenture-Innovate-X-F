@@ -1,10 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   Containment, StationCfg, StreamEvent, UnitDetail, Zone,
-  getContainment, getStations, getUnit, postFeedback, streamUrl,
+  acknowledgeAlert, getContainment, getEscalationPolicy, getRole, getStations,
+  getSystemHealth, getUnit, postFeedback, setRole, streamUrl,
 } from "@/lib/api";
+import OfflineBanner from "@/components/shared/OfflineBanner";
+import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
+import SensorDropoutAlert from "@/components/supervisor/SensorDropoutAlert";
+import EscalationChain from "@/components/supervisor/EscalationChain";
+import { useAuditToast } from "@/components/shared/AuditToast";
 
 const STATE_COLOR: Record<string, string> = {
   working: "bg-signal-green/80 border-signal-green",
@@ -34,6 +41,40 @@ export default function SupervisorPage() {
   const [selected, setSelected] = useState<UnitDetail | null>(null);
   const [containment, setContainment] = useState<Containment | null>(null);
   const [voted, setVoted] = useState<Record<string, string>>({});
+  const [lastKnownAt, setLastKnownAt] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const [dropouts, setDropouts] = useState<
+    { station_id: number; sensor: string; since: string; duration_s: number }[]
+  >([]);
+  const [escalation, setEscalation] = useState<any>(null);
+  const [acked, setAcked] = useState<Record<string, string>>({});
+  const { show, ToastElement } = useAuditToast();
+
+  useEffect(() => { getEscalationPolicy().then(setEscalation).catch(() => setEscalation(null)); }, []);
+
+  const acknowledge = async (unitId: string) => {
+    const r = await acknowledgeAlert(unitId, plant);
+    setAcked((a) => ({ ...a, [unitId]: r.acknowledged_at }));
+    show("Action logged");
+  };
+
+  // Identifies this view to the backend RBAC (serve/middleware/auth.py) instead of
+  // relying on lib/api.ts's global "leadership" default.
+  useEffect(() => { setRole("supervisor"); }, []);
+
+  // System health -- real infra state, not simulated -- polled independently of the
+  // replay clock so a dropout is visible even if the stream itself is paused.
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => {
+      getSystemHealth(plant)
+        .then((r) => { if (!cancelled) setDropouts(r.ingestion?.dropout_details ?? []); })
+        .catch(() => { /* transient health-endpoint failure must not crash the page */ });
+    };
+    poll();
+    const id = setInterval(poll, 10_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [plant]);
 
   // SSE at 50x delivers ~1,400 events/sec. One setState per event locks the browser at
   // exactly the moment the demo shows off speed control, so events are buffered and
@@ -68,6 +109,7 @@ export default function SupervisorPage() {
     if (newAlerts.length) {
       setAlerts((prev) => [...newAlerts.reverse(), ...prev].slice(0, 40));
     }
+    setLastKnownAt(new Date().toISOString());
   }, []);
 
   const push = useCallback((e: StreamEvent) => {
@@ -92,7 +134,10 @@ export default function SupervisorPage() {
       es.addEventListener("alert", (ev) => push(JSON.parse((ev as MessageEvent).data)));
     });
     return () => { cancelled = true; es?.close(); setConnected(false); };
-  }, [plant, speed, push]);
+    // retryNonce has no effect on what the stream does -- it exists so OfflineBanner's
+    // [Retry Now] button (and its auto-retry ticker) can force this effect to re-run and
+    // open a fresh EventSource without duplicating the connection logic above.
+  }, [plant, speed, push, retryNonce]);
 
   const openUnit = async (unitId: string) => {
     const [u, c] = await Promise.all([getUnit(unitId, plant), getContainment(unitId, plant)]);
@@ -102,6 +147,7 @@ export default function SupervisorPage() {
   const vote = async (unitId: string, verdict: string) => {
     setVoted((v) => ({ ...v, [unitId]: verdict }));
     await postFeedback(plant, unitId, verdict);
+    show("Action logged");
   };
 
   const budgetColor =
@@ -113,6 +159,11 @@ export default function SupervisorPage() {
 
   return (
     <div className="min-h-screen bg-bg-primary text-txt-primary font-mono text-[13px]">
+      <OfflineBanner
+        connected={connected}
+        lastKnownAt={lastKnownAt}
+        onRetry={() => setRetryNonce((n) => n + 1)}
+      />
       {/* ------------------------------------------------------------- top bar */}
       <header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-bg-surface px-4 py-2">
         <div className="font-semibold tracking-wide text-signal-blue">PULSETWIN</div>
@@ -174,6 +225,15 @@ export default function SupervisorPage() {
             />
             <span className="text-txt-muted">{connected ? "SSE LIVE" : "RECONNECTING"}</span>
           </div>
+          <StaleDataIndicator timestamp={lastKnownAt} />
+          <nav className="flex items-center gap-3 text-[11px] border-l border-bg-surface pl-4">
+            <Link href="/manager" className="text-txt-muted hover:text-txt-primary">manager</Link>
+            <Link href="/leadership" className="text-txt-muted hover:text-txt-primary">leadership</Link>
+            <Link href="/ops" className="text-txt-muted hover:text-txt-primary">ops</Link>
+            <span className="text-txt-muted">
+              Role: <span className="text-signal-green">{getRole()}</span>
+            </span>
+          </nav>
         </div>
       </header>
 
@@ -203,13 +263,19 @@ export default function SupervisorPage() {
                       .map((s) => {
                         const l = live[s.station_id];
                         const manual = s.sensor_tier === "manual";
+                        const dropout = dropouts.find((d) => d.station_id === s.station_id);
                         return (
                           <button
                             key={s.station_id}
                             onClick={() => l?.unit_id && openUnit(l.unit_id)}
-                            title={`${s.station_name}${manual ? " — MANUAL, no continuous sensors" : ""}`}
+                            title={
+                              `${s.station_name}` +
+                              (manual ? " — MANUAL, no continuous sensors" : "") +
+                              (dropout ? ` — ${dropout.sensor} sensor offline since ${dropout.since}` : "")
+                            }
                             className={`relative w-[70px] h-[54px] rounded border text-left px-1.5 py-1
-                              transition-colors ${STATE_COLOR[l?.state ?? "idle"] ?? STATE_COLOR.idle}`}
+                              transition-colors ${STATE_COLOR[l?.state ?? "idle"] ?? STATE_COLOR.idle}
+                              ${dropout ? "border-2 border-signal-amber animate-pulse" : ""}`}
                             style={
                               manual
                                 ? {
@@ -242,6 +308,8 @@ export default function SupervisorPage() {
             </div>
           </div>
 
+          <SensorDropoutAlert dropouts={dropouts} />
+
           {/* ------------------------------------------------- unit tracker */}
           {selected && (
             <div className="bg-bg-card border border-bg-surface rounded p-3">
@@ -269,7 +337,7 @@ export default function SupervisorPage() {
               </div>
 
               <div className="text-[11px] text-txt-muted mb-1">JOURNEY</div>
-              <div className="flex flex-wrap gap-1">
+              <div className="flex flex-wrap gap-1 mb-3">
                 {selected.journey.map((j) => (
                   <span key={j.station_id}
                         className="px-1.5 py-0.5 rounded bg-bg-surface text-[10px]">
@@ -277,6 +345,22 @@ export default function SupervisorPage() {
                   </span>
                 ))}
               </div>
+
+              {selected.alert_fired ? (
+                <div className="border-t border-bg-surface pt-2">
+                  <div className="text-[11px] text-txt-muted mb-1.5">ESCALATION</div>
+                  <EscalationChain levels={escalation?.levels ?? []} currentLevel={1} />
+                  <button
+                    onClick={() => acknowledge(selected.unit_id)}
+                    disabled={!!acked[selected.unit_id]}
+                    className="mt-2 text-[10px] px-2 py-1 rounded border border-signal-blue/50 text-signal-blue hover:bg-signal-blue/10 disabled:opacity-40 disabled:hover:bg-transparent"
+                  >
+                    {acked[selected.unit_id]
+                      ? `Acknowledged ${acked[selected.unit_id].slice(11, 19)}`
+                      : "Acknowledge"}
+                  </button>
+                </div>
+              ) : null}
             </div>
           )}
 
@@ -367,6 +451,7 @@ export default function SupervisorPage() {
           </div>
         </section>
       </div>
+      {ToastElement}
     </div>
   );
 }

@@ -77,6 +77,28 @@ export interface Metrics {
 
 let cachedBase: string | null = null;
 
+// ------------------------------------------------------------------------------ role
+//
+// Finals brief Phase F4: a lightweight RBAC header, not full OAuth (docs/SECURITY.md has
+// the OIDC upgrade path). Kept in-memory only -- CLAUDE.md's "no localStorage/
+// sessionStorage in React components" rule extends here, so the role resets to its
+// per-view default on reload rather than persisting client-side.
+//
+// Default is "leadership": every existing view's calls (built before this header
+// existed) must keep working without each one explicitly setting a role, and leadership
+// sits at the top of the read hierarchy (supervisor < manager < leadership < system) --
+// see serve/middleware/auth.py. The navbar role selector (RoleGate.tsx /
+// SystemStatusBar.tsx) lets a demo deliberately DROP to "supervisor" to show the 403 a
+// real floor-level credential would get on a leadership-only endpoint.
+export type Role = "supervisor" | "manager" | "leadership" | "system";
+let currentRole: Role = "leadership";
+export function setRole(role: Role): void { currentRole = role; }
+export function getRole(): Role { return currentRole; }
+
+function authHeaders(): Record<string, string> {
+  return { "X-PulseTwin-Role": currentRole };
+}
+
 // Runtime config, not build-time (ADR-028). Repointing the UI at a different backend
 // must not require rebuilding a static export ten minutes before a demo.
 export async function apiBase(): Promise<string> {
@@ -94,7 +116,7 @@ export async function apiBase(): Promise<string> {
 
 async function get<T>(path: string): Promise<T> {
   const base = await apiBase();
-  const r = await fetch(`${base}${path}`);
+  const r = await fetch(`${base}${path}`, { headers: authHeaders() });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
   return r.json() as Promise<T>;
 }
@@ -118,7 +140,7 @@ export async function postFeedback(plant: string, unitId: string, verdict: strin
   const base = await apiBase();
   await fetch(`${base}/api/feedback`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ plant_id: plant, unit_id: unitId, verdict }),
   });
 }
@@ -127,3 +149,79 @@ export async function streamUrl(plant: string, speed: number): Promise<string> {
   const base = await apiBase();
   return `${base}/api/stream?plant_id=${plant}&speed=${speed}`;
 }
+
+// ---------------------------------------------------------------- manager / leadership
+
+export const getWhatIfStations = (plant: string) =>
+  get<{ station_id: number; station_name: string; sensor_tier: string }[]>(
+    `/api/whatif/stations?plant_id=${plant}`
+  );
+
+export const getInstrumentationPlan = (plant: string) =>
+  get<any>(`/api/economics/instrumentation-plan?plant_id=${plant}`);
+
+export async function getWhatIf(
+  plant: string, stationId: number, bufferDelta: number, cycleDeltaPct: number
+) {
+  const base = await apiBase();
+  const r = await fetch(`${base}/api/whatif`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({
+      plant_id: plant, station_id: stationId,
+      buffer_delta: bufferDelta, cycle_delta_pct: cycleDeltaPct,
+    }),
+  });
+  if (!r.ok) throw new Error(`whatif -> ${r.status}`);
+  return r.json();
+}
+
+// ------------------------------------------------------------------------ ops (F6)
+
+export const getModelHealth = (plant: string) => get<any>(`/api/model/health?plant_id=${plant}`);
+export const getSystemHealth = (plant: string) => get<any>(`/api/system/health?plant_id=${plant}`);
+export const getIngestionLag = (plant: string) =>
+  get<any>(`/api/system/ingestion-lag?plant_id=${plant}`);
+export const getAuditLog = (params: {
+  role?: string; action?: string; from?: string; to?: string; limit?: number;
+} = {}) => {
+  const q = new URLSearchParams(params as Record<string, string>).toString();
+  return get<{ entries: any[]; count: number }>(`/api/audit/log${q ? `?${q}` : ""}`);
+};
+export const getAuditActions = () => get<{ actions: string[] }>("/api/audit/actions");
+
+// ----------------------------------------------------------------- alerts / escalation
+
+export const getEscalationPolicy = () => get<{
+  levels: { level: number; name: string; response_window_min: number | null }[];
+  containment_escalation: { at_risk_threshold: number; skip_to_level: number };
+}>("/api/alerts/escalation-policy");
+
+export const acknowledgeAlert = (unitId: string, plant: string) =>
+  post<{ acknowledged: boolean; unit_id: string; by_role: string; acknowledged_at: string }>(
+    `/api/alerts/${unitId}/acknowledge`, { plant_id: plant }
+  );
+
+// Champion/challenger/retired history for a plant+model type -- backs RetrainingConsole.tsx.
+export const getModelRegistry = (plant: string, modelType = "defect_risk") =>
+  get<any>(`/api/model/registry?plant_id=${plant}&model_type=${modelType}`);
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const base = await apiBase();
+  const r = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`${path} -> ${r.status}`);
+  return r.json() as Promise<T>;
+}
+
+export const triggerRetrain = (plant: string) =>
+  post<{ job_id: string; status: string }>("/api/admin/trigger-retrain", { plant_id: plant });
+export const getRetrainStatus = (jobId: string) =>
+  get<any>(`/api/admin/retrain-status/${jobId}`);
+export const promoteModel = (modelId: string) =>
+  post<any>("/api/admin/promote-model", { model_id: modelId });
+export const rollbackModel = (plant: string, modelType = "defect_risk") =>
+  post<any>("/api/admin/rollback-model", { plant_id: plant, model_type: modelType });
