@@ -1,0 +1,67 @@
+# PulseTwin — Deployment configuration
+#
+# The source of truth infrastructure/kubernetes/*.yaml is written FROM. Kept as data
+# rather than duplicated across YAML manifests so "how many replicas does the backend
+# run" has exactly one answer. serve/ never reads this file at runtime (CLAUDE.md SS2 bans
+# `yaml` inside the import wall) -- it is read by infrastructure authoring and by
+# docs/PRODUCTION_ARCHITECTURE.md / docs/SCALING_COST_MODEL.md.
+
+services:
+  backend:
+    replicas:
+      min: 2
+      max: 6
+    resources:
+      requests: { cpu: "250m", memory: "192Mi" }
+      limits: { cpu: "500m", memory: "256Mi" }
+    autoscaling:
+      metric: cpu_utilization
+      target_pct: 70
+      scale_up_stabilization_s: 60
+      scale_down_stabilization_s: 300
+    probes:
+      liveness: { path: /api/health, initial_delay_s: 15, period_s: 10 }
+      readiness: { path: /api/health, initial_delay_s: 5, period_s: 5 }
+
+  ingestion:
+    replicas:
+      min: 1
+      max: 1     # one subscriber per broker connection; scaling this needs MQTT shared
+                 # subscriptions ($share/), tracked as a backlog item, not built for the demo
+    resources:
+      requests: { cpu: "100m", memory: "128Mi" }
+      limits: { cpu: "250m", memory: "256Mi" }
+
+  postgres:
+    replicas: { min: 1, max: 1 }   # single-node for the demo; docs/PRODUCTION_ARCHITECTURE.md
+                                    # calls out managed multi-AZ Postgres (RDS/Cloud SQL) for
+                                    # production, not stood up here
+    resources:
+      requests: { cpu: "500m", memory: "512Mi" }
+      limits: { cpu: "1000m", memory: "1Gi" }
+    storage_gb: 20
+
+  redis:
+    replicas: { min: 1, max: 1 }
+    resources:
+      requests: { cpu: "100m", memory: "64Mi" }
+      limits: { cpu: "250m", memory: "128Mi" }
+
+  mqtt:
+    replicas: { min: 1, max: 1 }
+    resources:
+      requests: { cpu: "100m", memory: "64Mi" }
+      limits: { cpu: "250m", memory: "128Mi" }
+
+network:
+  # docs/PRODUCTION_ARCHITECTURE.md / infrastructure/kubernetes/network-policy.yaml.
+  # ingestion is the ONLY pod allowed to reach both mqtt (OT side) and postgres (IT side).
+  ot_it_bridge_pod: ingestion
+  backend_allowed_egress: [postgres, redis]
+  frontend_allowed_egress: [backend]
+  internet_egress_allowed: false
+
+rollout:
+  strategy: RollingUpdate
+  max_surge: 1
+  max_unavailable: 0

@@ -1,0 +1,65 @@
+# PulseTwin — Data governance policy
+#
+# The source docs/DATA_GOVERNANCE.md is written FROM. Not read by serve/ at runtime
+# (yaml is outside the import wall, CLAUDE.md SS2); retention/anonymisation rules that
+# need runtime enforcement (operator bucketing) are already implemented directly in
+# offline/build_artifact.py (ADR-017) and offline/ml/soft_sensor.py, not re-derived here.
+
+classification:
+  telemetry:
+    level: internal
+    contains_pii: false
+  operator_identity:
+    level: restricted
+    contains_pii: true
+    handling: "Never stored. Hashed into an opaque bucket at the API boundary before it
+               reaches any table (ADR-017) -- there is no restricted-tier TABLE to retain
+               or delete, because the raw identity never lands anywhere in this system."
+  inspection_outcomes:
+    level: internal
+    contains_pii: false
+  economics:
+    level: confidential
+    contains_pii: false
+
+retention:
+  telemetry_raw: { years: 2, source: "IATF 16949 traceability minimum for process records" }
+  station_readings_replay_window: { hours: 48, source: "ADR-008 -- only the demo replay window ships in the artifact; full history lives in the hourly rollup tables, not raw readings" }
+  audit_log: { years: 7, source: "Sarbanes-Oxley-aligned retention commonly applied to manufacturing quality audit trails" }
+  model_artifacts: { retention: indefinite, source: "Needed for regulatory reproducibility of any historical prediction" }
+  drift_metrics: { years: 2, source: "Matches telemetry_raw -- drift is meaningless without the telemetry window it was measured against" }
+
+access_control:
+  # Enforced by serve/middleware/auth.py's require_role(). This table is the policy the
+  # code implements, not a second enforcement point.
+  - table: units
+    read: [supervisor, manager, leadership, system]
+    write: [system]
+  - table: economics
+    read: [leadership, system]
+    write: [system]
+  - table: audit_log
+    read: [leadership, system]
+    write: [system]      # only serve/middleware/audit.py writes to this table
+  - table: model_registry
+    read: [leadership, system]
+    write: [system]
+
+anonymisation:
+  operator_bucketing:
+    method: "sha256(operator_id) mod N, N = configs/plant_*.yaml operators.operator_bucket_count"
+    reversible: false
+    source: "ADR-017"
+
+right_to_deletion:
+  # There is no stored operator identity to delete (see operator_identity.handling above).
+  # This section exists because a real deployment WILL be asked the question, and "there
+  # is nothing to delete" is a claim that needs to be checkable, not assumed.
+  applies_to: []
+  process: "A deletion request would be verified by checking that the requester's raw
+            identifier never appears in any table dump -- it structurally cannot, because
+            offline/build_artifact.py only ever writes the hashed operator_group column."
+
+cross_border:
+  policy: "Plant telemetry and derived tables stay within the plant's own geographic
+           region / cloud region. No cross-region replication of raw telemetry."

@@ -17,6 +17,7 @@ class HealthResponse(BaseModel):
     plants: list[str]
     station_counts: dict[str, int]
     artifact_built_at: str | None = None
+    database: str = "sqlite"
 
 
 class StationConfigResponse(BaseModel):
@@ -83,6 +84,26 @@ class MetricsResponse(BaseModel):
     reliability: list[dict[str, Any]] = Field(default_factory=list)
     alarm_budget_curve: list[dict[str, Any]] = Field(default_factory=list)
     permutation_importance: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WhatIfRequest(BaseModel):
+    plant_id: str = "plant_a"
+    station_id: int
+    buffer_delta: int = Field(default=0, ge=-4, le=8)
+    cycle_delta_pct: float = Field(default=0.0, ge=-20.0, le=20.0)
+
+
+class WhatIfResponse(BaseModel):
+    mode: str
+    # Throughput and WIP interpolate; the bottleneck station is categorical and is
+    # resolved by nearest neighbour. Saying so is the honest part (ADR-007).
+    bottleneck_mode: str
+    grid_resolution: dict[str, Any]
+    baseline: dict[str, Any]
+    projected: dict[str, Any]
+    delta: dict[str, float]
+    annual_value: float
+    assumptions: str
 
 
 class FeedbackRequest(BaseModel):

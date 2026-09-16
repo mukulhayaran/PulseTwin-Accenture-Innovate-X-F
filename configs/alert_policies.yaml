@@ -1,0 +1,57 @@
+# PulseTwin — Alert escalation policy
+#
+# Documents the escalation state machine that serve/routers/alerts_mgmt.py implements.
+# serve/ does NOT parse this file at runtime (yaml is outside the import wall, CLAUDE.md
+# SS2) -- the thresholds below are hardcoded as constants in that router, and this file is
+# the reviewable, editable source an ops team would actually change. Keeping the numbers
+# in both places in sync is covered by tests/test_auth.py's escalation test.
+#
+# Operator privacy (CLAUDE.md SS3): every notification target below is a ROLE or a shift,
+# never a named individual. No roster of real people is stored anywhere in this repo.
+
+escalation:
+  levels:
+    - level: 1
+      name: floor_supervisor
+      trigger: alert_fired
+      response_window_min: 5
+      notify: { role: supervisor, channel: in_app }
+    - level: 2
+      name: shift_manager
+      trigger: unacknowledged_after_level_1_window
+      response_window_min: 15
+      notify: { role: manager, channel: in_app_and_sms }
+    - level: 3
+      name: plant_leadership
+      trigger: unacknowledged_after_level_2_window
+      response_window_min: null   # stays open until acknowledged; no auto-close
+      notify: { role: leadership, channel: in_app_and_email }
+
+  containment_escalation:
+    # A containment sweep (POST /api/trace/containment) that finds 3+ at-risk peer units
+    # is treated as a lot-level event, not a single-unit alert, and skips straight to
+    # level 2 -- waiting 5 minutes on a possible multi-unit lot issue is the wrong default.
+    at_risk_threshold: 3
+    skip_to_level: 2
+
+notification_channels:
+  in_app: { description: "Alert feed + toast in the active dashboard view" }
+  in_app_and_sms: { description: "In-app plus SMS to the on-shift manager's ROLE alias, never a personal number" }
+  in_app_and_email: { description: "In-app plus email to the plant leadership distribution list" }
+
+shifts:
+  # Three 8-hour shifts, matching configs/economics.yaml's `production.shifts_per_day: 3`.
+  - id: A
+    hours: "06:00-14:00"
+  - id: B
+    hours: "14:00-22:00"
+  - id: C
+    hours: "22:00-06:00"
+
+alarm_budget:
+  # Mirrors configs/economics.yaml's alarm_budget (ADR-004); repeated here because the
+  # escalation policy references it directly ("what happens once budget is exhausted").
+  on_budget_exhausted: "Alerts still fire and are logged, but stop pushing SMS/email --
+                         only the in-app feed. Prevents alarm fatigue from becoming a
+                         second, unbounded cost on top of the one already priced in
+                         configs/economics.yaml's supervisor_response_cost_per_alarm."

@@ -3,3 +3,15 @@ uvicorn==0.30.0
 pydantic==2.9.0
 numpy>=2.1
 orjson==3.10.0
+# ADR-033: production I/O drivers, not compute -- see docs/DECISIONS.md
+psycopg[binary,pool]==3.2.3
+prometheus-client==0.21.0
+# 8.1.0, not 7.0.0: 7.0.0's route-name resolution assumes an older FastAPI internal
+# router representation and raises AttributeError ('_IncludedRouter' object has no
+# attribute 'path') against a newer FastAPI/Starlette than this pin -- found by actually
+# wiring Instrumentator().instrument(app) in serve/main.py and running the test suite,
+# not by inspection.
+prometheus-fastapi-instrumentator==8.1.0
+# redis and python-jose are on the import-wall ALLOWLIST (ADR-033) for the documented
+# Redis-backed degraded-read cache and JWT/OIDC upgrade paths (docs/SECURITY.md), but
+# nothing in serve/ imports them yet -- not installed until something does.

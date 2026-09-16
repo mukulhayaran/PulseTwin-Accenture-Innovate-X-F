@@ -22,11 +22,19 @@ SERVE = Path(__file__).resolve().parents[1] / "serve"
 ALLOWED = {
     # third-party, deliberately small
     "fastapi", "uvicorn", "pydantic", "numpy", "orjson",
+    # ADR-033: I/O drivers and bookkeeping, not compute -- Postgres, cache, JWT, metrics.
+    "psycopg", "psycopg_pool", "redis", "jose", "prometheus_client",
+    "prometheus_fastapi_instrumentator",
+    # ADR-036: starlette is fastapi's own ASGI base (BaseHTTPMiddleware has no fastapi
+    # wrapper) -- a direct import, not the transitive graph this test deliberately avoids
+    # walking. subprocess spawns the retrain job as a detached process rather than hosting
+    # mlops/ in serve/ -- process management, not compute.
+    "starlette", "subprocess",
     # stdlib
     "sqlite3", "json", "math", "pathlib", "os", "sys", "time", "asyncio", "typing",
     "datetime", "contextlib", "dataclasses", "logging", "re", "collections", "functools",
     "itertools", "hashlib", "enum", "csv", "io", "tempfile", "threading", "secrets",
-    "__future__",
+    "decimal", "__future__",
     # first-party
     "serve",
 }

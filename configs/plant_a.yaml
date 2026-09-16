@@ -259,6 +259,7 @@ stations:
     repair_time_s: 740
     variant_multipliers: {sedan: 1.00, suv: 1.05, ev: 1.00}
     defect_role: mode_a_contributor
+    soft_sensor_validation: true    # paint zone: ambient-driven signals, the EASY family
 
   - id: 18
     name: "Cure Oven"
