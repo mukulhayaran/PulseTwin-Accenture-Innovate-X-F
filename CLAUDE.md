@@ -1,7 +1,21 @@
 # PulseTwin — Digital Twin for Vehicle Assembly Line
 
 Hackathon Round 2 prototype. Mixed-model vehicle assembly line digital twin.
-**Deadline is tight — read `docs/STATE.md` before doing anything else.**
+
+**STATUS: feature-complete.** All ten phases of the original brief are built — simulator,
+ML pipeline, artifacts, API, and all three persona views. Read `docs/STATE.md` for the
+ledger and `docs/AUDIT.md` for why the build deviates from `pulsetwin_final_prompt.md`.
+
+**Before changing anything, know these three:**
+1. **Do not tune the model to raise PR-AUC.** 0.256 is 53% of a *measured* oracle ceiling
+   of 0.481. The brief's 0.75–0.88 band is arithmetically unreachable given its own
+   requirement of unobservable causes (`docs/AUDIT.md` §B34). The oracle framing is the
+   stronger claim.
+2. **Negative results stay published.** Soft sensors reconstruct ambient-driven signals
+   (R² ≈ 0.99) and not tool-wear-driven ones (R² ≈ 0). Three of four retrofit candidates
+   score zero uplift. Both are findings, not gaps — see ADR-030, ADR-031.
+3. **Bottleneck accuracy must never read 100%.** If it does, ground truth has collapsed
+   back onto the detector. They use deliberately different windows (ADR-029).
 
 ---
 
@@ -37,14 +51,22 @@ Hackathon Round 2 prototype. Mixed-model vehicle assembly line digital twin.
 
 ```
 fastapi  uvicorn  pydantic  numpy  orjson
+psycopg  psycopg_pool  redis  jose  prometheus_client  prometheus_fastapi_instrumentator
+starlette  subprocess
 sqlite3  json  math  pathlib  os  sys  time  asyncio  typing  datetime
 contextlib  dataclasses  logging  re  collections  functools  itertools
-hashlib  enum  csv  io
+hashlib  enum  csv  io  tempfile  threading  secrets  decimal
 ```
 
 Nothing else. Never `pandas`, `sklearn`, `xgboost`, `shap`, `simpy`, `scipy`, `psutil`.
 Enforced by `tests/test_serve_imports.py`, which checks **first-party imports only** —
 it must not walk fastapi's transitive graph (starlette/anyio) or it fails instantly.
+
+`psycopg`/`redis`/`jose`/`prometheus_*` are I/O drivers and bookkeeping, not compute — see
+ADR-033 for why they don't violate the wall. `paho-mqtt` is used only by `ingestion/`,
+a separate deployable that never imports into `serve/`. `starlette` is fastapi's own ASGI
+middleware base (a direct import, not transitive graph-walking); `subprocess` launches the
+retrain job as a detached process instead of hosting `mlops/` in `serve/` — see ADR-036.
 
 Heavy libraries live in `offline/` and never ship in the runtime image.
 **Precompute heavy, serve thin.**

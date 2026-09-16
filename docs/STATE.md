@@ -5,20 +5,112 @@
 
 ---
 
-## Clock
+## Clock — Round 2 CLOSED, Finals upgrade IN PROGRESS
 
 | | |
 |---|---|
 | Bootstrap session | 2026-08-31 |
-| Budget | **Under 24 hours** |
-| Deadline (fill in) | `___1 september 2026_________________` |
-| Tier 0 must close by | **T-14h** |
-| Tier 1 must close by | **T-6h** |
-| T-3h onward | Freeze code. Docs, demo rehearsal, screenshots only. |
+| Round 2 build closed | 2026-09-02 |
+| Original budget | Under 24 hours, deadline 1 September 2026 |
+| Finals upgrade (`pulsetwin_final_prompt.md` §Finals, phases F1-F8) | started, then stalled mid-build; resumed and closed out 2026-09-16 |
 
-**The ladder is authoritative.** When the clock and the spec disagree, the clock wins —
-drop to the next tier rather than half-finishing the current one. A working Supervisor view
-with three cut features beats five half-built views.
+**Everything on the Round 2 ladder was built — Tier 0, Tier 1 and Tier 2.** Nothing from
+the original brief was cut. The de-scope ladder below is kept as the historical record of
+how that work was ordered, not as an outstanding plan.
+
+The ladder did its job: it forced the Supervisor view and the honest-metrics work ahead of
+the what-if console and the instrumentation planner, so the parts a judge grades hardest
+were finished first and the optional ones landed on top rather than instead.
+
+---
+
+## Finals upgrade — Phases F1-F8
+
+The finals brief (real-time ingestion, MLOps lifecycle, RBAC/audit, graceful degradation,
+a 4th Ops persona, K8s/Terraform, and eight new docs) was substantially built in an
+earlier session but left in an inconsistent state: most backend and infrastructure work
+existed, but 4 tests were red, Prometheus metrics were never wired despite the
+dependencies being installed, `frontend/app/ops/page.tsx` did not exist at all despite 4
+of its 7 components being built, and several of the finished pages had shared components
+(`OfflineBanner`, `SensorDropoutAlert`) imported but never rendered. This session's job
+was auditing what was actually there (by reading source, not trusting import lines) and
+closing every gap found.
+
+| Phase | What shipped | Evidence |
+|---|---|---|
+| F1 Postgres | `migrations/001-004`, `serve/db_postgres.py`, `offline/load_to_postgres.py`, SQLite fallback for local dev | ADR-034 (a real FK bug the migration caught); `tests/test_api.py` passes against the SQLite path |
+| F2 Ingestion | `ingestion/` — unified namespace, MQTT publisher with fault injection (dropout/late-arrival/duplicate/corrupt) and a live `control/dropout` topic for demo use, subscriber with dedup + reordering, per-station data-quality scoring | `tests/test_ingestion.py` (fixed a completeness-scoring bug this session — see below) |
+| F3 MLOps | `mlops/` — PSI + calibration + coverage drift detection, champion-challenger retrainer, model registry, SPC fallback | ADR-035 (published the textbook Nelson-rule fallback's real, poor shadow performance rather than a nicer invented number) |
+| F4 Auth/RBAC/audit | `serve/middleware/auth.py` (role hierarchy), `audit.py` (every mutating action logged), `rate_limit.py`; frontend `RoleGate`, per-page role badges, and (new this session) an actual interactive role selector on `/ops` | `tests/test_auth.py`, `tests/test_audit.py` |
+| F5 Graceful degradation | Backend: SPC fallback on a broken model file, Prometheus metrics (**wired this session** — `serve/metrics.py`, previously just an unused dependency), Grafana dashboard + Prometheus/Alertmanager configs (**written this session**, none previously existed). Frontend: `OfflineBanner`/`StaleDataIndicator`/`SensorDropoutAlert` **connected to live JSX this session** on `/supervisor` (they existed as dead imports before), and added to `/manager`, `/leadership`, `/ops` | `tests/test_graceful_degradation.py`, `tests/test_sensor_dropout.py` (fixed a test-fixture bug and a real "latest row" ordering bug this session — see below) |
+| F6 Ops view | `frontend/app/ops/page.tsx` **did not exist before this session** despite 4 of its 7 components already being built. Built the page plus the 3 missing components (`SensorHealthGrid`, `AuditLogViewer`, `RetrainingConsole`) | manual review; `npx tsc --noEmit` clean across the whole frontend |
+| F7 K8s + Terraform | `infrastructure/kubernetes/*.yaml` (namespace, deployments, HPA, OT/IT network policy) already existed and is thorough. `infrastructure/terraform/main.tf` and `infrastructure/monitoring/{prometheus.yml,alertmanager.yml,grafana-dashboards/pulsetwin-overview.json}` **did not exist; written this session** | file review; YAML/JSON parse-validated |
+| F8 Docs | All eight — `PRODUCTION_ARCHITECTURE.md`, `SECURITY.md`, `MLOPS_LIFECYCLE.md`, `DATA_GOVERNANCE.md`, `CHANGE_MANAGEMENT.md`, `SCALING_COST_MODEL.md`, `INCIDENT_RUNBOOK.md`, `FINALS_DEMO_SCRIPT.md` — **did not exist; written this session**, sourced against real ADRs/configs, not invented figures | this ledger |
+
+### Real bugs found and fixed while closing out the finals upgrade
+
+16. **`DataQualityTracker.score()` under-counted completeness for a station that hadn't
+    been running for a full window yet**, scoring a perfectly healthy 20-reading stream
+    at 86.7% instead of ~100% because it divided by a hypothetical full-`window_s` count
+    rather than the count expected over the span actually observed. Fixed to measure
+    expected count against `events[-1] - events[0]`, which converges to the original
+    intent once the window is genuinely full. Caught by `tests/test_ingestion.py`.
+17. **`test_sensor_dropout.py` corrupted its own fixture.** Two of its four tests opened a
+    second, ad-hoc `TestClient(app)` instead of reusing the module-scoped one — re-entering
+    `serve.main`'s lifespan on the same process-global `STATE` and closing
+    `app.state.ops` out from under the next test, which then hit
+    `sqlite3.ProgrammingError: Cannot operate on a closed database`. Fixed by routing
+    every test through the shared fixture, matching every other test module's convention.
+18. **`sensor_health`'s "latest row per (station, sensor)" query ordered by `timestamp`
+    alone**, which only has millisecond resolution — two status transitions for the same
+    sensor landing in the same millisecond (exactly what a fast test, or a real burst of
+    ingestion events, produces) picked the wrong "latest" row via SQLite's undefined tie-
+    break order. Fixed to order by `id` (strictly monotonic on insert) instead.
+19. **Prometheus metrics were never wired**, despite `prometheus-client` and
+    `prometheus-fastapi-instrumentator` being installed specifically for this (ADR-033)
+    and the finals brief listing seven named series. `serve/metrics.py` now defines them;
+    `serve/main.py`, `system.py`, and `model_health.py` update them at the actual call
+    sites (`Instrumentator().instrument(app).expose(app)` adds the generic HTTP series
+    alongside).
+20. **Two import-wall gaps**: `serve/middleware/rate_limit.py` needs `starlette` (fastapi
+    has no ASGI middleware base of its own) and `serve/routers/admin.py` needs
+    `subprocess` (to spawn the retrain job as a detached process rather than importing
+    `mlops` into `serve/`). Both are legitimate, both are now ADR-036, both are in
+    `tests/test_serve_imports.py`'s `ALLOWED` set.
+21. **`frontend/app/supervisor/page.tsx` imported `OfflineBanner` and
+    `SensorDropoutAlert` and declared their backing state, but never rendered either
+    component**, and `lastKnownAt` was never set. The dropout-polling `useEffect` was
+    real; only the JSX to show it was missing. Now both render, `lastKnownAt` updates on
+    every stream event, and a `retryNonce` state re-opens the SSE connection so
+    `OfflineBanner`'s [Retry Now] button actually does something.
+22. **`serve/Dockerfile` never copied `migrations/`**, even though
+    `migrations/migrate.py`'s own docstring says the `migrate` service in
+    `docker-compose.prod.yml` runs on that exact image with its `CMD` overridden — that
+    service would have built successfully and then crashed at container start with
+    `ModuleNotFoundError`. Added `COPY migrations/ ./migrations/`.
+23. **Wiring `Instrumentator().instrument(app)` (new this session) crashed almost every
+    endpoint** with `AttributeError: '_IncludedRouter' object has no attribute 'path'` —
+    this dev environment's ambient FastAPI (0.139.0) is newer than
+    `prometheus-fastapi-instrumentator==7.0.0` (pinned in `serve/requirements.txt`)
+    understands internally. Bumped the pin to `8.1.0`, which resolves cleanly against a
+    modern FastAPI/Starlette (`pip check` clean) and fixed every affected test.
+24. **My own `from serve import metrics` collided with `serve/main.py`'s pre-existing
+    `def metrics(...)` — the `GET /api/metrics` endpoint function**, both bound to the
+    same module-scope name, and the later definition silently won, so every
+    `metrics.predictions_total`-style call raised `AttributeError: 'function' object has
+    no attribute 'predictions_total'`. Imported as `from serve import metrics as
+    prom_metrics` instead.
+
+**All 4 originally-failing tests, all tests broken while wiring Prometheus metrics, and
+the full 226-test suite pass as of this session's close** (`OMP_NUM_THREADS=1 pytest
+tests/ -q` → `226 passed`).
+
+**Not verified this session:** `docker compose -f docker-compose.prod.yml up --build`
+end-to-end. The Docker CLI is present in this sandbox but has no daemon behind it (no
+`Docker Desktop.exe` process, no `com.docker.service`) — `docker compose up` fails
+immediately with a named-pipe connection error, before any image even builds. Every
+manifest and Dockerfile was reviewed by hand instead (catching bug #22 above); an actual
+`up` run needs a machine with a working Docker daemon.
 
 ---
 
@@ -100,14 +192,53 @@ first run. `docs/SPEC.md` and ADR-002 both amended.
    values (proper Saabas).
 8. **PR-AUC band unreachable** — see AUDIT B34. Now measured against an oracle ceiling.
 
-### Still open (Tier 2, cut per the ladder)
+**Phase 9 + remaining Tier 2 — COMPLETE** (2026-09-01)
 
-- Manager and Leadership **views** (their APIs exist and are tested: `/api/bottleneck/*`,
-  `/api/stations/stats`, `/api/economics/roi`, `/api/metrics`)
-- What-if grid (ADR-007)
-- Instrumentation planner
-- Docker Compose (Dockerfile written; `uvicorn` + `next dev` demos identically)
-- `BUSINESS_PROPOSAL.md`
+| Item | Evidence |
+|---|---|
+| Manager view | Constraint migration, league table, root-cause Pareto, what-if console |
+| Leadership view | Value bridge, threshold trade-off, instrumentation planner, rollout, metrics panel |
+| What-if grid (ADR-007) | 90 scenarios/plant, one 8h shift each, peak variant mix |
+| Instrumentation planner | Ranked by measured value per dollar, with method stated |
+| Bottleneck forecasting | Skill vs persistence +0.136 (A) / +0.205 (B) |
+| Soft sensors + masked validation | The ambient vs tool-wear contrast, published both ways |
+| Docker Compose + frontend Dockerfile | `make demo` |
+| `BUSINESS_PROPOSAL.md` | 3-year case, risks, roadmap |
+| `tests/test_api.py` | Every endpoint against real artifacts |
+
+**Nothing from the original brief remains unbuilt.**
+
+### Additional bugs found in this phase
+
+9.  **What-if grid omitted the EV bottleneck.** Seeded from the single most frequent
+    constraint (S12), so the grid covered S9-S14 and excluded S19 entirely -- the one
+    station a manager would most want to tune. Now seeded from BOTH constraints.
+10. **What-if window never reached steady state.** A 4-hour run reported 57.5 UPH (above
+    the 55 target, impossible in steady state) and named S3 as the constraint, because
+    buffers had not filled. Extended to one full 8-hour shift.
+11. **What-if ran on the wrong variant mix.** The simulator starts on a Monday, so short
+    runs used the NORMAL mix and S19 never bound -- making every change at S19 look
+    worthless. The grid now forces the peak mix, which is the condition being tuned for.
+12. **What-if buffer slider did nothing.** Every delta at S19 returned an identical
+    52.707 UPH. The mutation was applied correctly -- it changed the station's OUTPUT
+    buffer, which is irrelevant because a bottleneck is never blocked by what follows it.
+    Now applied to the FEED buffer upstream, which shows a real optimum at +4 slots
+    (52.7 -> 54.1 UPH) and a constraint migration to S12.
+13. **Constraint detection was fill-biased.** Cumulative active time over a whole short
+    window favours upstream stations, which have seen more units while the line fills --
+    plant B reported S2 on a 42-station line. Now scored on the second half only.
+14. **`achieved_uph` was wrong by a factor of 25, silently.** plant_meta reported
+    **2.1 UPH** for a line running at 53.8. The computation divided the unit count -- by
+    then trimmed to the replay window (ADR-032) -- by the FULL 28-day horizon. Nothing
+    failed: the number flowed straight into `/api/economics/roi`, where
+    `units_per_year = achieved_uph x 8 x 3 x 250`, and understated the entire business
+    case. Found by eyeballing plant_meta after a rebuild, not by any test -- so a
+    regression test now asserts achieved throughput lands within 80-105% of target.
+15. **Soft sensor reported R2 = -0.30.** Not a bug in the end, but the diagnosis mattered:
+    tool-wear signals are genuinely unrecoverable (neighbour correlation 0.06), while
+    ambient signals reach R2 0.99. Added a paint station to the masked set so the contrast
+    is measured, and reduced regressor capacity so an absent signal reports ~0 rather than
+    a misleading negative.
 
 ---
 
@@ -251,4 +382,15 @@ knowing whether we are ahead or behind.
 2026-08-31  Phase 1  Configs complete. plant_a (30 stn) + plant_b (42 stn) + economics.
                      43 tests pass. Bottleneck shift verified on BOTH plants.
                      Caught + fixed: S19 58s->55s (58s deleted the Tuesday scenario).
+2026-09-16  Finals   F1-F8 closed out. Audited a stalled prior session (mostly-built
+                     backend/infra, but 4 red tests, dead Prometheus deps, and
+                     frontend/app/ops/page.tsx missing entirely). Fixed 4 pre-existing
+                     test failures + 3 introduced while wiring Prometheus metrics; built
+                     the Ops view (3 missing components + the page); wired
+                     OfflineBanner/SensorDropoutAlert/RoleGate/AuditToast/EscalationChain,
+                     which existed but were never rendered on /supervisor and were absent
+                     from /manager, /leadership; wrote terraform/main.tf +
+                     monitoring configs + all 8 finals docs (none existed). 226/226 tests
+                     pass. Docker daemon unavailable in this sandbox -- compose stack
+                     reviewed by hand, not run end to end (see bugs 16-24 above).
 ```

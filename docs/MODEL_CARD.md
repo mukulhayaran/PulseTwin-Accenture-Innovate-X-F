@@ -85,6 +85,43 @@ training sample counts (the Saabas decomposition). Contributions sum to
 orderings, so correlated features share credit by tree structure rather than symmetrically.
 Naming it accurately matters more than sounding sophisticated.
 
+## Soft sensors — the measured contrast
+
+Masked-station validation on plant A. Stations that ARE instrumented have their sensors
+hidden, are reconstructed from neighbours and checklist proxies alone, and scored against
+the withheld truth.
+
+| Station | Signal | R² | Family |
+|---|---|---|---|
+| S17 | humidity_pct | **+0.996** | ambient-driven |
+| S17 | temperature_c | **+0.989** | ambient-driven |
+| S17 | film_thickness_um | **+0.965** | ambient-driven |
+| S21 | torque_nm | −0.067 | tool-wear-driven |
+| S9 | vibration_mm_s | −0.223 | tool-wear-driven |
+| S21 | vibration_mm_s | −0.260 | tool-wear-driven |
+| S9 | torque_nm | −0.549 | tool-wear-driven |
+
+**The answer depends entirely on the physics driving the signal, and this is the useful
+finding.** Ambient-driven signals are shared across neighbouring stations — S17's
+temperature correlates 0.98 with S18's — so they reconstruct almost perfectly. Tool wear
+is an independent random walk per station, so a neighbour carries almost nothing: S21's
+torque correlates 0.06 with S19's. **No model can recover a signal that is not there**,
+and a negative R² is the honest report of that.
+
+This directly drives the instrumentation planner: it says which retrofits are unnecessary
+(the value is inferable) and which are unavoidable (genuinely unobservable).
+
+**Ablation.** Removing all evidence from the unsensored stations costs **+0.060 PR-AUC**
+on plant A (0.256 → 0.196), a 23% relative drop. So the legacy stations do matter — but
+the value is in the operator checklist record, not in reconstructed continuous signals.
+
+## Bottleneck forecasting
+
+15-minute-ahead forecast of each station's active share, ridge regression on lagged
+values, temporal split. **Skill vs persistence: +0.136 (plant A), +0.205 (plant B)** —
+the model beats "assume nothing changes", modestly. Reported either way; a forecast that
+cannot beat persistence has no business shipping.
+
 ## Known failure modes
 
 - **Latent paint-batch quality is unobservable.** Mode A can only ever be partially
