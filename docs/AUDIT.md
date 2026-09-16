@@ -3,6 +3,11 @@
 **Subject:** `pulsetwin_final_prompt.md` (1,479 lines)
 **Date:** 2026-08-31
 **Findings:** 31 — 6 blockers, 6 high, 9 medium, 10 low/process
+**Plus B34**, added during Phase 5 once the model had actually been trained: the PR-AUC
+target band is arithmetically incompatible with the brief's own requirement of
+unobservable causes. It is numbered out of sequence because it was found by measurement
+rather than by reading the spec, and it is the single most-cited finding in this repo —
+see the section at the end of this file.
 
 The spec is genuinely good in its bones: the Tuesday Problem is a well-constructed causal scenario, the precompute-heavy/serve-thin split is the right architecture, and the "honest difficulty" instinct (cap PR-AUC, admit negative ablations) is exactly what wins a credibility-driven rubric.
 

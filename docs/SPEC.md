@@ -4,6 +4,15 @@
 **this file wins**. Every deviation is justified in `docs/DECISIONS.md` (ADR numbers are
 cited inline). The original prompt remains unmodified as the historical brief.
 
+> **Scope: Round 2 only.** This spec covers the simulator, ML pipeline, artifacts, API and
+> the three original persona views — all of it built and shipped. The **finals upgrade**
+> (PostgreSQL, MQTT ingestion, MLOps, RBAC/audit, graceful degradation, the Ops view,
+> K8s/Terraform) was specified directly by the finals section of
+> `pulsetwin_final_prompt.md` and did not need a corrected re-spec, because it contains
+> none of the self-contradictions this file exists to resolve. Its design decisions live
+> in ADR-033 through ADR-036 and in the eight finals documents listed in `README.md`.
+> There is no F1-F8 section below; do not go looking for one.
+
 Sections unchanged from the original are marked *(as original)* and are not restated —
 read them there. Everything else is corrected here.
 

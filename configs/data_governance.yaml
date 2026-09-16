@@ -47,8 +47,22 @@ access_control:
 
 anonymisation:
   operator_bucketing:
-    method: "sha256(operator_id) mod N, N = configs/plant_*.yaml operators.operator_bucket_count"
+    # What offline/build_artifact.py ACTUALLY does (verified 2026-09-16), not what an
+    # earlier version of this file claimed. It is pandas' own hash, NOT sha256 -- the
+    # previous "sha256(operator_id) mod N" wording overstated the primitive.
+    method: "pandas.util.hash_pandas_object(operator_id) mod N, N = configs/plant_*.yaml operators.operator_bucket_count (currently 8 on both plants). Emitted as 'group_<0..7>'."
     reversible: false
+    reversibility_basis: >
+      NOT cryptographic strength. The protection is many-to-one aggregation -- every
+      operator collapses into one of 8 buckets, so a bucket label identifies a group, not
+      a person -- combined with the raw operator_id never being written to any table. Do
+      not describe this as a cryptographic pseudonym; with 8 buckets and a small operator
+      population, any hash is brute-forceable and the bucket count is what does the work.
+    stability_caveat: >
+      pandas' hash is not guaranteed stable across pandas versions, so group_3 in one
+      artifact is not necessarily group_3 in an artifact built later. Nothing in this
+      repo compares groups across builds, but anything that starts to must pin the
+      mapping instead of assuming it.
     source: "ADR-017"
 
 right_to_deletion:

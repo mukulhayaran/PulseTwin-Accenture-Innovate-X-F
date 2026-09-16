@@ -46,9 +46,25 @@ of sync with it:
 
 ## Anonymisation
 
-**Method:** `sha256(operator_id) mod N`, where `N` is `configs/plant_*.yaml`'s
-`operators.operator_bucket_count`. **Irreversible** — there is no stored mapping from
-bucket back to identity, by construction (ADR-017). The containment endpoint
+**Method, as actually implemented** (`offline/build_artifact.py`, verified 2026-09-16):
+`pandas.util.hash_pandas_object(operator_id) mod N`, where `N` is
+`configs/plant_*.yaml`'s `operators.operator_bucket_count` — currently **8** on both
+plants. The result is emitted as `group_0` … `group_7`.
+
+**This is not a cryptographic hash, and the protection does not come from the hash.** An
+earlier version of this document and of `configs/data_governance.yaml` both said
+`sha256`; that was wrong and is corrected here. What actually protects the operator is
+**many-to-one aggregation**: every operator collapses into one of 8 buckets, so a bucket
+label describes a group rather than a person, and the raw `operator_id` is never written
+to any table at any point. With 8 buckets and a small operator population, no hash choice
+would be brute-force-resistant anyway — the bucket count is doing the work, not the
+primitive. Describing it accurately matters more than describing it impressively.
+
+**Stability caveat:** pandas' hash is not guaranteed stable across pandas versions, so
+`group_3` in one artifact need not be `group_3` in the next. Nothing in this repo compares
+operator groups across builds; anything that starts to must pin the mapping.
+
+There is no stored mapping from bucket back to identity, by construction (ADR-017). The containment endpoint
 (`/api/trace/containment/{unit_id}`) reports `shared_factors` as `"operator_group_B"` or
 similar, never a real or stable operator ID — this is enforced in code, checked by
 `tests/test_audit.py`'s and the original prototype's operator-privacy tests, not merely

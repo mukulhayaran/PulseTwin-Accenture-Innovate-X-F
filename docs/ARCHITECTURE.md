@@ -1,5 +1,13 @@
 # Architecture
 
+> **Scope note.** This document describes the Round 2 prototype: ISA-95 placement, the
+> read-only argument, precompute-heavy/serve-thin, and the streaming design. All of it is
+> still true. What it does **not** cover is the finals upgrade's production topology —
+> PostgreSQL, the MQTT ingestion bridge, the OT/IT network boundary, RBAC and the audit
+> trail. That is `docs/PRODUCTION_ARCHITECTURE.md`, which extends this file rather than
+> replacing it. Read this one for *why the twin is safe to attach to a plant*, and that
+> one for *how it is actually deployed*.
+
 ## ISA-95 / Purdue placement
 
 ```
@@ -43,13 +51,21 @@ possible at all.
 
 ```
 configs/*.yaml → offline/  (pandas, sklearn, scipy — heavy, batch, offline)
+                 mlops/    (same tier: drift detection, retraining, registry)
                     │
                     ▼
-              artifacts/   pulsetwin.db 37 MB · model_<plant>.npz · stream_<plant>.jsonl
+              artifacts/   pulsetwin.db 38 MB · model_<plant>.npz · stream_<plant>.jsonl
                     │
                     ▼
-                 serve/    fastapi, uvicorn, pydantic, numpy, orjson, stdlib — NOTHING else
+                 serve/    fastapi, uvicorn, pydantic, numpy, orjson, stdlib
+                           + I/O drivers only: psycopg, redis, jose, prometheus_client,
+                             starlette (ASGI base), subprocess (job spawn)
 ```
+
+`mlops/` sits on the **offline** side of the wall and may use pandas/sklearn freely. When
+`serve/` needs to trigger it — `POST /api/admin/trigger-retrain` — it spawns
+`python -m mlops.retrainer` as a detached subprocess rather than importing it (ADR-036).
+"Precompute heavy, serve thin" extends to "trigger heavy, don't host it."
 
 The runtime image contains **no model library**. The trained ensemble is flattened to
 plain numpy arrays and walked by ~90 lines in `serve/scorer.py`, proven identical to
@@ -68,8 +84,14 @@ dependencies and tempt someone to weaken the test that protects the constraint.
 | `/api/predict/defect` | `model_<plant>.npz` | one ensemble traversal + decision-path attribution |
 | `/api/trace/containment` | `units`, `genealogy` | one SQL join |
 | `/api/metrics`, `/api/economics/roi` | `metrics`, `economics` | arithmetic only |
+| `/api/model/health` | `model_registry`, `drift_metrics` | nothing — `mlops/drift_detector.py` computed it offline |
+| `/api/system/health` | `sensor_health`, `model_predictions_log` | latest-status-per-sensor fold, no analytics |
+| `/api/audit/log` | `audit_log` | one filtered query |
+| `/api/admin/trigger-retrain` | — | spawns a detached subprocess; hosts nothing |
 
-No training, no model fitting, no dataframe library.
+No training, no model fitting, no dataframe library. The finals endpoints hold that line:
+`/api/model/health` reports drift it did not compute, and the admin endpoints start work
+they do not perform.
 
 ## Streaming
 
@@ -96,14 +118,28 @@ no code path that renders an inferred number as if it were measured.
 
 ## Security posture — stated plainly
 
-**This deployment is a demo, and its posture is not production.** CORS allows all origins
-and `/api/feedback` is unauthenticated. That sits awkwardly next to the read-only OT
-argument above, so it is named here rather than left for a reviewer to find.
+**This deployment is a demo, and its posture is not production.** CORS allows all origins,
+and while every endpoint now runs through role-based authorisation
+(`serve/middleware/auth.py`), the role arrives in an `X-PulseTwin-Role` header that any
+caller can set — so this is **authorisation without authentication**. That sits awkwardly
+next to the read-only OT argument above, so it is named here rather than left for a
+reviewer to find.
 
-Production would add: an authenticated reverse proxy on the plant network, origin
-allow-listing, feedback written to a durable event sink with operator identity handled
-under the same group-bucketing rule the API already enforces, and the historian replica
-firewalled to one-way replication.
+What the finals upgrade did add, and what is genuinely enforced today:
+
+- **RBAC** across four roles, checked server-side on every gated endpoint; the UI's
+  `RoleGate` mirrors it but does not enforce it.
+- **An audit trail** over every mutating action (`migrations/002`,
+  `serve/middleware/audit.py`), queryable and restricted to `leadership`/`system`.
+- **Per-role rate limiting**, in-memory and therefore single-process only.
+- **A one-way OT/IT boundary** in the deployment manifests: `ingestion` is the only
+  component permitted to reach the MQTT broker, and `serve/` has no rule granting it that
+  egress at all (`infrastructure/kubernetes/network-policy.yaml`).
+
+Production still needs: real authentication (OIDC/JWT — `docs/SECURITY.md` has the swap,
+which touches one function body), origin allow-listing instead of `*`, Redis-backed rate
+limiting so limits hold across replicas, and the historian replica firewalled to one-way
+replication.
 
 ## Multi-plant
 

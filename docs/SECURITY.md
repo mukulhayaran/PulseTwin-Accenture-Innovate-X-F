@@ -35,17 +35,34 @@ no router code changes — only this one function's body does. `require_role`'s 
 
 ## Authorization (RBAC)
 
-Strict hierarchy — each role can do everything the one before it can (`serve/middleware/auth.py`):
+Strict hierarchy — each role can do everything the one before it can (`serve/middleware/auth.py`).
 
-| Role | Additional access | Backing endpoints |
-|---|---|---|
-| `supervisor` | stream, predict, containment, feedback, bottleneck (read), alert acknowledge | `/api/stream`, `/api/predict/defect`, `/api/trace/containment/*`, `/api/feedback`, `/api/alerts/*` |
-| `manager` | + what-if, station stats, ingestion lag, system health | `/api/whatif`, `/api/stations/stats`, `/api/system/health`, `/api/system/ingestion-lag` |
-| `leadership` | + economics, instrumentation plan, model health, audit log | `/api/economics/roi`, `/api/economics/instrumentation-plan`, `/api/model/health`, `/api/model/registry`, `/api/audit/log` |
-| `system` | + admin: retrain, promote, rollback | `/api/admin/trigger-retrain`, `/api/admin/promote-model`, `/api/admin/rollback-model` |
+**This table is generated from the actual `Depends(require_role(...))` declarations in
+`serve/`, not from intent.** Verify it with
+`grep -rn "require_role\|Depends(get_role)" serve/`:
 
-Enforcement is server-side only and cannot be bypassed from the client — `require_role`
-raises `403` regardless of what the UI renders. `frontend/components/shared/RoleGate.tsx`
+| Minimum role | Endpoints |
+|---|---|
+| **none — open** | `/api/health`, `/api/config/plants`, `/api/config/stations`, `/api/stream`, `/api/predict/defect`, `/api/units`, `/api/units/{id}`, `/api/trace/containment/{id}`, `/api/bottleneck/current`, `/api/bottleneck/history`, `/api/stations/stats`, `/api/metrics`, `/api/whatif/stations` |
+| `supervisor` (any valid role) | `/api/alerts/escalation-policy`; and, via `get_role` rather than `require_role`, `POST /api/feedback` and `POST /api/alerts/{id}/acknowledge` — these accept any role but *record which one acted* |
+| `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag` |
+| `leadership` | `/api/economics/roi`, `/api/economics/instrumentation-plan`, `/api/model/health`, `/api/model/registry`, `/api/audit/log`, `/api/audit/actions` |
+| `system` | `/api/admin/trigger-retrain`, `/api/admin/retrain-status/{id}`, `/api/admin/promote-model`, `/api/admin/rollback-model` |
+
+**Known gap, stated rather than papered over.** The read endpoints in the first row carry
+**no role check at all** — including `/api/units/{id}`, which returns a unit's defect risk,
+contributing factors and full station journey. The gating that exists is concentrated on
+*mutations*, *economics* and *operations*, which is where the audit and least-privilege
+arguments actually bite, but "supervisor-level reads are open" is the honest description
+of today's behaviour, not "supervisor role required." Closing it is a one-line dependency
+per route; it has not been done because with no authentication in front of the header
+(see above) a read gate would be decorative. **When real authentication lands, gate these
+reads in the same change** — otherwise the RBAC story is stronger on paper than in the
+routing table.
+
+Enforcement of what *is* gated is server-side only and cannot be bypassed from the client
+— `require_role` raises `403` regardless of what the UI renders, and
+`tests/test_auth.py` asserts the 403s per role. `frontend/components/shared/RoleGate.tsx`
 is a client-side *mirror* of this table, not a second enforcement point: its own comment
 says so ("this does NOT replace server enforcement"). `frontend/app/ops/page.tsx` is the
 one view built to demonstrate the hierarchy live — a "Viewing as" selector lets a demo
@@ -63,8 +80,25 @@ since the demo never runs more than one backend replica.
 
 Every mutating action is logged to `audit_log` (`migrations/002_audit_log.sql`,
 `serve/middleware/audit.py::log_action`): timestamp, role, action, resource type/id, a
-JSON payload, IP address. Covered actions: `feedback_submitted`, `whatif_simulation_run`,
-`alert_acknowledged`, `retrain_triggered`, `model_promoted`, `model_rolled_back`.
+JSON payload, IP address. The six covered actions, and the only six — verify with
+`grep -rn "log_action(" serve/`:
+
+| Action | Written by |
+|---|---|
+| `feedback_submitted` | `POST /api/feedback` |
+| `whatif_simulation_run` | `POST /api/whatif` |
+| `alert_acknowledged` | `POST /api/alerts/{id}/acknowledge` |
+| `retrain_triggered` | `POST /api/admin/trigger-retrain` |
+| `model_promoted` | `POST /api/admin/promote-model` |
+| `model_rolled_back` | `POST /api/admin/rollback-model` |
+
+**It is not ASGI middleware, despite the directory name.** The finals brief asked for
+audit middleware; what is built is an explicit `log_action()` call at the end of each
+mutating handler. That is deliberate — middleware fires on the request, before the handler
+decides whether the action actually succeeded, so a rejected promotion or a failed
+what-if would land in the audit trail as though it had happened. The trade-off is that a
+**new mutating endpoint must remember to call it**; there is no framework-level net. If
+you add one, add the `log_action()` call in the same commit.
 
 The audit log is queryable at `GET /api/audit/log` (`leadership`/`system` only — CLAUDE.md's
 operator-privacy and sourced-economics contracts extend to *who can see the audit trail

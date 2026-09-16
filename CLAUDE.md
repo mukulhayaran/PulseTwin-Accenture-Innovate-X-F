@@ -2,9 +2,19 @@
 
 Hackathon Round 2 prototype. Mixed-model vehicle assembly line digital twin.
 
-**STATUS: feature-complete.** All ten phases of the original brief are built — simulator,
-ML pipeline, artifacts, API, and all three persona views. Read `docs/STATE.md` for the
-ledger and `docs/AUDIT.md` for why the build deviates from `pulsetwin_final_prompt.md`.
+**STATUS: feature-complete, both rounds.** All ten phases of the original brief are built
+— simulator, ML pipeline, artifacts, API, three persona views. The finals upgrade (F1-F8)
+is built on top: PostgreSQL, MQTT ingestion, MLOps (drift/retrain/registry/fallback),
+RBAC + audit trail, graceful degradation, a fourth Ops persona, K8s/Terraform manifests,
+and eight production-readiness documents. 226 tests pass.
+
+Read `docs/STATE.md` first — it has the ledger, all 24 bugs found, and the current
+verify-next list. `docs/AUDIT.md` covers why the build deviates from
+`pulsetwin_final_prompt.md`.
+
+**The one thing still unverified:** `docker compose -f docker-compose.prod.yml up` has
+never been run end to end (no Docker daemon was available). Everything else in this
+repo has either a passing test or a hand-review behind it.
 
 **Before changing anything, know these three:**
 1. **Do not tune the model to raise PR-AUC.** 0.256 is 53% of a *measured* oracle ceiling
@@ -96,11 +106,30 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 
 | File | What it is |
 |---|---|
-| `docs/STATE.md` | **Start here.** Progress ledger, de-scope ladder, next action. |
-| `docs/SPEC.md` | The corrected canonical spec. This is the build target. |
-| `docs/DECISIONS.md` | Numbered ADRs — why we deviate from the original prompt. |
-| `docs/AUDIT.md` | The 31-finding flaw analysis of the original prompt. |
-| `pulsetwin_final_prompt.md` | The original brief. **Historical only — do not edit.** |
+| `docs/STATE.md` | **Start here.** Progress ledger, every bug found, next action. |
+| `docs/SPEC.md` | The corrected canonical spec. This is the Round 2 build target. |
+| `docs/DECISIONS.md` | 36 numbered ADRs — why we deviate from the original prompt. |
+| `docs/AUDIT.md` | The 31-finding flaw analysis of the original prompt (plus B34). |
+| `pulsetwin_final_prompt.md` | The original brief, and the finals brief. **Historical only — do not edit.** |
+
+Finals upgrade docs — read the relevant one before changing that subsystem:
+
+| File | Governs |
+|---|---|
+| `docs/PRODUCTION_ARCHITECTURE.md` | OT/IT boundary, one-way flow, what runs where |
+| `docs/SECURITY.md` | RBAC table, audit trail, OIDC upgrade path, compliance |
+| `docs/MLOPS_LIFECYCLE.md` | Drift thresholds, promotion rule, rollback, retirement |
+| `docs/DATA_GOVERNANCE.md` | Classification, retention, anonymisation |
+| `docs/CHANGE_MANAGEMENT.md` | Rollout phases, training, per-phase exit criteria |
+| `docs/SCALING_COST_MODEL.md` | 1/5/20-plant economics |
+| `docs/INCIDENT_RUNBOOK.md` | What a human does when it breaks |
+| `docs/FINALS_DEMO_SCRIPT.md` | The 7-minute finals demo |
+
+`configs/deployment.yaml`, `configs/alert_policies.yaml` and `configs/data_governance.yaml`
+are the **reviewable sources** their code counterparts implement as constants — `serve/`
+cannot parse YAML (the import wall bans it), so when you change a threshold in one, change
+it in both. `configs/alert_policies.yaml`'s escalation levels and
+`serve/routers/alerts_mgmt.py`'s `ESCALATION_LEVELS` are the pair most likely to drift.
 
 > **Where `pulsetwin_final_prompt.md` and `docs/SPEC.md` disagree, `docs/SPEC.md` wins.**
 > The original contains contradictions that cannot be built as written. Every deviation
@@ -115,14 +144,27 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 make generate        # simulate both plants
 make train           # train models (per-plant)
 make build-artifact  # bake SQLite + model_<plant>.npz + stream JSONL
-make test            # pytest tests/ -v
-make demo            # run backend + frontend
+make test            # pytest tests/ -v   (226 tests, ~16 min — it runs real models)
+make demo            # docker compose: backend + frontend (SQLite runtime)
 
 make dev-backend     # uvicorn on :7860
 make dev-frontend    # next dev on :3000
+
+# finals upgrade
+make demo-prod       # docker compose -f docker-compose.prod.yml (postgres/redis/mqtt/ingestion)
+make demo-prod-down  # ...and tear it down, volumes included
+make migrate         # apply migrations/*.sql to Postgres
+make load-data       # bridge the committed artifact into Postgres
+make drift-check     # python -m mlops.drift_detector
+make retrain         # python -m mlops.retrainer (champion-challenger)
+make test-all        # pytest tests/ -v --tb=short
 ```
 
 Always `OMP_NUM_THREADS=1` for anything touching training.
+
+The suite is slow because it trains and scores real models rather than mocking them —
+budget ~16 minutes, and prefer running a single file while iterating. Do not "fix" a slow
+test by mocking the model out; that is the coverage.
 
 ---
 
@@ -130,16 +172,19 @@ Always `OMP_NUM_THREADS=1` for anything touching training.
 
 Available and directly relevant — reach for these rather than improvising:
 
-- **`design`** — multi-artboard canvas. Mock the three persona views *before* writing
-  React. On a tight clock this is the cheapest way to kill UI rework.
+- **`design`** — multi-artboard canvas. Mock a persona view *before* writing React. On a
+  tight clock this is the cheapest way to kill UI rework.
 - **`dataviz`** — load it **before writing the first chart**. This project has ~12 charts;
   a coherent palette and correct chart-form choices carry the "control room" aesthetic.
 - **`frontend-design`** (plugin) — visual direction, so the dashboards don't read as
   templated Tailwind.
 - **`feature-dev`** (plugin) — structured explore → question → architect → review.
-- **`playwright`** (plugin) — drive a real browser over the three views, screenshot them,
-  and prove the SSE stream actually renders. "The UI works" is otherwise unverified.
-- **`pyright-lsp`** / **`typescript-lsp`** (plugins) — live type errors.
+- **`playwright`** (plugin) — drive a real browser over the four views, screenshot them,
+  and prove the SSE stream actually renders. **This is still outstanding** — pytest cannot
+  see a React component, and no view has been confirmed rendering since the Ops view
+  landed. "The UI works" is otherwise unverified.
+- **`pyright-lsp`** / **`typescript-lsp`** (plugins) — live type errors. `npx tsc
+  --noEmit -p .` in `frontend/` is the fast whole-project check and currently passes clean.
 
 ---
 
@@ -157,4 +202,12 @@ factory floor, **not** a SaaS landing page. Monospace for all numbers.
 ```
 
 No `localStorage` / `sessionStorage` in React components — persistent UI state
-(alert budget, shift counters) is derived server-side from the replay clock.
+(alert budget, shift counters) is derived server-side from the replay clock. The RBAC role
+follows the same rule: it lives in a module variable in `frontend/lib/api.ts` and resets
+on reload, which is why each persona page calls `setRole()` for itself on mount.
+
+**Four views, and they are not symmetric.** `/supervisor`, `/manager` and `/leadership`
+each pin themselves to one role and show that persona's job. `/ops` is the exception: it
+carries a live "Viewing as" selector so a demo can drop the role and watch `RoleGate`
+close panels in real time. Put new role-gated UI there, not in the three fixed views,
+where a gate can never actually fire.

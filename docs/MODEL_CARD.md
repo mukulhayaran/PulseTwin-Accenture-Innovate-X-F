@@ -26,7 +26,7 @@ Simulated, 28 days per plant, seed 42, `OMP_NUM_THREADS=1` for reproducibility.
 | Stations | 30 (4 manual) | 42 (8 manual) |
 | Units | 35,939 | 30,238 |
 | Features | 253 | 320 |
-| Achieved throughput | 53.8 UPH (97.8% of target) | 45.4 UPH (94.5%) |
+| Achieved throughput | 53.7 UPH (97.7% of a 55 UPH target) | 45.3 UPH (94.4% of a 48 UPH target) |
 
 **Temporal split, never random.** Days 1–14 train / 15–21 validate / 22–28 test — three
 whole weeks, each containing exactly one Tuesday/Wednesday peak pair. An earlier 21-day
@@ -115,6 +115,19 @@ This directly drives the instrumentation planner: it says which retrofits are un
 on plant A (0.256 → 0.196), a 23% relative drop. So the legacy stations do matter — but
 the value is in the operator checklist record, not in reconstructed continuous signals.
 
+**Caveat, recorded by the artifact itself.** The two confidence intervals overlap
+(0.207–0.308 with the manual-station data, 0.155–0.247 without), and
+`metrics_json.soft_sensor_ablation` stores the conclusion verbatim: *"improvement is
+within confidence intervals - reported as measured."* The point estimate is a real +0.060
+and the direction is consistent, but this is not a statistically separated result at
+n=9,046 with 228 positives, and it should not be quoted as one.
+
+**Prediction intervals under-cover.** The soft sensors emit quantile intervals, and
+measured coverage is **0.80–0.85 on ambient signals and 0.55–0.66 on tool-wear signals**
+against a nominal 90%. The tool-wear intervals are not trustworthy — which is consistent
+with the R² finding above rather than a separate defect: the model has nothing to
+condition on there, so neither its point estimate nor its interval means much.
+
 ## Bottleneck forecasting
 
 15-minute-ahead forecast of each station's active share, ridge regression on lagged
@@ -137,16 +150,54 @@ cannot beat persistence has no business shipping.
 - **The alarm budget forces misses by construction.** Six alerts per shift is fewer
   alerts than there are defects. That is a deliberate human-factors constraint, and its
   cost is quantified rather than hidden.
+- **The budget threshold overshoots its own budget on test data.** The operating
+  threshold (p ≥ 0.406) is fitted to produce 6 alerts/shift, and on the held-out test
+  split it realises **8.5**. That is a ~40% overshoot, and it is a generalisation gap, not
+  a rounding artifact: the defect-bearing population in the test week is denser than in
+  the fitting window. A production deployment should re-fit the threshold on a rolling
+  window rather than freezing it at build time — the alarm budget is a human constraint,
+  so exceeding it by 40% is a real cost, not a metric footnote. Plant B, by contrast,
+  lands exactly on 6.0.
 
-## Drift monitoring plan
+## Fallback model
 
-1. Weekly PR-AUC on the trailing 7 days, with bootstrap CI. Alarm if the interval drops
-   below the training-period interval.
-2. Feature drift: PSI on the top-10 permutation-importance features.
-3. Calibration drift: Brier score and reliability slope, weekly.
-4. Feedback precision: supervisor 👍/👎 as a live precision estimate, compared against the
-   modelled precision at the operating threshold.
-5. Segment by ambient humidity and variant mix — the known weak regimes.
+A Statistical Process Control scorer runs alongside the primary model and is surfaced only
+when the primary fails to score (a corrupt or incompatible `.npz`), labelled `FALLBACK
+MODE` in the response so a fallback number is never presented as the real model speaking.
+
+**Measured shadow performance: precision 3.0%, recall 100%** (plant A; 2.9% / 100% on
+plant B). That is barely above the base rate — as a standalone detector it is not usable,
+and the number is published rather than softened. `docs/DECISIONS.md` ADR-035 has the
+reason: the textbook 8-rule Nelson battery assumes a stable i.i.d. process, and this line
+is deliberately simulated with autocorrelated physics, so the trend rules fire constantly
+on normal behaviour. The live request-time path (`serve/fallback_scorer.py`) therefore
+implements **only** the single 3-sigma rule, which does not inherit that failure mode.
+
+## Drift monitoring — built, and what is still plan
+
+Built and running (`mlops/drift_detector.py`, surfaced at `GET /api/model/health` and in
+the Ops view):
+
+1. **PSI per feature**, top 20 by permutation importance. Warn > 0.1, alert > 0.2.
+2. **Calibration drift**: predictions binned into fixed deciles, alert if the largest gap
+   between mean predicted probability and observed defect rate exceeds 15pp.
+3. **Sensor-coverage drift**: alert if the fraction of fully-instrumented units drops more
+   than 5pp below the training period — the model receiving worse data than it was fitted on.
+
+Stated honestly: "current" is the model's own held-out test split, ordered by prediction
+timestamp, because this build replays a fixed dataset rather than consuming a live feed.
+`docs/MLOPS_LIFECYCLE.md` describes exactly what changes when a real feed exists (the
+window is sourced from `station_readings` instead; nothing downstream changes).
+
+Still plan, not built:
+
+4. Weekly PR-AUC on the trailing 7 days with bootstrap CI, alarmed against the
+   training-period interval.
+5. Feedback precision: supervisor 👍/👎 as a live precision estimate against modelled
+   precision at the operating threshold. The feedback is collected and audited today, but
+   nothing yet computes a rolling precision from it.
+6. Segmentation by ambient humidity and variant mix — the known weak regimes. The drift
+   detector currently measures the population as a whole.
 
 ## Reproducibility
 

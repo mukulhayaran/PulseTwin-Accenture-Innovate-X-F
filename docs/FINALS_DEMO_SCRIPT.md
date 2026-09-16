@@ -15,7 +15,15 @@ cd frontend && npm run dev                                          # or the sta
 ```
 
 Have a second terminal ready with `mosquitto_pub` for Act 2, and the backend process ID
-handy for the kill/restart in the same act.
+handy for the kill/restart in the same act. Kick off one retrain now
+(`RetrainingConsole` → **Trigger Retrain**, or `POST /api/admin/trigger-retrain`) so Act 3
+has a finished comparison report to show.
+
+> **Rehearse this at least once end to end before the finals.** As of 2026-09-16 the
+> production stack has never been started — no Docker daemon was available on the build
+> machine — so Act 2's dropout injection and the kill/restart have been verified by unit
+> test and code review, not by running them. That is the single highest-risk gap in this
+> script; see `docs/STATE.md` → NEXT ACTION.
 
 ---
 
@@ -57,9 +65,15 @@ handy for the kill/restart in the same act.
 3. `DriftMonitor.tsx`: current PSI status per feature. If nothing has drifted in this
    run, say so plainly — "the model isn't degraded right now, and this panel is how we'd
    know if it were, not just hope."
-4. `RetrainingConsole.tsx`: trigger a retrain live (`system` role only —
-   `POST /api/admin/trigger-retrain`), or, if one is already queued/complete, show the
-   champion-vs-challenger comparison table and the PROMOTE/REJECT recommendation.
+4. `RetrainingConsole.tsx`: show the champion-vs-challenger comparison table and the
+   PROMOTE/REJECT recommendation.
+
+   **Do not start a retrain here and wait for it.** It trains a real model and takes
+   minutes, not seconds — far longer than the 90 seconds this act gets. Click **Trigger
+   Retrain** during pre-flight, before the judges sit down, so the completed comparison
+   report is on screen by the time you reach this step. Clicking it live is fine as a
+   gesture ("this is the button, it is `system`-role only, and it is in the audit log"),
+   as long as you do not stand there watching a spinner.
 5. Drop the role selector to `manager` on camera — watch `ModelHealthPanel`,
    `DriftMonitor`, `AuditLogViewer`, and the retrain button all replace themselves with
    "Requires leadership/system role" via `RoleGate.tsx`. The backend enforces this

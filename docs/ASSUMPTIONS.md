@@ -20,8 +20,11 @@ density across shift patterns and ambient cycles. All annual figures scale by a 
 3-shift year**. These two bases are stated separately and never conflated.
 
 **Throughput basis.** Every economic figure uses **achieved** simulated throughput
-(53.8 UPH plant A, 45.4 UPH plant B), never the nominal 55 UPH target. The original brief
-derived `downtime_cost_per_hour` from a nominal figure the station layout could not reach.
+(53.7 UPH plant A against a 55 UPH target, 45.3 UPH plant B against a 48 UPH target),
+never the nominal target. The original brief derived `downtime_cost_per_hour` from a
+nominal figure the station layout could not reach. The two achieved figures are read from
+`plant_meta` in the committed artifact, not transcribed — see the correction note in
+`docs/STATE.md` for why that distinction is now enforced.
 
 **ROI is derived from measured recall**, not an assumed catch rate. The scrap component
 applies a 0.55 factor because not every caught defect would have become scrap — a share
@@ -122,8 +125,14 @@ Two **different** definitions, deliberately:
   property of the line, not a 15-minute snapshot.
 
 Scoring a 15-minute argmax against a 15-minute argmax is circular and returns 100%. The
-first build did exactly that; the honest figures are **87.9%** (plant A) and **79.1%**
-(plant B).
+first build did exactly that; the honest figures on the committed artifact are **85.9%**
+(plant A) and **90.2%** (plant B).
+
+These move between builds — an earlier run measured 87.9% / 79.1% with the same detector
+and the same ground-truth definition, neither of which was touched. That spread is the
+honest character of the measurement on a stochastic simulation, which is why the number is
+always quoted against a specific artifact rather than asserted as a property of the method.
+**If it ever reads 100%, ground truth has collapsed back onto the detector** (ADR-029).
 
 ## Known weaknesses
 

@@ -10,7 +10,7 @@ basis, same discipline as `configs/economics.yaml`) — never an unsourced numbe
 |  | 1 Plant | 5 Plants | 20 Plants |
 |---|---|---|---|
 | Infrastructure (cloud, monthly) | ~$500 | ~$1,400 | ~$5,000 |
-| Sensor retrofit (one-time) | ~$2,700 | ~$13,500 | ~$54,000 |
+| Sensor retrofit (one-time) | $6,000 | $30,000 | $120,000 |
 | Implementation (one-time) | $350,000 | $590,000 | $1,490,000 |
 | Annual operations | $75,000 | $225,000 | $600,000 |
 | **Annual value (conservative)** | **$1.60M** | **$7.98M** | **$31.9M** |
@@ -41,22 +41,31 @@ consequence of the config-driven, one-database-per-plant architecture
 (`docs/PRODUCTION_ARCHITECTURE.md`), chosen for data-residency reasons
 (`docs/DATA_GOVERNANCE.md` §Cross-border), not for cost.
 
-## Sensor retrofit — measured finding, then priced
+## Sensor retrofit — measured, not estimated
 
-**Not** "instrument every manual station." `docs/DECISIONS.md` ADR-031 measured that
-**three of plant A's four manual stations score zero uplift from instrumentation** —
-including S15, the second-strongest driver in the entire model, because its operator
-checklist already captures the signal that matters there. Only stations the ranked
-instrumentation plan (`GET /api/economics/instrumentation-plan`) actually recommends get
-priced here.
+**Not** "instrument every manual station." The ranked plan
+(`GET /api/economics/instrumentation-plan`, backed by the `instrumentation_plan` table in
+the committed artifact) evaluates every manual station and recommends **PROCEED** on very
+few of them. These are the actual rows, not an estimate:
 
-**Estimate:** ~1 station worth instrumenting per plant (this project's own measured
-ratio), at the simple average of `configs/economics.yaml`'s five listed sensor costs
-(torque $2,800 / vibration $1,800 / temp-humidity $1,200 / film thickness $4,500 / weld
-current $3,200 → average $2,700, installed). Blindly instrumenting all four manual
-stations at every plant would cost **~4× this** — roughly $162,000 more at 20-plant scale
-for zero measured benefit. That gap is the instrumentation planner's entire value
-proposition, made concrete in dollars.
+| Plant | Candidates evaluated | Total cost if all were installed | PROCEED | Retrofit cost actually recommended | Measured annual value |
+|---|---|---|---|---|---|
+| Plant A | 4 | $10,000 | 1 — S10 weld current monitor ($3,200) | **$3,200** | $30,792 (payback 1.2 months) |
+| Plant B | 8 | $20,000 | 2 — S13 weld current ($3,200), S28 torque ($2,800) | **$6,000** | $71,818 (payback 0.7 / 1.6 months) |
+
+The scaling table uses **$6,000 per plant** (Plant B's figure), matching the decision made
+below to scale on the harder plant's economics throughout rather than the flattering ones.
+
+**What the planner saves is the interesting number.** Instrumenting every evaluated
+candidate would cost $10,000-$20,000 per plant; the plan recommends $3,200-$6,000. At
+20 plants that is **$400,000 spent versus $120,000** — roughly **$280,000 of avoided
+capex for zero measured loss of model performance**, because the deferred stations score
+`delta_pr_auc = 0.0` exactly. `docs/DECISIONS.md` ADR-031 covers why three of plant A's
+four candidates score zero, including S15 — the second-strongest driver in the whole
+model — whose operator checklist already captures the signal a sensor would buy. The
+recommendation there reads `DEFER - checklist already captures this signal`, not "no
+benefit," because "don't spend here, you already have the data" and "this station doesn't
+matter" are completely different conclusions for a capital plan.
 
 ## Implementation — sourced first plant, estimated marginal plants
 
@@ -64,7 +73,7 @@ proposition, made concrete in dollars.
   sourced as "2 FTE-years engineering, historian integration, edge gateway, first-year
   cloud + support."
 - **Marginal plant: ~$60,000 (engineering estimate, not measured).** The platform itself
-  — `serve/`, `mlops/`, all three persona dashboards — ships unmodified per
+  — `serve/`, `mlops/`, all four persona dashboards — ships unmodified per
   `docs/ARCHITECTURE.md` §Multi-plant's "adding a plant is one YAML file" claim. What
   does NOT come for free is per-site edge-gateway installation, historian integration,
   and a validation pass against that plant's own physical line — the $60,000 covers that,
@@ -113,3 +122,21 @@ plants, so this document's ROI line is not simply copied from the API's). This i
 year-one payback-style figure, not a discounted multi-year NPV — see
 `docs/BUSINESS_PROPOSAL.md` §4 for the 3-year NPV treatment using
 `configs/economics.yaml`'s 10% discount rate.
+
+**Sensor retrofit is deliberately not in that formula.** It is optional capex with its own
+separately measured payback (1-2 months, table above), and folding a $6,000 line into a
+$350,000 denominator would hide the one number a maintenance team actually needs. Adding
+it would move the 20-plant ROI by well under one percentage point either way.
+
+**Sanity check on the magnitude.** A four-figure ROI percentage reads implausibly high
+until you multiply it out. Plant A: 322,365 units/year × 2.52% test base rate × 27.6%
+recall ≈ **2,240 defects caught per year**, each avoiding 0.55 × $4,800 scrap + $1,200
+rework + 10.1% × $8,500 warranty escape ≈ $4,700, less $286,000/year of supervisor
+response cost at 8.5 alerts per shift — which lands on the $10.27M in the table above.
+The large number comes from the **cost per defect**, which `configs/economics.yaml`
+sources to IHS Markit and NHTSA data, not from an optimistic catch rate: recall at the
+operating threshold is 27.6% and is reported as exactly that everywhere. Plant B, the
+figure the scaling table actually uses, catches only ~360 defects a year on the same
+arithmetic — which is why it yields $1.60M rather than $10.27M. If a judge wants to
+attack these figures, the productive place is the per-defect cost constants, and those
+carry their sources.

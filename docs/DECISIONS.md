@@ -310,6 +310,20 @@ hash, and no view ever renders a stable operator identifier. Featurisation likew
 business proposal. Violating it in the containment table would undercut a claim we are
 making in writing.
 
+*Correction (2026-09-16), found by auditing the docs against the code:* this ADR says
+"salted hash" and `configs/data_governance.yaml` said `sha256`. **Neither is what was
+built.** `offline/build_artifact.py` uses `pandas.util.hash_pandas_object(operator_id) %
+8` — unsalted, and not a cryptographic hash. The privacy outcome the ADR was protecting
+is still delivered (the raw `operator_id` is never written to any table, and 8 buckets
+make the label describe a group rather than a person), so the decision stands and no code
+changed. The *description* was wrong and is now corrected in
+`configs/data_governance.yaml` and `docs/DATA_GOVERNANCE.md`.
+
+The lesson is worth keeping: a privacy claim stated more strongly than the implementation
+supports is the kind of thing an auditor finds, and it costs more credibility than the
+weaker true claim ever would have. If real cryptographic pseudonymisation is ever
+required — it is not, at 8 buckets — that is a code change, not a wording change.
+
 ---
 
 ### ADR-018 — RSS reporting is platform-guarded; 200 MB is a target, not a gate

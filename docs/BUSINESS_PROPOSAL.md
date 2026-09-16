@@ -54,13 +54,18 @@ publishes advice to humans.
 
 ---
 
-## 3. Three stakeholders, three jobs
+## 3. Four stakeholders, four jobs
 
 | Persona | Job to be done | What they get |
 |---|---|---|
-| **Line supervisor** | "Should I stop this unit, right now?" | Live line map, ranked alerts with root causes in plain language, containment list with HOLD/INSPECT/MONITOR, alert budget counter |
+| **Line supervisor** | "Should I stop this unit, right now?" | Live line map, ranked alerts with root causes in plain language, containment list with HOLD/INSPECT/MONITOR, alert budget counter, escalation chain |
 | **Production manager** | "Where is my line actually losing throughput, and what should I change?" | Constraint migration timeline, station league table by lost UPH, root-cause Pareto, what-if console priced in dollars |
 | **Plant leadership** | "Is this worth the money, and where does the next dollar go?" | Value bridge with every figure sourced, the alarm-budget trade-off quantified, instrumentation planner ranked by payback |
+| **Ops / data engineering** | "Is the twin itself healthy, and can I prove who did what?" | Model health and drift, sensor-health grid, ingestion lag, the audit log, and the champion-challenger retraining console |
+
+The fourth persona is what separates a prototype from something a plant IT organisation
+will actually operate: it answers "how do you know when the model is wrong" without
+requiring anyone to read a log file.
 
 ---
 
@@ -74,10 +79,10 @@ operating threshold.
 
 | Input | Value | Source |
 |---|---|---|
-| Achieved throughput | 53.8 UPH | Simulated, 97.8% of the 55 UPH target |
-| Units per year | ~323,000 | 53.8 UPH × 8h × 3 shifts × 250 days |
+| Achieved throughput | 53.7 UPH | Simulated, 97.7% of the 55 UPH target |
+| Units per year | ~322,000 | 53.7 UPH × 8h × 3 shifts × 250 days |
 | Defect rate | 2.52% | Measured, held-out test week |
-| Recall at operating threshold | 28% | Measured at ~6 alerts/shift |
+| Recall at operating threshold | 28% | Measured at the budget threshold (8.5 alerts/shift realised against a 6/shift budget) |
 | Escape rate | ~10% | Measured inspection miss rate |
 | Scrap / rework / warranty | $4,800 / $1,200 / $8,500 | IHS Markit 2024, plant engineering, NHTSA recall data |
 | System cost | $350,000 | 2 FTE-years + integration + year-one operation |

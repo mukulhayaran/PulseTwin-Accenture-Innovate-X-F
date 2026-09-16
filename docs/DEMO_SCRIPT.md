@@ -1,4 +1,10 @@
-# Demo Script — 5 minutes
+# Demo Script — 5 minutes (Round 2)
+
+> **This is the Round 2 script.** For the finals, use `docs/FINALS_DEMO_SCRIPT.md`, which
+> assumes the judges have already seen this arc and spends its seven minutes on what the
+> production upgrade added — graceful degradation, drift, RBAC, scaling. Act 1 of that
+> script is a two-minute compression of this one, so keep this file current: it is where
+> the hero unit and the seeded timestamp are recorded.
 
 **Setup**
 
@@ -132,7 +138,7 @@ Switch the plant selector to **Plant B**.
 
 ## 4:45 — Close
 
-> "Detection accuracy on the constraint is 88% on Plant A, 79% on Plant B — scored against
+> "Detection accuracy on the constraint is 86% on Plant A, 90% on Plant B — scored against
 > a deliberately *different* definition than the detector uses, because scoring a
 > 15-minute argmax against a 15-minute argmax gives you 100% and means nothing.
 >
