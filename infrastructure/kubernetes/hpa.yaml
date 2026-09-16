@@ -1,0 +1,46 @@
+# HorizontalPodAutoscaler for pulsetwin-backend
+#
+# All thresholds below come directly from configs/deployment.yaml services.backend.autoscaling:
+#   metric: cpu_utilization, target_pct: 70
+#   scale_up_stabilization_s: 60, scale_down_stabilization_s: 300
+#
+# Asymmetric stabilization windows are intentional: scale up fast (60s) so a burst of
+# assembly-line load doesn't starve `/api/stream` consumers, but scale down slowly (300s)
+# so we don't flap replicas back down the moment a burst subsides.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: pulsetwin-backend
+  namespace: pulsetwin
+  labels:
+    app.kubernetes.io/name: pulsetwin-backend
+    app.kubernetes.io/part-of: pulsetwin
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: pulsetwin-backend
+  minReplicas: 2   # configs/deployment.yaml services.backend.replicas.min
+  maxReplicas: 6   # configs/deployment.yaml services.backend.replicas.max
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70   # configs/deployment.yaml services.backend.autoscaling.target_pct
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60    # scale_up_stabilization_s
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300   # scale_down_stabilization_s
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Min

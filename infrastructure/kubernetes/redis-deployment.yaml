@@ -1,0 +1,71 @@
+# PulseTwin Redis — Deployment + Service
+#
+# Mirrors docker-compose.prod.yml's `redis` service (redis:7-alpine, port 6379). Used as
+# a cache / ephemeral state store, not as a durable data store, so a plain Deployment
+# (rather than a StatefulSet with a PVC, as postgres gets) is appropriate — losing the
+# pod loses the cache, which is an acceptable failure mode here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pulsetwin-redis
+  namespace: pulsetwin
+  labels:
+    app.kubernetes.io/name: pulsetwin-redis
+    app.kubernetes.io/part-of: pulsetwin
+    app.kubernetes.io/component: cache
+spec:
+  replicas: 1   # configs/deployment.yaml services.redis.replicas — single-node, demo-only
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pulsetwin-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pulsetwin-redis
+        app.kubernetes.io/part-of: pulsetwin
+        app.kubernetes.io/component: cache
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          resources:
+            # configs/deployment.yaml services.redis.resources — exact match.
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "128Mi"
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pulsetwin-redis
+  namespace: pulsetwin
+  labels:
+    app.kubernetes.io/name: pulsetwin-redis
+    app.kubernetes.io/part-of: pulsetwin
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pulsetwin-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      protocol: TCP

@@ -1,0 +1,42 @@
+# PulseTwin — Alertmanager routing
+#
+# Mirrors configs/alert_policies.yaml's escalation levels (floor_supervisor ->
+# shift_manager -> plant_leadership) at the infrastructure-monitoring layer, for the
+# system-health alerts prometheus.yml's commented-out rule group would fire -- a distinct
+# concern from that YAML file, which routes APPLICATION alerts (a defect-risk prediction
+# firing) via serve/routers/alerts_mgmt.py and the in-app notification channels. This file
+# is for "the twin itself is unwell" (drift, ingestion lag, sensor dropout), routed to
+# the team that can act on infrastructure, not the floor.
+#
+# Not started in the demo -- see infrastructure/monitoring/prometheus.yml's header.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: pulsetwin-ops-default
+  group_by: ["alertname", "plant_id"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # ModelDriftSignificant is a data-science-on-call concern, not a generic ops page --
+    # docs/MLOPS_LIFECYCLE.md's rollback procedure is who actually responds to this one.
+    - match:
+        alertname: ModelDriftSignificant
+      receiver: pulsetwin-mlops-oncall
+      repeat_interval: 1h
+
+receivers:
+  - name: pulsetwin-ops-default
+    # Placeholder webhook -- a real deployment points this at the plant's existing
+    # paging tool (PagerDuty/Opsgenie), never a bare Slack post for anything above
+    # "warning", per docs/INCIDENT_RUNBOOK.md's escalation expectations.
+    webhook_configs:
+      - url: "http://pulsetwin-ops-webhook.internal/alert"
+        send_resolved: true
+
+  - name: pulsetwin-mlops-oncall
+    webhook_configs:
+      - url: "http://pulsetwin-mlops-webhook.internal/alert"
+        send_resolved: true
