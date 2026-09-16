@@ -92,7 +92,22 @@ def reliability_curve(y: np.ndarray, p: np.ndarray, bins: int = 10) -> list[dict
     return out
 
 
-def train(fs: FeatureSet, seed: int = 42) -> TrainedModel:
+DEFAULT_HYPERPARAMS = {
+    "max_iter": 300,
+    "learning_rate": 0.06,
+    "max_leaf_nodes": 31,
+    "min_samples_leaf": 40,
+    "l2_regularization": 1.0,
+}
+
+
+def train(fs: FeatureSet, seed: int = 42, hyperparams: dict | None = None) -> TrainedModel:
+    """`hyperparams` overrides DEFAULT_HYPERPARAMS -- used by mlops/retrainer.py to train a
+    genuinely different challenger from the same seed and the same data (CLAUDE.md's
+    "seed 42 everywhere" rules out varying random_state to manufacture a difference,
+    see docs/MLOPS_LIFECYCLE.md). Every existing caller passes None and gets byte-identical
+    behaviour to before this parameter existed.
+    """
     split = fs.meta["split"].to_numpy()
     tr, va, te = split == "train", split == "validate", split == "test"
 
@@ -105,12 +120,13 @@ def train(fs: FeatureSet, seed: int = 42) -> TrainedModel:
     pos_weight = float((ytr == 0).sum() / max(1, (ytr == 1).sum()))
     w = np.where(ytr == 1, pos_weight, 1.0)
 
+    hp = {**DEFAULT_HYPERPARAMS, **(hyperparams or {})}
     clf = HistGradientBoostingClassifier(
-        max_iter=300,
-        learning_rate=0.06,
-        max_leaf_nodes=31,
-        min_samples_leaf=40,
-        l2_regularization=1.0,
+        max_iter=hp["max_iter"],
+        learning_rate=hp["learning_rate"],
+        max_leaf_nodes=hp["max_leaf_nodes"],
+        min_samples_leaf=hp["min_samples_leaf"],
+        l2_regularization=hp["l2_regularization"],
         early_stopping=True,
         validation_fraction=0.15,
         random_state=seed,

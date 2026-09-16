@@ -7,10 +7,25 @@ an unsensored station: its neighbours' readings, the unit's variant, ambient con
 the dwell time (which the genealogy gives us for free), and the checklist record.
 
 THE CREDIBILITY MOVE -- masked-station validation. Anyone can claim a soft sensor works.
-We take two stations that ARE fully instrumented (S9 and S21 on plant A), hide their
-sensors, predict them from neighbours alone, and report R^2 and MAE against the readings
-we withheld. That converts a claim into a measurement, and it is the strongest evidence in
-the project. It is marked `soft_sensor_validation: true` in the plant config.
+We take stations that ARE fully instrumented, hide their sensors, predict them from
+neighbours and checklist proxies alone, and report R^2 and MAE against the readings we
+withheld. That converts a claim into a measurement.
+
+WHAT IT ACTUALLY SHOWED, and this is the useful part: the answer depends entirely on
+which physics drives the signal.
+
+  * Ambient-driven signals (temperature, humidity in the paint zone) reconstruct well.
+    Neighbouring stations share the same ambient profile -- S17 temperature correlates
+    0.98 with S18.
+  * Tool-wear-driven signals (torque, vibration) DO NOT. Each station's wear is an
+    independent random walk, so a neighbour carries almost nothing: S21 torque correlates
+    0.06 with S19. No model can recover a signal that is not there, and an overfitted one
+    reports a NEGATIVE R^2 while pretending otherwise.
+
+Masked targets therefore include one station from each family, so the contrast is
+measured rather than asserted. This is exactly the finding the instrumentation planner
+needs: it says which retrofits are unnecessary (inferable) and which are essential
+(genuinely unobservable). An honest negative result beats a fabricated positive.
 
 Every inferred value carries provenance and a prediction interval from quantile
 regression, and both propagate to the API and the UI badge. An inferred number must never
@@ -139,9 +154,11 @@ def _fit_signal(
         m = HistGradientBoostingRegressor(
             loss="quantile",
             quantile=q,
-            max_iter=200,
-            learning_rate=0.08,
-            min_samples_leaf=30,
+            max_iter=120,
+            learning_rate=0.06,
+            min_samples_leaf=60,
+            l2_regularization=1.0,
+            max_leaf_nodes=15,
             random_state=seed,
         )
         m.fit(X[train_mask], y[train_mask])

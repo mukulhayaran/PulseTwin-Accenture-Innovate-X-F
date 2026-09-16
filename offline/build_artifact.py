@@ -28,6 +28,10 @@ import pandas as pd  # noqa: E402
 
 from offline.config_schema import load_economics_config, load_plant_config  # noqa: E402
 from offline.export_model import export  # noqa: E402
+from offline.ml import scenarios, validate  # noqa: E402
+from offline.ml.bottleneck import analyse as analyse_bottleneck  # noqa: E402
+from offline.ml.featurize import FeatureSet  # noqa: E402
+from offline.ml.soft_sensor import build_soft_sensors  # noqa: E402
 from offline.simulator.line_model import ALL_STATES, SIM_START, STATE_BUCKET_S  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +101,21 @@ CREATE TABLE IF NOT EXISTS metrics (
 
 CREATE TABLE IF NOT EXISTS metrics_json (
     plant_id TEXT, key TEXT, payload TEXT, PRIMARY KEY (plant_id, key));
+
+CREATE TABLE IF NOT EXISTS whatif_grid (
+    plant_id TEXT, station_id INTEGER, buffer_delta INTEGER, cycle_delta_pct REAL,
+    throughput_uph REAL, wip_units REAL, new_bottleneck_station INTEGER,
+    PRIMARY KEY (plant_id, station_id, buffer_delta, cycle_delta_pct));
+
+CREATE TABLE IF NOT EXISTS whatif_baseline (
+    plant_id TEXT PRIMARY KEY, throughput_uph REAL, wip_units REAL,
+    bottleneck_station INTEGER, window_hours REAL);
+
+CREATE TABLE IF NOT EXISTS instrumentation_plan (
+    plant_id TEXT, station_id INTEGER, station_name TEXT, zone TEXT, sensor_type TEXT,
+    cost REAL, cost_source TEXT, delta_pr_auc REAL, annual_value REAL,
+    payback_months REAL, window TEXT, recommendation TEXT,
+    PRIMARY KEY (plant_id, station_id));
 
 CREATE TABLE IF NOT EXISTS stream_index (
     plant_id TEXT, ts TEXT, byte_offset INTEGER, PRIMARY KEY (plant_id, ts));
@@ -168,7 +187,8 @@ def build(config_path: str) -> dict:
     con.executescript(SCHEMA)
     for tbl in ("units", "unit_factors", "genealogy", "station_readings", "station_stats",
                 "bottleneck_windows", "checklists", "station_config", "economics",
-                "metrics", "metrics_json", "stream_index", "plant_meta"):
+                "metrics", "metrics_json", "stream_index", "plant_meta",
+                "whatif_grid", "whatif_baseline", "instrumentation_plan"):
         con.execute(f"DELETE FROM {tbl} WHERE plant_id = ?", (pid,))
 
     # ------------------------------------------------------------- replay window
@@ -187,6 +207,9 @@ def build(config_path: str) -> dict:
     replay_start, replay_end = cand, cand + win_h * 3600.0
 
     # ------------------------------------------------------------------- units
+    # Unfiltered, aligned to the feature matrix -- ablations need every row, while the
+    # units TABLE is trimmed to what the demo can reach.
+    sc_all = scores.set_index("unit_seq").reindex(feats.index)
     sc = scores.set_index("unit_seq")
     m = meta.set_index("unit_seq")
     unit_end = tel.groupby("unit_seq")["exit_ts"].max()
@@ -197,10 +220,17 @@ def build(config_path: str) -> dict:
     # backwards past the window edge) and every unit that ever fired an alert. Keeping
     # all 66k units across both plants pushed the database past its 50 MB cap for no
     # functional gain -- full-history numbers come from the metrics tables.
+    # The window is the ONLY filter. An earlier version also kept every alert-fired unit
+    # regardless of when it ran, which produced units the API would serve with an EMPTY
+    # journey -- genealogy and readings are window-scoped, so a unit from outside it has
+    # no station history to show. Clicking such an alert in the UI showed nothing.
+    #
+    # Restricting to the window guarantees every served unit is complete. It costs
+    # nothing that matters: the demo replays this window, so those are the only alerts
+    # ever visible, and full-history numbers come from the metrics tables.
     margin = 7200.0
-    keep_unit = (
-        ((sc["prediction_ts"] >= replay_start - margin) & (sc["prediction_ts"] <= replay_end + margin))
-        | (sc["alert_fired"] == 1)
+    keep_unit = (sc["prediction_ts"] >= replay_start - margin) & (
+        sc["prediction_ts"] <= replay_end + margin
     )
     sc = sc[keep_unit]
 
@@ -288,50 +318,28 @@ def build(config_path: str) -> dict:
     con.executemany(f"INSERT OR REPLACE INTO station_stats VALUES ({','.join('?'*11)})", srows)
 
     # ---------------------------------------------------------- bottleneck windows
-    # Detection = Roser active-period method: the station with the largest active
-    # (working + down) share in the window is the constraint. Everyone else is waiting
-    # on someone. Ground truth uses the same definition, stated in MODEL_CARD.md.
-    active = secs[:, :, iw] + secs[:, :, idn]
-
-    # Ground truth is recomputed here rather than read from state_buckets.npz, and it
-    # uses a DIFFERENT window to the detector on purpose. Scoring a 15-minute argmax
-    # against a 15-minute argmax is circular and reports 100% accuracy -- which is worse
-    # than a low number, because a judge will spot it and then doubt everything else.
-    #   detector      : argmax over ONE 15-minute bucket (what a live rolling window sees)
-    #   ground truth  : argmax over a 2-hour smoothed window (the SUSTAINED constraint)
-    k = 8  # 2 hours at 15-minute resolution
-    kernel = np.ones(k) / k
-    smoothed = np.vstack(
-        [np.convolve(active[j, :], kernel, mode="same") for j in range(active.shape[0])]
-    )
-    truth = np.where(active.sum(axis=0) > 0, np.array(ids)[np.argmax(smoothed, axis=0)], -1)
+    # Detection and ground truth are DIFFERENT computations on purpose -- see
+    # offline/ml/bottleneck.py. Scoring a 15-minute argmax against a 15-minute argmax is
+    # circular and returns 100%, which is worse than a low number.
+    bn_report, detected, confidence, truth = analyse_bottleneck(secs, ids, iw, idn, cfg)
 
     brows = []
     prev = None
-    correct = 0
-    total = 0
-    for b in range(active.shape[1]):
-        col = active[:, b]
-        if col.sum() <= 0:
+    for b in range(len(detected)):
+        if detected[b] <= 0:
             continue
-        order_b = np.argsort(-col)
-        win_idx = int(order_b[0])
-        det = int(ids[win_idx])
-        # Confidence is SEPARATION from the runner-up, not share of total active time.
-        # With 30 stations a share of 0.038 sits barely above the 0.033 uniform value and
-        # reads as "almost no confidence" when the detection may in fact be decisive.
-        second = float(col[order_b[1]]) if len(order_b) > 1 else 0.0
-        top = float(col[win_idx])
-        share = float((top - second) / top) if top > 0 else 0.0
-        gt = int(truth[b]) if b < len(truth) else -1
-        ok = int(det == gt)
-        correct += ok
-        total += 1
+        gt = int(truth[b])
         brows.append((pid, _ts(b * STATE_BUCKET_S), _ts((b + 1) * STATE_BUCKET_S),
-                      det, share, gt, ok, int(prev is not None and det != prev)))
-        prev = det
-    con.executemany(f"INSERT OR REPLACE INTO bottleneck_windows VALUES ({','.join('?'*8)})", brows)
-    bn_accuracy = correct / max(1, total)
+                      int(detected[b]), float(confidence[b]), gt,
+                      int(detected[b] == gt),
+                      int(prev is not None and detected[b] != prev)))
+        prev = int(detected[b])
+    con.executemany(f"INSERT OR REPLACE INTO bottleneck_windows VALUES ({','.join(chr(63)*8)})", brows)
+    bn_accuracy = bn_report.detection_accuracy
+    # BOTH constraints, not just the most frequent one: the line has a normal-day
+    # bottleneck and a variant-heavy-day bottleneck, and the second is the interesting one.
+    hot = sorted(bn_report.station_share, key=bn_report.station_share.get, reverse=True)[:2]
+    grid_hot = hot or [ids[len(ids) // 2]]
 
     # ------------------------------------------------------------------ checklists
     ckw = ck[(ck["ts"] >= replay_start) & (ck["ts"] <= replay_end)].copy()
@@ -368,6 +376,65 @@ def build(config_path: str) -> dict:
                   "USD", econ.system["implementation_cost"].source))
     con.executemany(f"INSERT OR REPLACE INTO economics VALUES (?,?,?,?,?)", erows)
 
+    # -------------------------------------------------------- what-if scenario grid
+    # ADR-007: 6 candidate stations x 5 buffer deltas x 3 cycle deltas on a 4-hour
+    # window = 90 short runs, not the 3,510 full-horizon runs the brief implied.
+    grid_rows, grid_base = scenarios.build_grid(cfg, [int(h) for h in grid_hot])
+    con.executemany(
+        f"INSERT OR REPLACE INTO whatif_grid VALUES ({','.join('?' * 7)})",
+        [(pid, r.station_id, r.buffer_delta, r.cycle_delta_pct, r.throughput_uph,
+          r.wip_units, r.new_bottleneck_station) for r in grid_rows],
+    )
+    con.execute("INSERT OR REPLACE INTO whatif_baseline VALUES (?,?,?,?,?)", (
+        pid, grid_base["throughput_uph"], grid_base["wip_units"],
+        grid_base["bottleneck_station"], grid_base["window_hours"]))
+
+    # ------------------------------------- masked-station soft-sensor validation
+    # The credibility move: hide the sensors on stations that HAVE them, reconstruct
+    # from neighbours + checklist proxies, and score against the withheld truth.
+    suite = build_soft_sensors(cfg, tel, ck, meta, seed=cfg.simulation.seed)
+    soft_validation = suite.validation_summary()
+
+    if suite.inferred is not None and not suite.inferred.empty:
+        inf = suite.inferred
+        inf = inf[inf["unit_seq"].isin(win["unit_seq"])]
+        id_of = sc_all["unit_id"] if "unit_id" in sc_all else None
+        rows_inf = []
+        for r in inf.itertuples():
+            uid = id_of.get(r.unit_seq) if id_of is not None else None
+            if uid is None:
+                continue
+            rows_inf.append((str(uid), pid, int(r.station_id), str(r.signal),
+                             float(r.value), "inferred", float(r.ci_low), float(r.ci_high)))
+        if rows_inf:
+            con.executemany(
+                f"INSERT OR REPLACE INTO station_readings VALUES ({','.join('?' * 8)})",
+                rows_inf,
+            )
+
+    # ------------------------------------------------- ablations + station value
+    fs = FeatureSet(X=feats, meta=meta, y=sc_all["y"].to_numpy(),
+                    y_true=sc_all["y_true"].to_numpy(),
+                    defect_mode=sc_all["defect_mode"].to_numpy())
+    val = validate.run_all(model, fs, cfg, seed=cfg.simulation.seed)
+
+    # Price of one PR-AUC point per year, from measured economics: annual defect
+    # population x what catching one is worth. Used to value retrofit uplift.
+    units_year = float(len(sc_all)) / cfg.simulation.duration_days * 250.0
+    cost_miss = (econ.cost("scrap_cost_per_unit") * 0.55
+                 + econ.cost("rework_cost_per_unit")
+                 + econ.cost("warranty_escape_cost_per_unit") * metrics["escape_rate"])
+    value_per_point = units_year * metrics["base_rate_test"] * cost_miss
+
+    uplift = {int(k): v for k, v in val["retrofit_uplift_estimate"].items()}
+    plan = scenarios.instrumentation_plan(cfg, econ, uplift, value_per_point)
+    con.executemany(
+        f"INSERT OR REPLACE INTO instrumentation_plan VALUES ({','.join('?' * 12)})",
+        [(pid, r["station_id"], r["station_name"], r["zone"], r["sensor_type"], r["cost"],
+          r["cost_source"], r["delta_pr_auc"], r["annual_value"], r["payback_months"],
+          r["window"], r["recommendation"]) for r in plan],
+    )
+
     # -------------------------------------------------------------------- metrics
     thr = metrics["thresholds"]
     flat = {
@@ -384,6 +451,14 @@ def build(config_path: str) -> dict:
         "marginal_value_of_doubling": thr["marginal_value_of_doubling"],
         "marginal_cost_of_doubling": thr["marginal_cost_of_doubling"],
         "bottleneck_detection_accuracy": bn_accuracy,
+        "bottleneck_shift_events": float(bn_report.shift_events),
+        "forecast_skill_vs_persistence": bn_report.forecast_skill,
+        "forecast_mae_model": bn_report.forecast_mae_model,
+        "forecast_mae_persistence": bn_report.forecast_mae_persistence,
+        "soft_sensor_ablation_delta": val["soft_sensor_ablation"]["delta_pr_auc"],
+        "soft_sensor_masked_r2": float(soft_validation.get("mean_r2", 0.0)),
+        "instrumentation_total_cost": float(sum(r["cost"] for r in plan)),
+        "instrumentation_total_value": float(sum(r["annual_value"] for r in plan)),
         "escape_rate": metrics["escape_rate"],
     }
     con.executemany("INSERT OR REPLACE INTO metrics VALUES (?,?,?,?)",
@@ -392,6 +467,12 @@ def build(config_path: str) -> dict:
         (pid, "reliability", json.dumps(metrics["reliability"])),
         (pid, "alarm_budget_curve", json.dumps(thr["alarm_budget_curve"])),
         (pid, "permutation_importance", json.dumps(metrics["permutation_importance"])),
+        (pid, "station_value", json.dumps(val["station_value"])),
+        (pid, "soft_sensor_ablation", json.dumps(val["soft_sensor_ablation"])),
+        (pid, "soft_sensor_validation", json.dumps(soft_validation)),
+        (pid, "bottleneck_report", json.dumps(bn_report.to_dict())),
+        (pid, "whatif_baseline", json.dumps(grid_base)),
+        (pid, "instrumentation_plan", json.dumps(plan)),
     ])
 
     # ------------------------------------------------------------ stream + index
@@ -439,9 +520,15 @@ def build(config_path: str) -> dict:
 
     con.executemany("INSERT OR REPLACE INTO stream_index VALUES (?,?,?)", idx_rows)
 
-    achieved = float(metrics.get("achieved_uph", 0.0)) or float(
-        len(sc) / max(1e-9, (tel["exit_ts"].max() - tel["entry_ts"].min()) / 3600.0)
-    )
+    # Achieved throughput must use the FULL unit population over the FULL horizon.
+    #
+    # This previously divided `sc` -- which by then had been trimmed to the replay window
+    # (ADR-032) -- by the whole 28-day span, and reported 2.1 UPH for a line that actually
+    # runs at 53.8. Nothing failed loudly: the number simply flowed into
+    # /api/economics/roi, where units_per_year = achieved_uph x 8 x 3 x 250, and quietly
+    # understated the entire business case by a factor of 25.
+    horizon_h = (tel["exit_ts"].max() - tel["entry_ts"].min()) / 3600.0
+    achieved = float(len(sc_all) / max(1e-9, horizon_h))
     con.execute("INSERT OR REPLACE INTO plant_meta VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
         pid, cfg.plant["name"], len(cfg.stations), cfg.units_per_hour_target, achieved,
         _ts(replay_start), _ts(replay_end), time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -455,6 +542,10 @@ def build(config_path: str) -> dict:
     db_mb = (ARTIFACTS / "pulsetwin.db").stat().st_size / 1e6
     return {
         "plant_id": pid, "elapsed_s": time.time() - t0,
+        "whatif_rows": len(grid_rows), "instrumentation_rows": len(plan),
+        "forecast_skill": bn_report.forecast_skill,
+        "soft_sensor_delta": val["soft_sensor_ablation"]["delta_pr_auc"],
+        "masked_r2": float(soft_validation.get("mean_r2", 0.0)),
         "units": len(urows), "factors": len(frows), "genealogy": len(win),
         "readings": len(rrows), "stream_events": len(win), "stream_index": len(idx_rows),
         "db_mb": db_mb, "npz_mb": npz_path.stat().st_size / 1e6,
@@ -474,7 +565,12 @@ def main() -> int:
           f"genealogy {r['genealogy']:,}   readings {r['readings']:,}")
     print(f"  stream events {r['stream_events']:,}  index {r['stream_index']:,}")
     print(f"  replay window {r['replay_start']} -> {r['replay_end']}")
-    print(f"  bottleneck detection accuracy {r['bottleneck_accuracy']:.1%}")
+    print(f"  bottleneck detection accuracy {r['bottleneck_accuracy']:.1%}   "
+          f"forecast skill vs persistence {r['forecast_skill']:+.3f}")
+    print(f"  what-if grid {r['whatif_rows']} scenarios   "
+          f"instrumentation plan {r['instrumentation_rows']} stations")
+    print(f"  masked-station soft sensor R2 {r['masked_r2']:.3f}   "
+          f"soft-sensor ablation delta PR-AUC {r['soft_sensor_delta']:+.4f}")
     print(f"  [{'PASS' if r['db_mb'] < 50 else 'FAIL'}] pulsetwin.db {r['db_mb']:.1f} MB (< 50)")
     print(f"  [{'PASS' if r['npz_mb'] < 5 else 'FAIL'}] model npz {r['npz_mb']:.2f} MB (< 5)")
     return 0

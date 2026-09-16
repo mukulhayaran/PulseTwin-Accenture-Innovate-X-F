@@ -33,7 +33,13 @@ from sklearn.metrics import average_precision_score  # noqa: E402
 DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 
 
-def run(config_path: str, data_root: Path = DATA_ROOT) -> dict:
+def run(config_path: str, data_root: Path = DATA_ROOT, hyperparams: dict | None = None,
+        output_suffix: str = "") -> dict:
+    """`hyperparams` and `output_suffix` exist for mlops/retrainer.py's champion-challenger
+    pipeline: a challenger trains with different hyperparameters and writes to
+    model{output_suffix}.pkl / metrics{output_suffix}.json so it never overwrites the
+    champion's own files. Every existing call site passes neither and is unaffected.
+    """
     t0 = time.time()
     cfg = load_plant_config(config_path)
     econ = load_economics_config()
@@ -44,7 +50,7 @@ def run(config_path: str, data_root: Path = DATA_ROOT) -> dict:
     ins = pd.read_parquet(d / "inspections.parquet")
 
     fs = build_features(cfg, tel, ck, ins)
-    model = train(fs, seed=cfg.simulation.seed)
+    model = train(fs, seed=cfg.simulation.seed, hyperparams=hyperparams)
 
     split = fs.meta["split"].to_numpy()
     te = split == "test"
@@ -81,9 +87,9 @@ def run(config_path: str, data_root: Path = DATA_ROOT) -> dict:
         "permutation_importance": importance,
     }
 
-    with (d / "model.pkl").open("wb") as fh:
+    with (d / f"model{output_suffix}.pkl").open("wb") as fh:
         pickle.dump({"model": model, "feature_names": model.feature_names}, fh)
-    with (d / "metrics.json").open("w", encoding="utf-8") as fh:
+    with (d / f"metrics{output_suffix}.json").open("w", encoding="utf-8") as fh:
         json.dump(metrics, fh, indent=2, default=float)
 
     # Per-unit scores for every split, consumed by build_artifact.
@@ -103,9 +109,12 @@ def run(config_path: str, data_root: Path = DATA_ROOT) -> dict:
     )
     scores["above_cost_threshold"] = (scores["calibrated_risk"] >= thr.cost_optimal).astype(int)
     scores["alert_fired"] = (scores["calibrated_risk"] >= thr.budget_constrained).astype(int)
-    scores.to_parquet(d / "scores.parquet", index=False)
-    fs.X.to_parquet(d / "features.parquet")
-    fs.meta.to_parquet(d / "feature_meta.parquet", index=False)
+    if not output_suffix:
+        # Only the champion pipeline writes these -- a challenger run must never mutate
+        # the artifacts build_artifact.py bakes into the committed database.
+        scores.to_parquet(d / "scores.parquet", index=False)
+        fs.X.to_parquet(d / "features.parquet")
+        fs.meta.to_parquet(d / "feature_meta.parquet", index=False)
 
     return metrics
 
