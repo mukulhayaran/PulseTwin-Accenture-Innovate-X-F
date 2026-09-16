@@ -1,0 +1,103 @@
+# Production-shaped stack: Postgres + Redis + MQTT + the ingestion bridge + the API.
+# `docker-compose.yml` (no suffix) stays the lightweight SQLite demo runtime; this file is
+# what an enterprise IT team would actually run. See docs/PRODUCTION_ARCHITECTURE.md.
+#
+#   make demo-prod        # docker compose -f docker-compose.prod.yml up --build
+#   make demo-prod-down   # docker compose -f docker-compose.prod.yml down -v
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pulsetwin
+      POSTGRES_USER: pulsetwin
+      POSTGRES_PASSWORD: pulsetwin_dev
+    ports:
+      # Host-side 5433, not 5432: some dev machines already run a native Postgres service
+      # on 5432 (a real collision hit during this build). Only the host mapping changes --
+      # every in-network service (backend, ingestion, migrate) still reaches Postgres at
+      # `postgres:5432`, unaffected.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulsetwin"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./infrastructure/mosquitto.conf:/mosquitto/config/mosquitto.conf
+
+  migrate:
+    build:
+      context: .
+      dockerfile: serve/Dockerfile
+    command: ["python", "-m", "migrations.migrate"]
+    environment:
+      DATABASE_URL: postgresql://pulsetwin:pulsetwin_dev@postgres:5432/pulsetwin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: .
+      dockerfile: serve/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://pulsetwin:pulsetwin_dev@postgres:5432/pulsetwin
+      REDIS_URL: redis://redis:6379
+      MQTT_BROKER: mqtt
+      MQTT_PORT: "1883"
+      PULSETWIN_FEEDBACK_DB: /tmp/pulsetwin_feedback.db
+    ports:
+      - "7860:7860"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:7860/api/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  ingestion:
+    build:
+      context: .
+      dockerfile: ingestion/Dockerfile
+    environment:
+      MQTT_BROKER: mqtt
+      MQTT_PORT: "1883"
+      DATABASE_URL: postgresql://pulsetwin:pulsetwin_dev@postgres:5432/pulsetwin
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      mqtt:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
