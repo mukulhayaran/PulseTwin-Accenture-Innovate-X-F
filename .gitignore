@@ -17,3 +17,9 @@ frontend/node_modules/
 frontend/.next/
 frontend/out/
 frontend/tsconfig.tsbuildinfo
+
+# Markdown is not committed here -- README.md is the only exception.
+# Note: this has no effect on the ~20 .md files already tracked (CLAUDE.md, docs/*.md);
+# .gitignore never applies to files already in the index. Use `git rm --cached` for those.
+*.md
+!README.md

@@ -109,7 +109,16 @@ def _publish_event(client: mqtt.Client, plant_id: str, zones: dict[int, str], re
 
     if payload:
         body = json.dumps({
-            "ts": rec["ts"], "unit_id": rec["unit_id"], "station_id": sid,
+            # Two clocks, deliberately, exactly as OPC-UA carries both a SourceTimestamp
+            # and a ServerTimestamp:
+            #   ts          -- the event's own (simulated) time, months in the past because
+            #                  this replays a committed artifact. Ordering key.
+            #   emitted_at  -- wall clock at publish. Freshness key.
+            # The subscriber must not measure arrival lag against `ts`: doing so made every
+            # reading look ~231 days late, pinning the timeliness component of every
+            # station's data-quality score at 0.0 (see ingestion/data_quality.py).
+            "ts": rec["ts"], "emitted_at": wall_now,
+            "unit_id": rec["unit_id"], "station_id": sid,
             "variant": rec.get("variant"), "lot_id": rec.get("lot_id"),
             "provenance": rec.get("provenance", {}), **payload,
         })

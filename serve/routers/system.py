@@ -88,6 +88,35 @@ def system_health(request: Request, plant_id: str = "plant_a",
     }
 
 
+@router.get("/api/system/sensor-dropouts")
+def sensor_dropouts(request: Request, plant_id: str = "plant_a",
+                     role: str = Depends(require_role("supervisor"))) -> dict[str, Any]:
+    """Just the active sensor dropouts, at `supervisor` level.
+
+    /api/system/health carries the same list but is gated at `manager`, because it also
+    exposes DB pool internals and uptime. The floor supervisor must see "S8 vibration is
+    dark" -- it is their line, and SensorDropoutAlert.tsx renders it on /supervisor
+    (finals brief Phase F5) -- but has no business reading connection-pool stats.
+
+    Before this existed, /supervisor polled /api/system/health as role=supervisor and got
+    403 every 10 seconds; the page's `.catch()` swallowed it, so the dropout banner and
+    the pulsing station border could never appear no matter how many sensors went dark.
+    Widening the /api/system/health gate would have been the smaller diff and the wrong
+    fix: least privilege is the point of the table in docs/SECURITY.md.
+    """
+    dropouts = _active_dropouts(request.app.state.ops, plant_id)
+    metrics.sensor_dropouts_active.labels(plant_id=plant_id).set(len(dropouts))
+    return {
+        "plant_id": plant_id,
+        "sensor_dropouts_active": len(dropouts),
+        "dropout_details": [
+            {"station_id": d["station_id"], "sensor": d["sensor_type"],
+             "since": d["last_reading_at"], "duration_s": d["dropout_duration_s"]}
+            for d in dropouts
+        ],
+    }
+
+
 @router.get("/api/system/ingestion-lag")
 def ingestion_lag(request: Request, plant_id: str = "plant_a",
                    role: str = Depends(require_role("manager"))) -> dict[str, Any]:
@@ -102,15 +131,30 @@ def ingestion_lag(request: Request, plant_id: str = "plant_a",
            WHERE plant_id=? ORDER BY timestamp DESC LIMIT 200""",
         (plant_id,),
     )
+    def _aware(value: str) -> datetime:
+        """Both operands on the same clock before subtracting.
+
+        `timestamp` comes from the column DEFAULT and is UTC-aware ('...Z'), while
+        `last_reading_at` is written by ingestion/ from a replayed event and is naive.
+        Subtracting a naive datetime from an aware one raises TypeError, which this
+        function's caller did not catch (it caught ValueError only) -- so a single sensor
+        dropout row was enough to make GET /api/system/ingestion-lag return a bare 500,
+        taking the Ops view's Ingestion Lag panel down with it. It surfaced only once a
+        dropout existed, which is precisely the state the finals demo's Act 2 creates.
+        A naive value is interpreted as UTC, matching how every other reader here treats
+        these columns.
+        """
+        dt = datetime.fromisoformat(value)
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
     lags = []
     for r in rows:
         if not r["last_reading_at"]:
             continue
         try:
-            written = datetime.fromisoformat(r["timestamp"])
-            observed = datetime.fromisoformat(r["last_reading_at"])
-            lags.append(max(0.0, (written - observed).total_seconds()))
-        except ValueError:
+            lags.append(max(0.0, (_aware(r["timestamp"]) - _aware(r["last_reading_at"])
+                                   ).total_seconds()))
+        except (ValueError, TypeError):
             continue
 
     current = lags[0] if lags else None

@@ -93,6 +93,8 @@ class Ingestor:
         self.sensor_status: dict[tuple[str, int, str], str] = {}
         self.reorder_heap: list[tuple[float, int, dict]] = []
         self._seq = itertools.count()
+        self.watermark = 0.0          # newest EVENT timestamp seen -- see flush_ready()
+        self.last_message_at = 0.0    # newest ARRIVAL wall clock -- idle-drain trigger
         self.buffers = {
             pid: FeatureBuffer(redis_url, prediction_cutoff_station(pid)) for pid in plant_ids
         }
@@ -126,8 +128,14 @@ class Ingestor:
             "plant_id": parsed.plant_id, "station_id": parsed.station_id,
             "unit_id": body.get("unit_id"), "event_ts_iso": body["ts"],
             "event_ts": event_ts, "arrival_ts": arrival_ts,
+            # Wall clock at the edge gateway (ingestion/mqtt_publisher.py). Absent only if
+            # something upstream of us publishes live data whose `ts` already IS wall
+            # clock, in which case event_ts is the right freshness reference anyway.
+            "emitted_at": float(body.get("emitted_at", event_ts)),
             "signals": {k: body[k] for k in SIG_COLS if k in body},
         }
+        self.watermark = max(self.watermark, event_ts)
+        self.last_message_at = arrival_ts
         heapq.heappush(self.reorder_heap, (event_ts, next(self._seq), record))
 
     def _on_state(self, parsed, body: dict, arrival_ts: float) -> None:
@@ -142,9 +150,28 @@ class Ingestor:
             self._log_prediction(parsed.plant_id, result)
 
     def flush_ready(self, now: float) -> int:
-        """Write every buffered reading whose event is older than the reorder window."""
+        """Write every buffered reading the reorder window has closed over.
+
+        Cut against an EVENT-TIME WATERMARK (the newest event timestamp seen so far), not
+        against wall clock. `now - REORDER_WINDOW_S` compared a simulated event timestamp
+        from the replayed artifact -- 2026-01-28 -- against real wall clock months later,
+        so the condition was true for every record on arrival: the heap drained on the
+        first call, nothing was ever buffered, and out-of-order arrivals were written in
+        arrival order. That is the F2 acceptance criterion "late-arriving messages are
+        correctly reordered", and it was silently not happening.
+
+        A watermark is also the right primitive independent of the replay: it works
+        whether events are months old or live, and it tracks the publisher's own speed
+        multiplier for free.
+
+        `now` (wall clock) is still used, but only as an IDLE DRAIN: if the stream goes
+        quiet the watermark stops advancing, and without this the tail of the heap would
+        sit unwritten forever.
+        """
         n = 0
-        while self.reorder_heap and self.reorder_heap[0][0] <= now - REORDER_WINDOW_S:
+        idle = self.last_message_at > 0.0 and (now - self.last_message_at) > REORDER_WINDOW_S
+        cutoff = float("inf") if idle else self.watermark - REORDER_WINDOW_S
+        while self.reorder_heap and self.reorder_heap[0][0] <= cutoff:
             _, _, record = heapq.heappop(self.reorder_heap)
             self._write_reading(record)
             n += 1
@@ -156,8 +183,13 @@ class Ingestor:
         buf = self.buffers.get(plant_id)
 
         for signal, value in record["signals"].items():
+            # `emitted_at`, not `event_ts`: timeliness asks "how long between the edge
+            # gateway publishing this and us receiving it", which is a wall-clock lag.
+            # Passing the replayed event timestamp made that lag ~231 days for every
+            # reading, so `timeliness` was 0.0 always and no station could ever score
+            # above 0.70 overall no matter how healthy its feed.
             self.tracker.record(plant_id, station_id, signal, value,
-                                 record["event_ts"], record["arrival_ts"], nominal)
+                                 record["emitted_at"], record["arrival_ts"], nominal)
             valid = is_valid_reading(signal, value)
             if not valid:
                 self.n_invalid += 1

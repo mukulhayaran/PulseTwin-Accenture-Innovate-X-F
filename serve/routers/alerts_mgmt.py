@@ -11,7 +11,7 @@ same fact.
 
 from __future__ import annotations
 
-import time
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -52,7 +52,10 @@ def acknowledge_alert(unit_id: str, req: AcknowledgeRequest, request: Request,
                unit_id, {"plant_id": req.plant_id})
     return {
         "acknowledged": True, "unit_id": unit_id, "by_role": role,
-        "acknowledged_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        # UTC, matching the audit_log row this same call writes (whose timestamp column
+        # DEFAULTs to UTC). Local time here meant the acknowledgement the UI displayed and
+        # the audit entry recording it disagreed by the host's UTC offset.
+        "acknowledged_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
 

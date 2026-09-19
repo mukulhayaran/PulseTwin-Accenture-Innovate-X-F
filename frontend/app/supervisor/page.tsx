@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Containment, StationCfg, StreamEvent, UnitDetail, Zone,
-  acknowledgeAlert, getContainment, getEscalationPolicy, getRole, getStations,
-  getSystemHealth, getUnit, postFeedback, setRole, streamUrl,
+  acknowledgeAlert, getContainment, getEscalationPolicy, getRole, getSensorDropouts,
+  getStations, getUnit, postFeedback, setRole, streamUrl,
 } from "@/lib/api";
 import OfflineBanner from "@/components/shared/OfflineBanner";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
@@ -62,13 +62,17 @@ export default function SupervisorPage() {
   // relying on lib/api.ts's global "leadership" default.
   useEffect(() => { setRole("supervisor"); }, []);
 
-  // System health -- real infra state, not simulated -- polled independently of the
+  // Sensor dropouts -- real infra state, not simulated -- polled independently of the
   // replay clock so a dropout is visible even if the stream itself is paused.
+  //
+  // getSensorDropouts, NOT getSystemHealth: this page pins itself to `supervisor` above,
+  // and /api/system/health requires `manager`. That mismatch returned 403 on every poll,
+  // silently caught below, so this panel was permanently empty.
   useEffect(() => {
     let cancelled = false;
     const poll = () => {
-      getSystemHealth(plant)
-        .then((r) => { if (!cancelled) setDropouts(r.ingestion?.dropout_details ?? []); })
+      getSensorDropouts(plant)
+        .then((r) => { if (!cancelled) setDropouts(r.dropout_details ?? []); })
         .catch(() => { /* transient health-endpoint failure must not crash the page */ });
     };
     poll();

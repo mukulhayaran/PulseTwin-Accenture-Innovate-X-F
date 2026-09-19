@@ -17,6 +17,7 @@ import json
 import os
 import pickle
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")  # ADR-016 -- before sklearn imports
@@ -78,7 +79,10 @@ def run(config_path: str, data_root: Path = DATA_ROOT, hyperparams: dict | None 
 
     metrics = {
         "plant_id": cfg.plant_id,
-        "trained_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        # UTC: model_registry stores this verbatim and serve/routers/model_health.py
+        # computes age_days against datetime.now(timezone.utc). A local naive
+        # stamp made a freshly-trained model report a NEGATIVE age.
+        "trained_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "elapsed_s": time.time() - t0,
         "escape_rate": escape_rate,
         "oracle_pr_auc": oracle,

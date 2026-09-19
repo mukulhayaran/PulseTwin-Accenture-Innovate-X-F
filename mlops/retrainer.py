@@ -31,6 +31,7 @@ import os
 import pickle
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from offline.config_schema import load_plant_config
@@ -65,10 +66,34 @@ def _write_job_status(job_id: str, status: dict) -> None:
     )
 
 
+KEEP_CHALLENGER_ARTIFACTS = 10
+
+
+def _prune_challenger_artifacts(plant_id: str, keep: int = KEEP_CHALLENGER_ARTIFACTS) -> None:
+    """Keep the `keep` most recent challenger .npz files for this plant.
+
+    One file per challenger is what makes `artifact_path` trustworthy (a single reused
+    path meant a retrain overwrote the weights behind rows already marked `champion`), but
+    one file per run with nothing pruning them grows without bound -- a test suite that
+    retrains a few times per run fills artifacts/ on its own. `keep` is deliberately
+    larger than any plausible promote/rollback depth, so a rollback target is never the
+    file this deletes. Registry ROWS are never pruned; only the binaries behind old ones.
+    """
+    files = sorted(
+        ARTIFACTS.glob(f"model_{plant_id}_defect_v*.npz"),
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
+    for stale in files[keep:]:
+        try:
+            stale.unlink()
+        except OSError:  # pragma: no cover - a locked file must not fail a retrain
+            pass
+
+
 def run(config_path: str, job_id: str | None = None) -> dict:
     cfg = load_plant_config(config_path)
     pid = cfg.plant_id
-    started_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     challenger_id = f"{pid}_defect_v{int(time.time())}"
 
     if job_id:
@@ -84,8 +109,14 @@ def run(config_path: str, job_id: str | None = None) -> dict:
         with (d / "model_challenger.pkl").open("rb") as fh:
             bundle = pickle.load(fh)
 
-        npz_path = ARTIFACTS / f"model_{pid}_challenger.npz"
+        # One file PER CHALLENGER, not a single reused `model_{pid}_challenger.npz`.
+        # With a fixed path, every registry row for this plant pointed at the same file,
+        # so the next retrain silently overwrote the weights of the model a previous row
+        # called `champion` -- and a promotion that reads `artifact_path` would then load
+        # the wrong model entirely. The id is already unique per run.
+        npz_path = ARTIFACTS / f"model_{challenger_id}.npz"
         export(bundle["model"], npz_path, bundle["feature_names"])
+        _prune_challenger_artifacts(pid)
 
         model_registry.register(
             model_id=challenger_id, model_type="defect_risk", version=int(time.time()),
@@ -112,7 +143,7 @@ def run(config_path: str, job_id: str | None = None) -> dict:
 
         result = {
             "status": "complete", "plant_id": pid, "challenger_id": challenger_id,
-            "started_at": started_at, "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "started_at": started_at, "finished_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "report": report,
         }
         if job_id:

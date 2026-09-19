@@ -35,6 +35,12 @@ def compare(champion_metrics: dict, challenger_metrics: dict, champion_id: str,
     c = _pull(champion_metrics)
     ch = _pull(challenger_metrics)
 
+    # Deliberately asymmetric: STRICTLY better on PR-AUC (the headline metric -- an
+    # identical model must not be promotable), NOT WORSE on the two guardrails. So an
+    # exact tie reports beats_pr_auc=False alongside the two guardrails passing, and the
+    # recommendation is REJECT. That combination looks contradictory in the report if you
+    # read the guardrail keys as "beat"; `beats_precision_at_budget` is really
+    # "did not regress", the same test `beats_or_matches_calibration` names honestly.
     beats_pr_auc = (c["pr_auc"] is not None and ch["pr_auc"] is not None
                     and ch["pr_auc"] > c["pr_auc"])
     beats_precision = (c["precision_at_budget"] is not None

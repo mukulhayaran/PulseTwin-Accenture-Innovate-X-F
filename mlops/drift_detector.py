@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -125,7 +126,7 @@ def run(config_path: str, model_id: str | None = None) -> dict:
     current_idx = test_meta.sort_values("prediction_ts")["unit_seq"].to_numpy()[-ROLLING_WINDOW_UNITS:]
 
     rows_to_write: list[dict] = []
-    now_iso = time.strftime("%Y-%m-%dT%H:%M:%S")
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # ------------------------------------------------------------- per-feature PSI
     top_features = [r["feature"] for r in metrics["permutation_importance"][:TOP_N_FEATURES]]

@@ -24,16 +24,32 @@ def _metric(con, plant_id: str, key: str) -> float | None:
 
 
 def _latest_run(ops_con, plant_id: str, metric_type: str) -> list[dict]:
+    """Most recent value per feature for this metric type.
+
+    NOT "every row sharing the newest timestamp". mlops/drift_detector.py inserts its ~20
+    PSI rows one statement at a time and lets the column DEFAULT stamp each one, so every
+    row of a single drift run carries a DIFFERENT millisecond timestamp. Filtering on
+    `timestamp == rows[0]["timestamp"]` therefore kept exactly ONE feature and silently
+    discarded the other 19: /api/model/health reported `features_total: 1,
+    features_shifted: 0, worst_feature: null` and an overall status of "healthy" from a run
+    whose own output was "10/20 features shifted, worst PSI 4.69, WARNING".
+
+    Keyed by feature_name and ordered by `id` (strictly monotonic on insert) rather than by
+    `timestamp`, for the same reason serve/routers/system.py orders sensor_health by id:
+    millisecond resolution ties are routine, and their tie-break order is undefined.
+    """
     rows = db.query_all(
         ops_con,
         """SELECT * FROM drift_metrics WHERE plant_id=? AND metric_type=?
-           ORDER BY timestamp DESC LIMIT 100""",
+           ORDER BY id DESC LIMIT 500""",
         (plant_id, metric_type),
     )
-    if not rows:
-        return []
-    newest = rows[0]["timestamp"]
-    return [r for r in rows if r["timestamp"] == newest]
+    latest: dict[str | None, dict] = {}
+    for r in rows:
+        key = r.get("feature_name")
+        if key not in latest:
+            latest[key] = r
+    return list(latest.values())
 
 
 @router.get("/api/model/health")
@@ -50,7 +66,18 @@ def model_health(request: Request, plant_id: str = "plant_a",
     )
 
     psi_rows = _latest_run(ops, plant_id, "psi")
-    shifted = [r for r in psi_rows if r["alert_triggered"]]
+    # Mirrors mlops/drift_detector.PSI_WARN -- keep the two in sync (serve/ cannot import
+    # mlops/, ADR-033; same arrangement as alerts_mgmt.ESCALATION_LEVELS mirroring
+    # configs/alert_policies.yaml).
+    #
+    # Counting `alert_triggered` alone (PSI > 0.2) meant this endpoint and the detector
+    # that produced the row reported DIFFERENT shifted counts for the same run -- 7 here
+    # against the detector's own "10/20 features shifted" -- because the stored flag only
+    # marks the alert band and drops the 0.1-0.2 warning band entirely. The finals brief's
+    # own example response pairs `features_shifted` with a `worst_feature` of status
+    # "warning", so warning counts as shifted.
+    PSI_WARN = 0.1
+    shifted = [r for r in psi_rows if r["value"] > PSI_WARN]
     worst = max(psi_rows, key=lambda r: r["value"], default=None)
     for r in psi_rows:
         if r.get("feature_name"):

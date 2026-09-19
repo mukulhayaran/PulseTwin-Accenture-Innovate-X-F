@@ -96,6 +96,13 @@ async def lifespan(app: FastAPI):
     app.state.backend = STATE["backend"]
     app.state.started = STATE["started"]
     app.state.plants = STATE["plants"]
+    # The SAME dict object, not a copy: serve/routers/admin.py swaps an entry in here when
+    # a challenger is promoted, and _predict() below reads STATE["scorers"], so both must
+    # see the one mapping. Without this, promotion updated a registry row and nothing
+    # else -- /api/predict/defect kept serving the old model forever, while
+    # docs/MLOPS_LIFECYCLE.md claimed promotion "is the only code path that changes what
+    # /api/predict/defect actually serves".
+    app.state.scorers = STATE["scorers"]
 
     yield
     seen = set()
@@ -107,13 +114,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PulseTwin API", default_response_class=ORJSONResponse, lifespan=lifespan)
+# ORDER MATTERS, and it is the reverse of how it reads. `add_middleware` pushes onto the
+# TOP of the stack, so the LAST one added is the OUTERMOST. RateLimitMiddleware was added
+# last and therefore wrapped CORS -- its 429 short-circuits and returns a JSONResponse
+# that never passes through CORSMiddleware, so the response carried no
+# Access-Control-Allow-Origin. A browser hitting the per-role limit saw an opaque CORS
+# failure, indistinguishable from the backend being down, instead of a 429 the UI could
+# explain. CORS is added last here so it stays outermost and decorates every response,
+# including the rejections.
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],      # demo posture -- see docs/ARCHITECTURE.md
     allow_methods=["*"],
     allow_headers=["*"],      # covers X-PulseTwin-Role (serve/middleware/auth.py)
 )
-app.add_middleware(RateLimitMiddleware)
 
 # Generic HTTP request-count/latency metrics, exposed at GET /metrics. The
 # finals-brief-specific gauges/counters in serve/metrics.py are updated inline at the
@@ -318,6 +333,11 @@ def _fallback_predict(req: PredictRequest) -> PredictResponse:
 
 @app.post("/api/predict/defect", response_model=PredictResponse)
 def predict(req: PredictRequest) -> PredictResponse:
+    # Validate the plant BEFORE touching a labelled metric. Incrementing first meant any
+    # caller could mint an unbounded number of Prometheus label values by POSTing made-up
+    # plant_ids -- a cardinality explosion in the monitoring backend, from unauthenticated
+    # input. `_plant` raises 404 for anything not in the artifact.
+    _plant(req.plant_id)
     prom_metrics.predictions_total.labels(plant_id=req.plant_id).inc()
     with prom_metrics.prediction_latency_seconds.labels(plant_id=req.plant_id).time():
         return _predict(req)
@@ -370,6 +390,13 @@ def _predict(req: PredictRequest) -> PredictResponse:
 # ------------------------------------------------------------------------ unit/trace
 
 
+# A NEGATIVE limit means "no limit" in SQLite, so `?limit=-1` quietly turned every capped
+# list endpoint into a full table scan of the artifact. serve/routers/audit.py already
+# clamped; these did not. Clamp at the same place rather than trusting the caller.
+def _clamp_limit(limit: int, cap: int) -> int:
+    return max(1, min(limit, cap))
+
+
 @app.get("/api/units")
 def units(plant_id: str = "plant_a", alerts_only: bool = False, limit: int = 100) -> list[dict]:
     _plant(plant_id)
@@ -379,7 +406,7 @@ def units(plant_id: str = "plant_a", alerts_only: bool = False, limit: int = 100
         # (migrations/001) and SQLite has treated TRUE/FALSE as 1/0 aliases since 3.23.
         sql += " AND alert_fired = TRUE"
     sql += " ORDER BY calibrated_risk DESC LIMIT ?"
-    return db.query_all(STATE["con"], sql, (plant_id, limit))
+    return db.query_all(STATE["con"], sql, (plant_id, _clamp_limit(limit, 2000)))
 
 
 @app.get("/api/units/{unit_id}")
@@ -510,7 +537,7 @@ def bottleneck_history(plant_id: str = "plant_a", limit: int = 700) -> list[dict
     return db.query_all(
         STATE["con"],
         "SELECT * FROM bottleneck_windows WHERE plant_id=? ORDER BY window_start LIMIT ?",
-        (plant_id, limit),
+        (plant_id, _clamp_limit(limit, 5000)),
     )
 
 
@@ -730,7 +757,20 @@ def instrumentation_plan(plant_id: str = "plant_a",
     _plant(plant_id)
     rows = db.query_all(
         STATE["con"],
-        "SELECT * FROM instrumentation_plan WHERE plant_id=? ORDER BY payback_months",
+        # `(payback_months IS NULL)` first, THEN the value. A plain `ORDER BY
+        # payback_months` sorted NULLs to the TOP on SQLite, so this table -- a capital
+        # recommendation, rendered top-to-bottom in the Leadership view -- led with every
+        # DEFER candidate (annual value $0, payback undefined) and buried the only PROCEED
+        # row at the bottom: plant A showed its single funded retrofit 4th of 4, plant B
+        # showed its two 7th and 8th of 8. The endpoint's own docstring calls this a
+        # "ranking by measured marginal model value per dollar"; it was inverted at the top.
+        #
+        # It was also backend-dependent: SQLite sorts NULLs first, Postgres sorts them
+        # last, so the same request returned a different order depending on which database
+        # answered -- exactly what serve/db.py exists to prevent. The boolean-expression
+        # form is portable across both; `NULLS LAST` is not (SQLite lacks it).
+        "SELECT * FROM instrumentation_plan WHERE plant_id=? "
+        "ORDER BY (payback_months IS NULL), payback_months",
         (plant_id,),
     )
     return {

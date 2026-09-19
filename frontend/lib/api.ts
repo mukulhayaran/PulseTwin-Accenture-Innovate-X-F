@@ -180,12 +180,28 @@ export async function getWhatIf(
 
 export const getModelHealth = (plant: string) => get<any>(`/api/model/health?plant_id=${plant}`);
 export const getSystemHealth = (plant: string) => get<any>(`/api/system/health?plant_id=${plant}`);
+// Supervisor-gated slice of the same dropout list. /supervisor must NOT call
+// getSystemHealth: that endpoint requires `manager`, so a page that pins itself to
+// `supervisor` got a silent 403 on every poll and never showed a dropout.
+export const getSensorDropouts = (plant: string) =>
+  get<{ sensor_dropouts_active: number; dropout_details: any[] }>(
+    `/api/system/sensor-dropouts?plant_id=${plant}`
+  );
 export const getIngestionLag = (plant: string) =>
   get<any>(`/api/system/ingestion-lag?plant_id=${plant}`);
 export const getAuditLog = (params: {
   role?: string; action?: string; from?: string; to?: string; limit?: number;
 } = {}) => {
-  const q = new URLSearchParams(params as Record<string, string>).toString();
+  // Drop undefined/empty entries BEFORE building the query string. `new URLSearchParams
+  // ({role: undefined})` stringifies the value, producing the literal `role=undefined` --
+  // which the backend then matched as `WHERE user_role = 'undefined'`, so AuditLogViewer
+  // with no filters selected returned zero rows against a table with entries in it.
+  const clean = Object.fromEntries(
+    Object.entries(params)
+      .filter(([, v]) => v !== undefined && v !== null && v !== "")
+      .map(([k, v]) => [k, String(v)])
+  );
+  const q = new URLSearchParams(clean).toString();
   return get<{ entries: any[]; count: number }>(`/api/audit/log${q ? `?${q}` : ""}`);
 };
 export const getAuditActions = () => get<{ actions: string[] }>("/api/audit/actions");

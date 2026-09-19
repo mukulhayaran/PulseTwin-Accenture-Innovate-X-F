@@ -15,7 +15,7 @@ must stay in sync -- see the cross-reference comment in admin.py.
 from __future__ import annotations
 
 import json
-import time
+from datetime import datetime, timezone
 
 from serve import db
 
@@ -23,6 +23,13 @@ from serve import db
 def _con():
     con, _backend = db.open_ops_only()
     return con
+
+
+def _utc_now() -> str:
+    """UTC, not `time.strftime` local naive -- see serve/routers/admin.py's _utc_now for
+    the `age_days: -1` this mismatch produced. Both modules write the same columns and
+    must agree on the clock."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def register(model_id: str, model_type: str, version: int, plant_id: str, trained_at: str,
@@ -89,7 +96,7 @@ def promote(model_id: str, promoted_by: str = "system") -> dict:
     if challenger["status"] != "challenger":
         raise ValueError(f"model {model_id} is '{challenger['status']}', not a challenger")
 
-    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    now = _utc_now()
     previous = db.query_one(
         con,
         "SELECT model_id FROM model_registry WHERE plant_id=? AND model_type=? AND status='champion'",
@@ -122,16 +129,40 @@ def rollback(plant_id: str, model_type: str = "defect_risk") -> dict:
     )
     if not previous:
         raise ValueError(f"no retired model to roll back to for {plant_id}/{model_type}")
-    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    now = _utc_now()
     if current:
         db.execute(con, "UPDATE model_registry SET status='retired', retired_at=? WHERE model_id=?",
                    (now, current["model_id"]))
-    db.execute(con, "UPDATE model_registry SET status='champion', promoted_at=? WHERE model_id=?",
-               (now, previous["model_id"]))
+    # promoted_by too, not just promoted_at: serve/routers/admin.py's rollback_model() sets
+    # both, and this copy setting only one is exactly the drift the module docstring warns
+    # about -- a model rolled back through the API recorded an approver, the same rollback
+    # through this module recorded none.
+    db.execute(con, "UPDATE model_registry SET status='champion', promoted_at=?, promoted_by=? "
+                    "WHERE model_id=?", (now, "system_rollback", previous["model_id"]))
     return {"rolled_back_to": previous["model_id"],
             "replaced": current["model_id"] if current else None}
 
 
 def mark_failed(model_id: str, notes: str) -> None:
-    db.execute(_con(), "UPDATE model_registry SET status='failed', notes=? WHERE model_id=?",
-               (notes, model_id))
+    """Record a failed training run.
+
+    INSERT-then-UPDATE, not UPDATE alone. mlops/retrainer.py calls this from its `except`
+    block, and the most common failure (training itself raising) happens BEFORE register()
+    has inserted the row -- so a bare UPDATE matched zero rows and the failure left no
+    trace at all in the registry. `status='failed'` is one of the four states
+    migrations/003 defines, and it was unreachable on the path that actually produces it.
+    """
+    con = _con()
+    if db.query_one(con, "SELECT model_id FROM model_registry WHERE model_id=?", (model_id,)):
+        db.execute(con, "UPDATE model_registry SET status='failed', notes=? WHERE model_id=?",
+                   (notes, model_id))
+        return
+    plant_id = model_id.split("_defect_")[0] if "_defect_" in model_id else "unknown"
+    db.execute(
+        con,
+        """INSERT INTO model_registry
+               (model_id, model_type, version, status, plant_id, trained_at,
+                training_data_range, metrics, artifact_path, notes)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (model_id, "defect_risk", 0, "failed", plant_id, _utc_now(), "", "{}", "", notes),
+    )
