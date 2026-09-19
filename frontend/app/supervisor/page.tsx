@@ -1,24 +1,38 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Containment, StationCfg, StreamEvent, UnitDetail, Zone,
   acknowledgeAlert, getContainment, getEscalationPolicy, getRole, getSensorDropouts,
   getStations, getUnit, postFeedback, setRole, streamUrl,
 } from "@/lib/api";
-import OfflineBanner from "@/components/shared/OfflineBanner";
+import { cn } from "@/lib/cn";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import SensorDropoutAlert from "@/components/supervisor/SensorDropoutAlert";
 import EscalationChain from "@/components/supervisor/EscalationChain";
 import { useAuditToast } from "@/components/shared/AuditToast";
+import {
+  AppShell, Badge, Button, DataTable, Panel, SegmentedControl, Skeleton, Stat, Tooltip,
+  type Column,
+} from "@/components/ui";
 
-const STATE_COLOR: Record<string, string> = {
-  working: "bg-signal-green/80 border-signal-green",
-  blocked: "bg-signal-red/70 border-signal-red",
-  starved: "bg-signal-amber/70 border-signal-amber",
-  down: "bg-signal-red border-red-300",
-  idle: "bg-bg-surface border-txt-muted/40",
+// Station state -> surface treatment. Tint + border rather than a flat fill, so a
+// 42-station line reads as a map instead of a block of colour.
+const STATE_STYLE: Record<string, string> = {
+  working: "border-ok/40 bg-ok/12 text-ok-fg",
+  blocked: "border-danger/45 bg-danger/12 text-danger-fg",
+  starved: "border-warn/45 bg-warn/12 text-warn-fg",
+  down: "border-danger bg-danger/25 text-danger-fg",
+  idle: "border-line bg-surface-2 text-ink-faint",
+};
+
+const STATE_DOT: Record<string, string> = {
+  working: "bg-ok",
+  blocked: "bg-danger",
+  starved: "bg-warn",
+  down: "bg-danger",
+  idle: "bg-ink-faint/50",
 };
 
 interface LiveStation {
@@ -49,6 +63,7 @@ export default function SupervisorPage() {
   const [escalation, setEscalation] = useState<any>(null);
   const [acked, setAcked] = useState<Record<string, string>>({});
   const { show, ToastElement } = useAuditToast();
+  const reduced = useReducedMotion();
 
   useEffect(() => { getEscalationPolicy().then(setEscalation).catch(() => setEscalation(null)); }, []);
 
@@ -137,7 +152,12 @@ export default function SupervisorPage() {
       es.addEventListener("station_update", (ev) => push(JSON.parse((ev as MessageEvent).data)));
       es.addEventListener("alert", (ev) => push(JSON.parse((ev as MessageEvent).data)));
     });
-    return () => { cancelled = true; es?.close(); setConnected(false); };
+    // Deliberately does NOT setConnected(false): this cleanup runs on every speed and
+    // plant change, and marking the twin offline for the ~50ms of an intentional
+    // reconnect flashed the full-width TWIN OFFLINE banner on each one -- which both
+    // lies to the operator and shifted the entire page (measured CLS 0.14). A genuine
+    // failure still lands here via the new EventSource's onerror below.
+    return () => { cancelled = true; es?.close(); };
     // retryNonce has no effect on what the stream does -- it exists so OfflineBanner's
     // [Retry Now] button (and its auto-retry ticker) can force this effect to re-run and
     // open a fresh EventSource without duplicating the connection logic above.
@@ -154,344 +174,466 @@ export default function SupervisorPage() {
     show("Action logged");
   };
 
-  const budgetColor =
-    budget.used >= budget.max ? "text-signal-red"
-      : budget.used >= budget.max - 1 ? "text-signal-amber" : "text-signal-green";
+  const budgetTone =
+    budget.used >= budget.max ? "danger" : budget.used >= budget.max - 1 ? "warn" : "ok";
 
   const simTime = useMemo(() => (clock ? clock.slice(11, 19) : "--:--:--"), [clock]);
   const simDate = useMemo(() => (clock ? clock.slice(0, 10) : ""), [clock]);
 
+  const containmentCols: Column<Containment["at_risk_units"][number]>[] = [
+    { key: "unit", header: "Unit", cell: (u) => <span className="text-numeric text-ink">{u.unit_id}</span> },
+    { key: "at", header: "At", cell: (u) => <span className="text-numeric text-ink-dim">S{u.current_station}</span> },
+    {
+      key: "risk", header: "Risk", align: "right",
+      cell: (u) => (
+        <span className={cn("text-numeric font-semibold", u.risk > 0.5 ? "text-danger-fg" : "text-warn-fg")}>
+          {(u.risk * 100).toFixed(0)}%
+        </span>
+      ),
+    },
+    {
+      key: "shared", header: "Shared factors",
+      // Group labels only -- never an operator ID (CLAUDE.md §3, operator privacy).
+      cell: (u) => <span className="text-ink-faint">{u.shared_factors.join(", ")}</span>,
+    },
+    {
+      key: "action", header: "Action", align: "right",
+      cell: (u) => (
+        <Badge variant={u.action === "HOLD" ? "danger" : u.action === "INSPECT" ? "warn" : "neutral"}>
+          {u.action}
+        </Badge>
+      ),
+    },
+  ];
+
   return (
-    <div className="min-h-screen bg-bg-primary text-txt-primary font-mono text-[13px]">
-      <OfflineBanner
-        connected={connected}
-        lastKnownAt={lastKnownAt}
-        onRetry={() => setRetryNonce((n) => n + 1)}
-      />
-      {/* ------------------------------------------------------------- top bar */}
-      <header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-bg-surface px-4 py-2">
-        <div className="font-semibold tracking-wide text-signal-blue">PULSETWIN</div>
+    <AppShell
+      persona="Supervisor"
+      plant={plant}
+      onPlantChange={setPlant}
+      role={getRole()}
+      connected={connected}
+      lastKnownAt={lastKnownAt}
+      onRetry={() => setRetryNonce((n) => n + 1)}
+      controls={
+        <>
+          <SegmentedControl
+            name="speed"
+            aria-label="Replay speed"
+            value={speed}
+            onChange={setSpeed}
+            options={[1, 5, 10, 50].map((s) => ({ value: s, label: `${s}×` }))}
+          />
 
-        <select
-          value={plant}
-          onChange={(e) => setPlant(e.target.value)}
-          className="bg-bg-card border border-bg-surface px-2 py-1 rounded"
-        >
-          <option value="plant_a">Plant A — Midwest Assembly</option>
-          <option value="plant_b">Plant B — Southern Truck</option>
-        </select>
-
-        <div className="flex items-center gap-1">
-          <span className="text-txt-muted">SPEED</span>
-          {[1, 5, 10, 50].map((s) => (
-            <button
-              key={s}
-              onClick={() => setSpeed(s)}
-              className={`px-2 py-0.5 rounded border ${
-                speed === s
-                  ? "border-signal-blue text-signal-blue"
-                  : "border-bg-surface text-txt-muted hover:text-txt-primary"
-              }`}
-            >
-              {s}×
-            </button>
-          ))}
-        </div>
-
-        {/* Budget is SERVER-derived (ADR-012): it survives a refresh and view switches,
-            which client-side accumulation could not, since localStorage is banned. */}
-        <div className="flex items-center gap-2">
-          <span className="text-txt-muted">ALERTS</span>
-          <span className={`font-semibold ${budgetColor}`}>
-            {budget.used} / {budget.max}
-          </span>
-          <div className="h-1.5 w-24 bg-bg-surface rounded overflow-hidden">
-            <div
-              className={`h-full ${
-                budget.used >= budget.max ? "bg-signal-red"
-                  : budget.used >= budget.max - 1 ? "bg-signal-amber" : "bg-signal-green"
-              }`}
-              style={{ width: `${Math.min(100, (budget.used / budget.max) * 100)}%` }}
-            />
-          </div>
-          <span className="text-txt-muted text-[11px]">this shift</span>
-        </div>
-
-        <div className="ml-auto flex items-center gap-4">
-          <div className="text-txt-muted">
-            {simDate} <span className="text-txt-primary">{simTime}</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`inline-block h-2 w-2 rounded-full ${
-                connected ? "bg-signal-green" : "bg-signal-red animate-pulse"
-              }`}
-            />
-            <span className="text-txt-muted">{connected ? "SSE LIVE" : "RECONNECTING"}</span>
-          </div>
-          <StaleDataIndicator timestamp={lastKnownAt} />
-          <nav className="flex items-center gap-3 text-[11px] border-l border-bg-surface pl-4">
-            <Link href="/manager" className="text-txt-muted hover:text-txt-primary">manager</Link>
-            <Link href="/leadership" className="text-txt-muted hover:text-txt-primary">leadership</Link>
-            <Link href="/ops" className="text-txt-muted hover:text-txt-primary">ops</Link>
-            <span className="text-txt-muted">
-              Role: <span className="text-signal-green">{getRole()}</span>
+          {/* Budget is SERVER-derived (ADR-012): it survives a refresh and view switches,
+              which client-side accumulation could not, since localStorage is banned. */}
+          <Tooltip content="Alerts raised this shift against the human-attention budget. Derived server-side from the replay clock.">
+            <div className="flex shrink-0 items-center gap-2 rounded-lg border border-line bg-surface px-2.5 py-1">
+              <span className="text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+                Alerts
+              </span>
+              <span
+                className={cn(
+                  "text-numeric text-xs font-semibold",
+                  budgetTone === "danger" ? "text-danger-fg" : budgetTone === "warn" ? "text-warn-fg" : "text-ok-fg"
+                )}
+              >
+                {budget.used}/{budget.max}
+              </span>
+              <span className="h-1 w-16 overflow-hidden rounded-full bg-surface-3">
+                <motion.span
+                  className={cn(
+                    "block h-full rounded-full",
+                    budgetTone === "danger" ? "bg-danger" : budgetTone === "warn" ? "bg-warn" : "bg-ok"
+                  )}
+                  animate={{ width: `${Math.min(100, (budget.used / budget.max) * 100)}%` }}
+                  transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 200, damping: 26 }}
+                />
+              </span>
+            </div>
+          </Tooltip>
+        </>
+      }
+      status={
+        // Fixed widths, and deliberately terse: these swap between "--:--:--"/a real
+        // timestamp and "Live"/"Down", so an unpinned width re-flows the whole ml-auto
+        // cluster. The date moves into a tooltip because carrying it inline pushed the
+        // header past one line once the webfont swapped in (Inter is wider than the
+        // fallback), which dropped MAIN 32px at ~850ms -- load CLS 0.145.
+        <>
+          <Tooltip content={simDate ? `Replay clock — ${simDate}` : "Waiting for the first event"}>
+            <span className="text-numeric w-[4.75rem] shrink-0 cursor-help text-right text-2xs tabular-nums text-ink">
+              {simTime}
             </span>
-          </nav>
-        </div>
-      </header>
-
-      <div className="grid grid-cols-1 lg:grid-cols-[65fr_35fr] gap-3 p-3">
-        {/* ------------------------------------------------------- line map */}
-        <section className="space-y-3">
-          <div className="bg-bg-card border border-bg-surface rounded p-3">
-            <div className="flex items-baseline justify-between mb-3">
-              <h2 className="text-txt-muted tracking-widest text-[11px]">LINE MAP</h2>
-              <div className="flex gap-3 text-[11px] text-txt-muted">
-                <Legend color="bg-signal-green" label="working" />
-                <Legend color="bg-signal-red/70" label="blocked" />
-                <Legend color="bg-signal-amber/70" label="starved" />
-                <span className="text-signal-amber">▨ INFERRED (no sensors)</span>
+          </Tooltip>
+          <Badge variant={connected ? "ok" : "danger"} dot className="w-[4.25rem] justify-center">
+            {connected ? "Live" : "Down"}
+          </Badge>
+          <span className="w-8 shrink-0">
+            <StaleDataIndicator timestamp={lastKnownAt} />
+          </span>
+        </>
+      }
+    >
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,1fr)]">
+        <div className="flex min-w-0 flex-col gap-4">
+          {/* ------------------------------------------------------------ line map */}
+          <Panel
+            title="Line map"
+            note={
+              <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+                <Legend dot="bg-ok" label="working" />
+                <Legend dot="bg-danger" label="blocked" />
+                <Legend dot="bg-warn" label="starved" />
+                <span className="flex items-center gap-1 text-warn-fg">
+                  <span className="hatch-inferred size-2.5 rounded-sm border border-warn/40" />
+                  inferred (no sensors)
+                </span>
+              </span>
+            }
+          >
+            {/* min-height is reserved on BOTH branches: without it the skeleton-to-data
+                swap resized the panel and shifted the whole page (measured load CLS
+                0.145). Sized for a 30-station line; plant B's 42 still grow past it,
+                which is a smaller shift than collapsing from nothing. */}
+            {stations.length === 0 ? (
+              <div className="min-h-[27rem] space-y-5">
+                {[12, 6, 12].map((count, z) => (
+                  <div key={z} className="space-y-2">
+                    <Skeleton className="h-2.5 w-28" />
+                    <div className="flex flex-wrap gap-1.5">
+                      {Array.from({ length: count }, (_, i) => (
+                        <Skeleton key={i} className="h-14 w-[76px]" style={{ animationDelay: `${i * 25}ms` }} />
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-
-            <div className="space-y-4">
-              {zones.map((z) => (
-                <div key={z.id}>
-                  <div className="text-[11px] text-txt-muted tracking-widest mb-1.5">
-                    {z.name.toUpperCase()}
+            ) : (
+              <div className="min-h-[27rem] space-y-5">
+                {zones.map((z) => (
+                  <div key={z.id}>
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="text-2xs font-medium uppercase tracking-[0.16em] text-ink-faint">
+                        {z.name}
+                      </span>
+                      <span className="h-px flex-1 bg-line" />
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {stations
+                        .filter((s) => s.zone === z.id)
+                        .map((s) => {
+                          const l = live[s.station_id];
+                          const manual = s.sensor_tier === "manual";
+                          const dropout = dropouts.find((d) => d.station_id === s.station_id);
+                          const state = l?.state ?? "idle";
+                          return (
+                            <Tooltip
+                              key={s.station_id}
+                              content={
+                                <span>
+                                  <b className="text-ink">{s.station_name}</b>
+                                  <br />
+                                  state {state}
+                                  {l?.cycle_time_s ? ` · cycle ${l.cycle_time_s.toFixed(0)}s` : ""}
+                                  {manual && (
+                                    <>
+                                      <br />
+                                      <span className="text-warn-fg">
+                                        Manual station — no continuous sensors. Values are inferred.
+                                      </span>
+                                    </>
+                                  )}
+                                  {dropout && (
+                                    <>
+                                      <br />
+                                      <span className="text-warn-fg">
+                                        {dropout.sensor} sensor offline since {dropout.since}
+                                      </span>
+                                    </>
+                                  )}
+                                </span>
+                              }
+                            >
+                              <button
+                                onClick={() => l?.unit_id && openUnit(l.unit_id)}
+                                aria-label={`Station ${s.station_id}, ${s.station_name}, ${state}`}
+                                className={cn(
+                                  "relative h-14 w-[76px] overflow-hidden rounded-md border px-2 py-1.5 text-left",
+                                  // colour + transform only: this repaints at up to
+                                  // 1,400 events/sec and must never trigger layout.
+                                  "transition-[background-color,border-color,color,transform] duration-300 ease-soft",
+                                  "hover:-translate-y-px hover:brightness-125",
+                                  STATE_STYLE[state] ?? STATE_STYLE.idle,
+                                  dropout && "ring-2 ring-warn ring-offset-1 ring-offset-canvas"
+                                )}
+                              >
+                                {manual && (
+                                  <span aria-hidden className="hatch-inferred absolute inset-0 opacity-70" />
+                                )}
+                                <span className="relative flex items-start justify-between">
+                                  <span className="text-numeric text-xs font-semibold">S{s.station_id}</span>
+                                  <span className={cn("mt-1 size-1.5 shrink-0 rounded-full", STATE_DOT[state])} />
+                                </span>
+                                <span className="relative mt-0.5 block truncate text-2xs leading-tight opacity-70">
+                                  {s.station_name}
+                                </span>
+                                <span className="text-numeric relative block text-2xs opacity-90">
+                                  {l?.cycle_time_s ? `${l.cycle_time_s.toFixed(0)}s` : "—"}
+                                </span>
+                                {manual && (
+                                  <span className="absolute bottom-0.5 right-1 text-2xs font-bold leading-none text-warn-fg">
+                                    INF
+                                  </span>
+                                )}
+                              </button>
+                            </Tooltip>
+                          );
+                        })}
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {stations
-                      .filter((s) => s.zone === z.id)
-                      .map((s) => {
-                        const l = live[s.station_id];
-                        const manual = s.sensor_tier === "manual";
-                        const dropout = dropouts.find((d) => d.station_id === s.station_id);
-                        return (
-                          <button
-                            key={s.station_id}
-                            onClick={() => l?.unit_id && openUnit(l.unit_id)}
-                            title={
-                              `${s.station_name}` +
-                              (manual ? " — MANUAL, no continuous sensors" : "") +
-                              (dropout ? ` — ${dropout.sensor} sensor offline since ${dropout.since}` : "")
-                            }
-                            className={`relative w-[70px] h-[54px] rounded border text-left px-1.5 py-1
-                              transition-colors ${STATE_COLOR[l?.state ?? "idle"] ?? STATE_COLOR.idle}
-                              ${dropout ? "border-2 border-signal-amber animate-pulse" : ""}`}
-                            style={
-                              manual
-                                ? {
-                                    backgroundImage:
-                                      "repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(245,158,11,.35) 4px, rgba(245,158,11,.35) 8px)",
-                                  }
-                                : undefined
-                            }
-                          >
-                            <div className="text-[11px] font-semibold">S{s.station_id}</div>
-                            <div className="text-[9px] leading-tight opacity-80 truncate">
-                              {s.station_name}
-                            </div>
-                            {l?.cycle_time_s && (
-                              <div className="text-[9px] opacity-90">
-                                {l.cycle_time_s.toFixed(0)}s
-                              </div>
-                            )}
-                            {manual && (
-                              <span className="absolute top-0.5 right-0.5 text-[7px] text-signal-amber font-bold">
-                                INF
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+                ))}
+              </div>
+            )}
+          </Panel>
 
           <SensorDropoutAlert dropouts={dropouts} />
 
-          {/* ------------------------------------------------- unit tracker */}
-          {selected && (
-            <div className="bg-bg-card border border-bg-surface rounded p-3">
-              <div className="flex items-center justify-between mb-2">
-                <h2 className="text-txt-muted tracking-widest text-[11px]">
-                  UNIT {selected.unit_id} · {selected.variant.toUpperCase()} · LOT {selected.lot_id}
-                </h2>
-                <button onClick={() => setSelected(null)} className="text-txt-muted hover:text-txt-primary">✕</button>
-              </div>
-
-              <div className="flex gap-6 mb-3">
-                <Stat label="RISK" value={`${(selected.calibrated_risk * 100).toFixed(0)}%`}
+          {/* ------------------------------------------------------- unit tracker */}
+          <AnimatePresence mode="popLayout">
+            {selected && (
+              <motion.div
+                key={selected.unit_id}
+                initial={reduced ? false : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reduced ? undefined : { opacity: 0, y: -8 }}
+                transition={{ duration: 0.22, ease: [0.2, 0.8, 0.25, 1] }}
+              >
+                <Panel
+                  title={
+                    <span className="text-numeric normal-case tracking-normal text-ink">
+                      Unit {selected.unit_id}
+                      <span className="ml-2 text-ink-faint">
+                        {selected.variant.toUpperCase()} · lot {selected.lot_id}
+                      </span>
+                    </span>
+                  }
+                  actions={
+                    <Button variant="ghost" size="xs" onClick={() => setSelected(null)} aria-label="Close unit">
+                      ✕
+                    </Button>
+                  }
+                >
+                  <div className="mb-5 flex flex-wrap gap-6">
+                    <Stat
+                      label="Risk"
+                      value={`${(selected.calibrated_risk * 100).toFixed(0)}%`}
                       sub={`CI ${(selected.ci_low * 100).toFixed(0)}–${(selected.ci_high * 100).toFixed(0)}%`}
-                      tone={selected.calibrated_risk > 0.5 ? "text-signal-red" : "text-signal-amber"} />
-                <Stat label="LEAD TIME" value={`${selected.lead_time_min.toFixed(0)} min`} sub="before final gate" />
-                <Stat label="ALERT" value={selected.alert_fired ? "FIRED" : "below budget"}
-                      tone={selected.alert_fired ? "text-signal-red" : "text-txt-muted"} />
-              </div>
+                      tone={selected.calibrated_risk > 0.5 ? "danger" : "warn"}
+                    />
+                    <Stat
+                      label="Lead time"
+                      value={`${selected.lead_time_min.toFixed(0)} min`}
+                      sub="before final gate"
+                    />
+                    <Stat
+                      label="Alert"
+                      value={selected.alert_fired ? "Fired" : "Below budget"}
+                      tone={selected.alert_fired ? "danger" : "default"}
+                    />
+                  </div>
 
-              <div className="text-[11px] text-txt-muted mb-1">ROOT CAUSES</div>
-              <div className="space-y-1 mb-3">
-                {selected.factors.map((f) => (
-                  <FactorBar key={f.rank} f={f} max={Math.max(...selected.factors.map((x) => Math.abs(x.contribution)))} />
-                ))}
-              </div>
+                  <SectionLabel>Root causes</SectionLabel>
+                  <div className="mb-5 space-y-2">
+                    {selected.factors.map((f) => (
+                      <FactorBar
+                        key={f.rank}
+                        f={f}
+                        max={Math.max(...selected.factors.map((x) => Math.abs(x.contribution)))}
+                        reduced={!!reduced}
+                      />
+                    ))}
+                  </div>
 
-              <div className="text-[11px] text-txt-muted mb-1">JOURNEY</div>
-              <div className="flex flex-wrap gap-1 mb-3">
-                {selected.journey.map((j) => (
-                  <span key={j.station_id}
-                        className="px-1.5 py-0.5 rounded bg-bg-surface text-[10px]">
-                    S{j.station_id} <span className="text-txt-muted">{j.cycle_s.toFixed(0)}s</span>
-                  </span>
-                ))}
-              </div>
+                  <SectionLabel>Journey</SectionLabel>
+                  <div className="mb-1 flex flex-wrap gap-1">
+                    {selected.journey.map((j) => (
+                      <span
+                        key={j.station_id}
+                        className="text-numeric rounded-md border border-line bg-surface-2 px-1.5 py-0.5 text-2xs"
+                      >
+                        S{j.station_id}
+                        <span className="ml-1 text-ink-faint">{j.cycle_s.toFixed(0)}s</span>
+                      </span>
+                    ))}
+                  </div>
 
-              {selected.alert_fired ? (
-                <div className="border-t border-bg-surface pt-2">
-                  <div className="text-[11px] text-txt-muted mb-1.5">ESCALATION</div>
-                  <EscalationChain levels={escalation?.levels ?? []} currentLevel={1} />
-                  <button
-                    onClick={() => acknowledge(selected.unit_id)}
-                    disabled={!!acked[selected.unit_id]}
-                    className="mt-2 text-[10px] px-2 py-1 rounded border border-signal-blue/50 text-signal-blue hover:bg-signal-blue/10 disabled:opacity-40 disabled:hover:bg-transparent"
+                  {selected.alert_fired ? (
+                    <div className="mt-5 border-t border-line pt-4">
+                      <SectionLabel>Escalation</SectionLabel>
+                      <EscalationChain levels={escalation?.levels ?? []} currentLevel={1} />
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        className="mt-3"
+                        onClick={() => acknowledge(selected.unit_id)}
+                        disabled={!!acked[selected.unit_id]}
+                      >
+                        {acked[selected.unit_id]
+                          ? `Acknowledged ${acked[selected.unit_id].slice(11, 19)}`
+                          : "Acknowledge"}
+                      </Button>
+                    </div>
+                  ) : null}
+                </Panel>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* --------------------------------------------------------- containment */}
+          <AnimatePresence>
+            {containment && containment.at_risk_units.length > 0 && (
+              <motion.div
+                initial={reduced ? false : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reduced ? undefined : { opacity: 0 }}
+                transition={{ duration: 0.22 }}
+              >
+                <Panel
+                  tone="warn"
+                  title={`Containment — ${containment.total_at_risk} units share this fingerprint`}
+                  note={`${containment.containment_window_min} min window · operator identity shown as group only`}
+                >
+                  <DataTable
+                    columns={containmentCols}
+                    rows={containment.at_risk_units}
+                    rowKey={(u) => u.unit_id}
+                    maxHeight={260}
+                  />
+                </Panel>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* ------------------------------------------------------------ alert feed */}
+        <Panel
+          title="Alert feed"
+          note={alerts.length ? `${alerts.length} shown` : undefined}
+          className="xl:sticky xl:top-[60px] xl:max-h-[calc(100vh-76px)]"
+          bodyClassName="p-3"
+        >
+          {alerts.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 py-12 text-center">
+              <span className="flex size-8 items-center justify-center rounded-full border border-ok/30 bg-ok/10 text-ok-fg">
+                ✓
+              </span>
+              <p className="text-xs text-ink-dim">No alerts yet</p>
+              <p className="max-w-48 text-2xs leading-relaxed text-ink-faint">
+                The line is inside the alarm budget.
+              </p>
+            </div>
+          ) : (
+            <div className="scroll-fade-b max-h-[calc(100vh-150px)] space-y-2 overflow-y-auto pr-1">
+              <AnimatePresence initial={false}>
+                {alerts.map((a, i) => (
+                  <motion.article
+                    key={`${a.unit_id}-${a.ts}`}
+                    layout={!reduced}
+                    initial={reduced ? false : { opacity: 0, x: 16, scale: 0.97 }}
+                    animate={{ opacity: 1, x: 0, scale: 1 }}
+                    transition={{ duration: 0.25, ease: [0.2, 0.8, 0.25, 1] }}
+                    className="rounded-lg border border-danger/30 bg-danger/[0.06] p-2.5"
                   >
-                    {acked[selected.unit_id]
-                      ? `Acknowledged ${acked[selected.unit_id].slice(11, 19)}`
-                      : "Acknowledge"}
-                  </button>
-                </div>
-              ) : null}
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-numeric text-lg font-semibold text-danger-fg">
+                        {(a.calibrated_risk * 100).toFixed(0)}%
+                      </span>
+                      <span className="text-numeric text-2xs text-ink-faint">{a.ts.slice(11, 19)}</span>
+                    </div>
+                    <div className="text-numeric mt-0.5 truncate text-xs text-ink">
+                      {a.unit_id}
+                      <span className="ml-1.5 text-ink-faint">
+                        {a.variant.toUpperCase()} · lot {a.lot_id}
+                      </span>
+                    </div>
+                    <div className="text-numeric text-2xs text-ink-faint">
+                      at S{a.station_id} · cycle {a.cycle_time_s.toFixed(0)}s
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <Button variant="outline" size="xs" onClick={() => openUnit(a.unit_id)}>
+                        Show units ↗
+                      </Button>
+                      <Button
+                        variant={voted[a.unit_id] === "useful" ? "ok" : "ghost"}
+                        size="xs"
+                        aria-label="Mark alert useful"
+                        onClick={() => vote(a.unit_id, "useful")}
+                      >
+                        Useful
+                      </Button>
+                      <Button
+                        variant={voted[a.unit_id] === "false_alarm" ? "danger" : "ghost"}
+                        size="xs"
+                        aria-label="Mark alert a false alarm"
+                        onClick={() => vote(a.unit_id, "false_alarm")}
+                      >
+                        False alarm
+                      </Button>
+                    </div>
+                  </motion.article>
+                ))}
+              </AnimatePresence>
             </div>
           )}
-
-          {/* -------------------------------------------------- containment */}
-          {containment && containment.at_risk_units.length > 0 && (
-            <div className="bg-bg-card border border-signal-amber/40 rounded p-3">
-              <h2 className="text-signal-amber tracking-widest text-[11px] mb-2">
-                CONTAINMENT — {containment.total_at_risk} UNITS SHARE THIS FINGERPRINT
-              </h2>
-              <table className="w-full text-[11px]">
-                <thead className="text-txt-muted">
-                  <tr className="text-left">
-                    <th className="py-1">UNIT</th><th>AT</th><th>RISK</th>
-                    <th>SHARED</th><th>ACTION</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {containment.at_risk_units.map((u) => (
-                    <tr key={u.unit_id} className="border-t border-bg-surface">
-                      <td className="py-1">{u.unit_id}</td>
-                      <td>S{u.current_station}</td>
-                      <td className={u.risk > 0.5 ? "text-signal-red" : "text-signal-amber"}>
-                        {(u.risk * 100).toFixed(0)}%
-                      </td>
-                      <td className="text-txt-muted">{u.shared_factors.join(", ")}</td>
-                      <td className={
-                        u.action === "HOLD" ? "text-signal-red"
-                          : u.action === "INSPECT" ? "text-signal-amber" : "text-txt-muted"
-                      }>{u.action}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="text-[10px] text-txt-muted mt-2">
-                Containment window {containment.containment_window_min} min · operator
-                identity shown as group only
-              </div>
-            </div>
-          )}
-        </section>
-
-        {/* --------------------------------------------------------- alert feed */}
-        <section className="bg-bg-card border border-bg-surface rounded p-3">
-          <h2 className="text-txt-muted tracking-widest text-[11px] mb-2">ALERT FEED</h2>
-          {alerts.length === 0 && (
-            <div className="text-txt-muted text-[11px] py-8 text-center">
-              No alerts yet — the line is inside the alarm budget.
-            </div>
-          )}
-          <div className="space-y-2 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
-            {alerts.map((a, i) => (
-              <div key={`${a.unit_id}-${i}`}
-                   className="border border-signal-red/40 rounded p-2 bg-signal-red/5">
-                <div className="flex items-baseline justify-between">
-                  <span className="text-signal-red font-semibold text-[15px]">
-                    {(a.calibrated_risk * 100).toFixed(0)}%
-                  </span>
-                  <span className="text-txt-muted text-[10px]">{a.ts.slice(11, 19)}</span>
-                </div>
-                <div className="text-[11px]">
-                  {a.unit_id} · {a.variant.toUpperCase()} · Lot {a.lot_id}
-                </div>
-                <div className="text-[10px] text-txt-muted">
-                  at S{a.station_id} · cycle {a.cycle_time_s.toFixed(0)}s
-                </div>
-                <div className="flex gap-1.5 mt-1.5">
-                  <button onClick={() => openUnit(a.unit_id)}
-                          className="px-2 py-0.5 border border-signal-blue text-signal-blue rounded text-[10px]">
-                    Show units ↗
-                  </button>
-                  <button onClick={() => vote(a.unit_id, "useful")}
-                          className={`px-2 py-0.5 border rounded text-[10px] ${
-                            voted[a.unit_id] === "useful"
-                              ? "border-signal-green text-signal-green"
-                              : "border-bg-surface text-txt-muted"}`}>
-                    👍
-                  </button>
-                  <button onClick={() => vote(a.unit_id, "false_alarm")}
-                          className={`px-2 py-0.5 border rounded text-[10px] ${
-                            voted[a.unit_id] === "false_alarm"
-                              ? "border-signal-red text-signal-red"
-                              : "border-bg-surface text-txt-muted"}`}>
-                    👎
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+        </Panel>
       </div>
       {ToastElement}
+    </AppShell>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mb-2 text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+      {children}
     </div>
   );
 }
 
-function Legend({ color, label }: { color: string; label: string }) {
+function Legend({ dot, label }: { dot: string; label: string }) {
   return (
     <span className="flex items-center gap-1">
-      <span className={`inline-block h-2 w-2 rounded-sm ${color}`} />
+      <span className={cn("size-2 rounded-full", dot)} />
       {label}
     </span>
   );
 }
 
-function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: string }) {
-  return (
-    <div>
-      <div className="text-[10px] text-txt-muted tracking-widest">{label}</div>
-      <div className={`text-lg font-semibold ${tone ?? ""}`}>{value}</div>
-      {sub && <div className="text-[10px] text-txt-muted">{sub}</div>}
-    </div>
-  );
-}
-
-function FactorBar({ f, max }: { f: { plain_language: string; contribution: number; direction: string }; max: number }) {
+function FactorBar({
+  f, max, reduced,
+}: {
+  f: { plain_language: string; contribution: number; direction: string };
+  max: number;
+  reduced: boolean;
+}) {
   const pct = Math.min(100, (Math.abs(f.contribution) / (max || 1)) * 100);
+  const up = f.direction === "high";
   return (
     <div>
-      <div className="flex justify-between text-[11px]">
-        <span>{f.plain_language}</span>
-        <span className={f.direction === "high" ? "text-signal-red" : "text-signal-blue"}>
-          {f.direction === "high" ? "▲" : "▼"} {f.contribution.toFixed(3)}
+      <div className="flex items-baseline justify-between gap-3 text-xs">
+        <span className="min-w-0 truncate text-ink-dim">{f.plain_language}</span>
+        <span className={cn("text-numeric shrink-0 font-medium", up ? "text-danger-fg" : "text-info-fg")}>
+          {up ? "▲" : "▼"} {f.contribution.toFixed(3)}
         </span>
       </div>
-      <div className="h-1 bg-bg-surface rounded overflow-hidden">
-        <div className={`h-full ${f.direction === "high" ? "bg-signal-red" : "bg-signal-blue"}`}
-             style={{ width: `${pct}%` }} />
+      <div className="mt-1 h-1 overflow-hidden rounded-full bg-surface-3">
+        <motion.div
+          className={cn("h-full rounded-full", up ? "bg-danger" : "bg-info")}
+          initial={reduced ? false : { width: 0 }}
+          animate={{ width: `${pct}%` }}
+          transition={{ duration: 0.45, ease: [0.2, 0.8, 0.25, 1] }}
+        />
       </div>
     </div>
   );

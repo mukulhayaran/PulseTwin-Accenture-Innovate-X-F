@@ -2,10 +2,12 @@
 
 // Sits above everything else in a persona view when the SSE/API connection to the
 // simulator has dropped. Renders nothing at all (not even a hidden node) while
-// connected, so it never reserves layout space -- CLAUDE.md control-room aesthetic is
-// dense already; a phantom offline bar would misalign every panel beneath it.
+// connected, so it never reserves layout space -- a phantom offline bar would
+// misalign every panel beneath it.
 
 import { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import Button from "@/components/ui/Button";
 
 interface OfflineBannerProps {
   connected: boolean;
@@ -31,7 +33,7 @@ export default function OfflineBanner({ connected, lastKnownAt, onRetry }: Offli
   const [secondsToRetry, setSecondsToRetry] = useState(AUTO_RETRY_SECONDS);
 
   // Auto-retry ticker only runs while disconnected -- it fully resets the moment
-  // `connected` flips true, and since the component returns null then, the interval
+  // `connected` flips true, and since the component renders nothing then, the interval
   // is torn down along with it.
   useEffect(() => {
     if (connected) return;
@@ -53,25 +55,54 @@ export default function OfflineBanner({ connected, lastKnownAt, onRetry }: Offli
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
-  if (connected) return null;
-
   const timeLabel = lastKnownAt ? new Date(lastKnownAt).toLocaleTimeString() : "unknown";
   const agoLabel = lastKnownAt ? relativeAgo(lastKnownAt, now) : "unknown";
 
   return (
-    <div className="sticky top-0 z-50 flex flex-wrap items-center gap-x-4 gap-y-1 border-b-2 border-signal-amber bg-bg-card px-4 py-2 font-mono text-[12px]">
-      <span className="text-signal-red font-semibold">⚠ TWIN OFFLINE</span>
-      <span className="text-txt-primary">
-        Last known state from <span className="text-signal-amber">{timeLabel}</span>{" "}
-        <span className="text-txt-muted">({agoLabel} ago)</span>
-      </span>
-      <span className="text-txt-muted text-[11px]">retrying in {secondsToRetry}s…</span>
-      <button
-        onClick={() => { onRetry(); setSecondsToRetry(AUTO_RETRY_SECONDS); }}
-        className="ml-auto rounded border border-signal-amber px-2 py-0.5 text-signal-amber hover:bg-signal-amber/10"
-      >
-        [Retry Now]
-      </button>
-    </div>
+    <AnimatePresence>
+      {!connected && (
+        <motion.div
+          role="alert"
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: "auto", opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={{ duration: 0.22, ease: [0.2, 0.8, 0.25, 1] }}
+          className="sticky top-0 z-50 overflow-hidden border-b border-warn/50 bg-warn/[0.09] backdrop-blur-md"
+        >
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2">
+            <span className="flex shrink-0 items-center gap-2 text-xs font-semibold text-danger-fg">
+              <motion.span
+                className="size-2 rounded-full bg-danger"
+                animate={{ opacity: [1, 0.25, 1] }}
+                transition={{ duration: 1.4, repeat: Infinity }}
+              />
+              Twin offline
+            </span>
+
+            <span className="text-xs text-ink-dim">
+              Last known state from{" "}
+              <span className="text-numeric text-warn-fg">{timeLabel}</span>{" "}
+              <span className="text-ink-faint">({agoLabel} ago)</span>
+            </span>
+
+            <span className="text-numeric text-2xs text-ink-faint">
+              retrying in {secondsToRetry}s…
+            </span>
+
+            <Button
+              variant="warn"
+              size="xs"
+              className="ml-auto"
+              onClick={() => {
+                onRetry();
+                setSecondsToRetry(AUTO_RETRY_SECONDS);
+              }}
+            >
+              Retry now
+            </Button>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

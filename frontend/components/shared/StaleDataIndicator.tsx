@@ -6,6 +6,8 @@
 // time, or the age computed here is meaningless.
 
 import { useEffect, useState } from "react";
+import { cn } from "@/lib/cn";
+import Tooltip from "@/components/ui/Tooltip";
 
 interface StaleDataIndicatorProps {
   timestamp: string | null;
@@ -31,24 +33,23 @@ export default function StaleDataIndicator({ timestamp }: StaleDataIndicatorProp
 
   if (!timestamp) {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] text-txt-muted" title="no data yet">
-        <span className="inline-block h-1.5 w-1.5 rounded-full bg-txt-muted/60" />
-        —
-      </span>
+      <Tooltip content="No data received yet.">
+        <span className="text-numeric inline-flex cursor-help items-center gap-1.5 text-2xs text-ink-faint">
+          <span className="size-1.5 rounded-full bg-ink-faint/60" />—
+        </span>
+      </Tooltip>
     );
   }
 
   const ageMs = Math.max(0, now - new Date(timestamp).getTime());
-  const color =
-    ageMs < FRESH_MS ? "bg-signal-green" : ageMs < WARN_MS ? "bg-signal-amber" : "bg-signal-red";
+  const color = ageMs < FRESH_MS ? "bg-ok" : ageMs < WARN_MS ? "bg-warn" : "bg-danger";
 
   return (
-    <span
-      className="inline-flex items-center gap-1 text-[10px] text-txt-muted"
-      title={`last updated ${fmtAge(ageMs)} ago`}
-    >
-      <span className={`inline-block h-1.5 w-1.5 rounded-full ${color}`} />
-      {fmtAge(ageMs)}
-    </span>
+    <Tooltip content={`Last updated ${fmtAge(ageMs)} ago — wall-clock, not replay time.`}>
+      <span className="text-numeric inline-flex cursor-help items-center gap-1.5 text-2xs text-ink-faint">
+        <span className={cn("size-1.5 rounded-full", color)} />
+        {fmtAge(ageMs)}
+      </span>
+    </Tooltip>
   );
 }

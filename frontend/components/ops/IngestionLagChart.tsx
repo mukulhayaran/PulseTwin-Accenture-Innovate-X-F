@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  Area, AreaChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
-} from "recharts";
+import { Area, AreaChart, CartesianGrid, ReferenceLine, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
+import { axisProps, gridProps, theme } from "@/lib/theme";
+import { cn } from "@/lib/cn";
+import { Badge, ChartFrame, ChartTooltip, Panel } from "@/components/ui";
 
 // GET /api/system/ingestion-lag exposes only the current lag reading -- there is no
 // server-side history. This keeps a small client-side rolling buffer (capped at 60 points)
@@ -13,8 +14,6 @@ import {
 interface Props {
   lag: any | null;
 }
-
-const AXIS = { stroke: "#6b7280", fontSize: 10, fontFamily: "monospace" };
 
 export default function IngestionLagChart({ lag }: Props) {
   const [series, setSeries] = useState<{ t: string; lag: number }[]>([]);
@@ -28,9 +27,15 @@ export default function IngestionLagChart({ lag }: Props) {
 
   if (!lag || !lag.samples) {
     return (
-      <Panel title="INGESTION LAG">
-        <div className="text-txt-muted text-[11px] py-6 text-center leading-relaxed">
-          No live ingestion telemetry yet — ingestion/ has not run against this plant.
+      <Panel title="Ingestion lag">
+        <div className="flex flex-col items-center gap-2 py-10 text-center">
+          <span className="flex size-8 items-center justify-center rounded-full border border-line bg-surface-2 text-ink-faint">
+            ⌁
+          </span>
+          <p className="max-w-56 text-2xs leading-relaxed text-ink-faint">
+            No live ingestion telemetry yet — <span className="text-numeric">ingestion/</span> has
+            not run against this plant.
+          </p>
         </div>
       </Panel>
     );
@@ -40,49 +45,84 @@ export default function IngestionLagChart({ lag }: Props) {
   const behind = lag.status === "behind" || (lag.current_lag_s != null && lag.current_lag_s > threshold);
 
   return (
-    <Panel title="INGESTION LAG" tone={behind ? "border-signal-amber/50" : undefined}>
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-2 text-[11px]">
-        <span>
-          <span className="text-txt-muted">CURRENT</span>{" "}
-          <span className={behind ? "text-signal-amber font-semibold" : "text-signal-green font-semibold"}>
-            {lag.current_lag_s != null ? `${lag.current_lag_s.toFixed(2)}s` : "—"}
-          </span>
-        </span>
-        <span>
-          <span className="text-txt-muted">MEAN</span> {lag.mean_lag_s != null ? `${lag.mean_lag_s.toFixed(2)}s` : "—"}
-        </span>
-        <span>
-          <span className="text-txt-muted">THRESHOLD</span> {threshold.toFixed(1)}s
-        </span>
-        <span className="text-txt-muted">{lag.samples} samples</span>
+    <Panel
+      title="Ingestion lag"
+      tone={behind ? "warn" : "default"}
+      actions={<Badge variant={behind ? "warn" : "ok"} dot>{behind ? "Behind" : "Keeping up"}</Badge>}
+    >
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-5 gap-y-1.5">
+        <Reading
+          label="Current"
+          value={lag.current_lag_s != null ? `${lag.current_lag_s.toFixed(2)}s` : "—"}
+          tone={behind ? "warn" : "ok"}
+        />
+        <Reading label="Mean" value={lag.mean_lag_s != null ? `${lag.mean_lag_s.toFixed(2)}s` : "—"} />
+        <Reading label="Threshold" value={`${threshold.toFixed(1)}s`} />
+        <span className="text-numeric text-2xs text-ink-faint">{lag.samples} samples</span>
       </div>
 
       {series.length > 1 ? (
-        <ResponsiveContainer width="100%" height={140}>
-          <AreaChart data={series}>
-            <CartesianGrid stroke="#1f2937" vertical={false} />
-            <XAxis dataKey="t" tick={AXIS} interval={Math.max(1, Math.floor(series.length / 6))} />
-            <YAxis tick={AXIS} width={30} />
-            <Tooltip contentStyle={{ background: "#111827", border: "1px solid #1f2937", fontSize: 11 }} />
-            <ReferenceLine y={threshold} stroke="#f59e0b" strokeDasharray="4 3" />
+        <ChartFrame height={140}>
+          <AreaChart data={series} margin={{ top: 4, right: 6, left: -12, bottom: 0 }}>
+            <defs>
+              <linearGradient id="lagFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={behind ? theme.warn : theme.info} stopOpacity={0.35} />
+                <stop offset="100%" stopColor={behind ? theme.warn : theme.info} stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid {...gridProps} />
+            <XAxis dataKey="t" {...axisProps} interval={Math.max(1, Math.floor(series.length / 5))} />
+            <YAxis {...axisProps} width={34} />
+            <RTooltip
+              cursor={{ stroke: theme.lineStrong, strokeDasharray: "3 3" }}
+              content={
+                <ChartTooltip
+                  rows={(p) => (
+                    <div className="flex items-center justify-between gap-4 text-xs">
+                      <span className="text-ink-dim">Lag</span>
+                      <span className="text-numeric font-semibold text-ink">
+                        {Number(p[0]?.value).toFixed(2)}s
+                      </span>
+                    </div>
+                  )}
+                />
+              }
+            />
+            <ReferenceLine
+              y={threshold}
+              stroke={theme.warn}
+              strokeDasharray="4 3"
+              label={{ value: "threshold", fill: theme.inkFaint, fontSize: 9, position: "insideTopRight" }}
+            />
             <Area
-              type="monotone" dataKey="lag" isAnimationActive={false}
-              stroke={behind ? "#f59e0b" : "#3b82f6"} fill={behind ? "#f59e0b22" : "#3b82f622"}
+              type="monotone" dataKey="lag" isAnimationActive={false} strokeWidth={1.5}
+              stroke={behind ? theme.warn : theme.info} fill="url(#lagFill)"
             />
           </AreaChart>
-        </ResponsiveContainer>
+        </ChartFrame>
       ) : (
-        <div className="text-txt-muted text-[10px] py-4 text-center">Accumulating samples…</div>
+        <div className="py-6 text-center text-2xs text-ink-faint">Accumulating samples…</div>
       )}
     </Panel>
   );
 }
 
-function Panel({ title, tone, children }: { title: string; tone?: string; children: React.ReactNode }) {
+function Reading({
+  label, value, tone,
+}: {
+  label: string; value: string; tone?: "ok" | "warn";
+}) {
   return (
-    <div className={`bg-bg-card border rounded p-3 ${tone ?? "border-bg-surface"}`}>
-      <h2 className="text-txt-muted tracking-widest text-[11px] mb-2">{title}</h2>
-      {children}
-    </div>
+    <span className="flex items-baseline gap-1.5">
+      <span className="text-2xs uppercase tracking-[0.14em] text-ink-faint">{label}</span>
+      <span
+        className={cn(
+          "text-numeric text-xs font-semibold",
+          tone === "warn" ? "text-warn-fg" : tone === "ok" ? "text-ok-fg" : "text-ink-dim"
+        )}
+      >
+        {value}
+      </span>
+    </span>
   );
 }

@@ -1,13 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import {
   StationCfg,
   getAuditLog, getHealth, getIngestionLag, getModelHealth, getModelRegistry,
   getRole, getStations, getSystemHealth, setRole, type Role,
 } from "@/lib/api";
-import OfflineBanner from "@/components/shared/OfflineBanner";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import RoleGate from "@/components/shared/RoleGate";
 import { useAuditToast } from "@/components/shared/AuditToast";
@@ -18,6 +16,7 @@ import IngestionLagChart from "@/components/ops/IngestionLagChart";
 import SystemStatusBar from "@/components/ops/SystemStatusBar";
 import AuditLogViewer from "@/components/ops/AuditLogViewer";
 import RetrainingConsole from "@/components/ops/RetrainingConsole";
+import { AppShell, Select, Tooltip } from "@/components/ui";
 
 const ROLES: Role[] = ["supervisor", "manager", "leadership", "system"];
 const POLL_MS = 10_000;
@@ -80,43 +79,42 @@ export default function OpsPage() {
   const hasChallenger = !!registry?.history?.some((h: any) => h.status === "challenger");
 
   return (
-    <div className="min-h-screen bg-bg-primary text-txt-primary font-mono text-[13px]">
-      <OfflineBanner connected={connected} lastKnownAt={lastKnownAt} onRetry={poll} />
-
-      <header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-bg-surface px-4 py-2">
-        <Link href="/" className="font-semibold tracking-wide text-signal-blue">PULSETWIN</Link>
-        <span className="text-txt-muted tracking-widest text-[11px]">SYSTEM OPERATIONS</span>
-        <select value={plant} onChange={(e) => setPlant(e.target.value)}
-                className="bg-bg-card border border-bg-surface px-2 py-1 rounded">
-          <option value="plant_a">Plant A — Midwest Assembly</option>
-          <option value="plant_b">Plant B — Southern Truck</option>
-        </select>
-
-        <label className="flex items-center gap-1.5 text-[11px] text-txt-muted">
-          Viewing as
-          <select
-            value={role}
-            onChange={(e) => setRoleState(e.target.value as Role)}
-            className="bg-bg-card border border-signal-amber/40 text-signal-amber px-2 py-1 rounded"
-          >
-            {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
-        </label>
-        {lastKnownAt && <StaleDataIndicator timestamp={lastKnownAt} />}
-
-        <nav className="ml-auto flex items-center gap-3 text-[11px]">
-          <Link href="/supervisor" className="text-txt-muted hover:text-txt-primary">supervisor</Link>
-          <Link href="/manager" className="text-txt-muted hover:text-txt-primary">manager</Link>
-          <Link href="/leadership" className="text-txt-muted hover:text-txt-primary">leadership</Link>
-        </nav>
-      </header>
-
-      <div className="p-3 space-y-3">
+    <AppShell
+      persona="System operations"
+      plant={plant}
+      onPlantChange={setPlant}
+      role={role}
+      connected={connected}
+      lastKnownAt={lastKnownAt}
+      onRetry={poll}
+      controls={
+        <Tooltip content="Drops the client's declared role. Panels below gate themselves off and the API returns 403 for anything above this level — the gate is server-side, this only mirrors it.">
+          <label className="flex shrink-0 cursor-help items-center gap-2 rounded-lg border border-warn/35 bg-warn/[0.06] px-2.5 py-1">
+            <span className="text-2xs font-medium uppercase tracking-[0.14em] text-warn-fg">
+              Viewing as
+            </span>
+            <Select
+              ariaLabel="Viewing as role"
+              value={role}
+              onChange={(v) => setRoleState(v as Role)}
+              options={ROLES.map((r) => ({ value: r, label: r }))}
+              className="border-warn/30 bg-transparent text-warn-fg"
+            />
+          </label>
+        </Tooltip>
+      }
+      status={<StaleDataIndicator timestamp={lastKnownAt} />}
+    >
+      <div className="space-y-4">
         <SystemStatusBar system={system} />
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <RoleGate allowed={["leadership", "system"]}>
-            <ModelHealthPanel health={health} championMetrics={championMetrics} hasChallenger={hasChallenger} />
+            <ModelHealthPanel
+              health={health}
+              championMetrics={championMetrics}
+              hasChallenger={hasChallenger}
+            />
           </RoleGate>
           <RoleGate allowed={["leadership", "system"]}>
             <DriftMonitor
@@ -126,7 +124,10 @@ export default function OpsPage() {
             />
           </RoleGate>
           <RoleGate allowed={["manager", "leadership", "system"]}>
-            <SensorHealthGrid stations={stations} dropouts={system?.ingestion?.dropout_details ?? []} />
+            <SensorHealthGrid
+              stations={stations}
+              dropouts={system?.ingestion?.dropout_details ?? []}
+            />
           </RoleGate>
           <RoleGate allowed={["manager", "leadership", "system"]}>
             <IngestionLagChart key={plant} lag={lag} />
@@ -141,6 +142,6 @@ export default function OpsPage() {
       </div>
 
       {ToastElement}
-    </div>
+    </AppShell>
   );
 }

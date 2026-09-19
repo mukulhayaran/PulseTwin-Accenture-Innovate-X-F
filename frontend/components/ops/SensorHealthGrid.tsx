@@ -8,6 +8,8 @@
 
 import { useState } from "react";
 import type { StationCfg } from "@/lib/api";
+import { cn } from "@/lib/cn";
+import { Badge, Panel, Skeleton, Tooltip } from "@/components/ui";
 
 interface Dropout { station_id: number; sensor: string; since: string; duration_s: number }
 
@@ -23,8 +25,15 @@ export default function SensorHealthGrid({ stations, dropouts }: Props) {
 
   if (!stations || stations.length === 0) {
     return (
-      <Panel title="SENSOR HEALTH">
-        <div className="text-txt-muted text-[11px] py-6 text-center">Loading station config…</div>
+      <Panel title="Sensor health">
+        <div className="space-y-2">
+          {Array.from({ length: 7 }, (_, i) => (
+            <div key={i} className="flex gap-2">
+              <Skeleton className="h-4 w-32 shrink-0" />
+              <Skeleton className="h-4 flex-1" style={{ animationDelay: `${i * 30}ms` }} />
+            </div>
+          ))}
+        </div>
       </Panel>
     );
   }
@@ -35,38 +44,50 @@ export default function SensorHealthGrid({ stations, dropouts }: Props) {
   const ordered = [...stations].sort((a, b) => a.position - b.position);
 
   return (
-    <Panel title="SENSOR HEALTH" note={`${dropouts.length} dropout${dropouts.length === 1 ? "" : "s"} active`}>
-      <div className="max-h-72 overflow-y-auto pr-1 space-y-1">
+    <Panel
+      title="Sensor health"
+      actions={
+        <Badge variant={dropouts.length ? "warn" : "ok"} dot>
+          {dropouts.length} dropout{dropouts.length === 1 ? "" : "s"}
+        </Badge>
+      }
+    >
+      <div className="scroll-fade-b max-h-72 space-y-1 overflow-y-auto pr-1">
         {ordered.map((s) => (
-          <div key={s.station_id} className="flex items-center gap-2 text-[11px]">
-            <span className="w-32 shrink-0 truncate text-txt-muted">
-              S{s.station_id} {s.station_name}
+          <div key={s.station_id} className="flex items-center gap-2.5">
+            <span className="text-numeric w-32 shrink-0 truncate text-2xs text-ink-faint">
+              <span className="text-ink-dim">S{s.station_id}</span> {s.station_name}
             </span>
+
             {s.sensor_tier === "manual" ? (
-              <span
-                className="rounded border border-bg-surface px-1.5 py-0.5 text-txt-muted"
-                title="Manual station -- no continuous sensor expected"
-              >
-                MANUAL
-              </span>
+              <Tooltip content="Manual station — no continuous sensor expected. Values here are inferred, never measured.">
+                <span className="hatch-inferred cursor-help rounded-md border border-warn/35 px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wider text-warn-fg">
+                  Manual
+                </span>
+              </Tooltip>
             ) : (
-              <div className="flex flex-wrap gap-1">
+              <div className="flex min-w-0 flex-wrap gap-1">
                 {s.sensors.map((sensor) => {
                   const down = dropoutFor(s.station_id, sensor);
-                  const isSelected = selected?.stationId === s.station_id && selected.sensor === sensor;
+                  const isSelected =
+                    selected?.stationId === s.station_id && selected.sensor === sensor;
                   return (
-                    <button
-                      key={sensor}
-                      onClick={() => setSelected({ stationId: s.station_id, stationName: s.station_name, sensor })}
-                      className={`rounded border px-1.5 py-0.5 ${
-                        down
-                          ? "border-signal-amber bg-signal-amber/10 text-signal-amber"
-                          : "border-signal-green/40 bg-signal-green/5 text-signal-green"
-                      } ${isSelected ? "ring-1 ring-signal-blue" : ""}`}
-                      title={sensor}
-                    >
-                      {sensor.replace(/_.*$/, "")}
-                    </button>
+                    <Tooltip key={sensor} content={sensor.replace(/_/g, " ")}>
+                      <button
+                        onClick={() =>
+                          setSelected({ stationId: s.station_id, stationName: s.station_name, sensor })
+                        }
+                        className={cn(
+                          "rounded-md border px-1.5 py-0.5 text-2xs font-medium transition-colors duration-150",
+                          down
+                            ? "border-warn/50 bg-warn/12 text-warn-fg"
+                            : "border-ok/30 bg-ok/[0.07] text-ok-fg hover:bg-ok/15",
+                          isSelected && "ring-1 ring-info"
+                        )}
+                      >
+                        {sensor.replace(/_.*$/, "")}
+                      </button>
+                    </Tooltip>
                   );
                 })}
               </div>
@@ -76,34 +97,27 @@ export default function SensorHealthGrid({ stations, dropouts }: Props) {
       </div>
 
       {selected && (
-        <div className="mt-3 border-t border-bg-surface pt-2 text-[11px]">
+        <div className="mt-3 border-t border-line pt-3 text-xs">
           {(() => {
             const down = dropoutFor(selected.stationId, selected.sensor);
             return down ? (
-              <div className="text-signal-amber">
-                S{selected.stationId} {selected.sensor} — DOWN since {down.since} (
-                {Math.round(down.duration_s)}s)
+              <div className="text-warn-fg">
+                <span className="text-numeric">
+                  S{selected.stationId} {selected.sensor}
+                </span>{" "}
+                — down since {down.since} ({Math.round(down.duration_s)}s)
               </div>
             ) : (
-              <div className="text-signal-green">
-                S{selected.stationId} {selected.sensor} — receiving data normally
+              <div className="text-ok-fg">
+                <span className="text-numeric">
+                  S{selected.stationId} {selected.sensor}
+                </span>{" "}
+                — receiving data normally
               </div>
             );
           })()}
         </div>
       )}
     </Panel>
-  );
-}
-
-function Panel({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
-  return (
-    <div className="bg-bg-card border border-bg-surface rounded p-3">
-      <div className="flex items-baseline justify-between mb-2 gap-2">
-        <h2 className="text-txt-muted tracking-widest text-[11px]">{title}</h2>
-        {note && <span className="text-[9px] text-txt-muted text-right">{note}</span>}
-      </div>
-      {children}
-    </div>
   );
 }

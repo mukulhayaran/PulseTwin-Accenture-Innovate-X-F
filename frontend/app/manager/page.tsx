@@ -1,22 +1,22 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import {
-  Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, ResponsiveContainer,
-  Scatter, Tooltip, XAxis, YAxis,
+  Bar, CartesianGrid, Cell, ComposedChart, Line, Scatter, Tooltip as RTooltip, XAxis, YAxis,
 } from "recharts";
 import {
   Bottleneck, Metrics, StationCfg,
   getBottleneck, getHealth, getMetrics, getRole, getStationStats, getStations, getWhatIf,
   getWhatIfStations, setRole,
 } from "@/lib/api";
-import OfflineBanner from "@/components/shared/OfflineBanner";
+import { cn } from "@/lib/cn";
+import { axisProps, gridProps, theme } from "@/lib/theme";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import { useAuditToast } from "@/components/shared/AuditToast";
-
-const AXIS = { stroke: "#6b7280", fontSize: 10, fontFamily: "monospace" };
-const GRID = "#1f2937";
+import {
+  AppShell, Badge, ChartFrame, ChartLegend, ChartTooltip, DataTable, Kpi, Panel,
+  Select, Skeleton, SkeletonChart, SkeletonTable, Slider, Tooltip, type Column,
+} from "@/components/ui";
 
 export default function ManagerPage() {
   const [plant, setPlant] = useState("plant_a");
@@ -125,204 +125,290 @@ export default function ManagerPage() {
 
   const shiftCount = timeline.filter((t) => t.shift).length;
 
-  return (
-    <div className="min-h-screen bg-bg-primary text-txt-primary font-mono text-[13px]">
-      <OfflineBanner
-        connected={connected}
-        lastKnownAt={lastKnownAt}
-        onRetry={() => setRetryNonce((n) => n + 1)}
-      />
-      <header className="flex items-center gap-6 border-b border-bg-surface px-4 py-2">
-        <Link href="/" className="font-semibold tracking-wide text-signal-blue">PULSETWIN</Link>
-        <span className="text-txt-muted tracking-widest text-[11px]">MANAGER · ANALYSIS</span>
-        <select value={plant} onChange={(e) => setPlant(e.target.value)}
-                className="bg-bg-card border border-bg-surface px-2 py-1 rounded">
-          <option value="plant_a">Plant A — Midwest Assembly</option>
-          <option value="plant_b">Plant B — Southern Truck</option>
-        </select>
-        <StaleDataIndicator timestamp={lastKnownAt} />
-        <nav className="ml-auto flex items-center gap-3 text-[11px]">
-          <Link href="/supervisor" className="text-txt-muted hover:text-txt-primary">supervisor</Link>
-          <Link href="/leadership" className="text-txt-muted hover:text-txt-primary">leadership</Link>
-          <Link href="/ops" className="text-txt-muted hover:text-txt-primary">ops</Link>
-          <span className="text-txt-muted border-l border-bg-surface pl-3">
-            Role: <span className="text-signal-blue">{getRole()}</span>
+  const leagueCols: Column<any>[] = [
+    {
+      key: "stn", header: "Station",
+      cell: (s) => {
+        const inferred = s.provenance === "inferred";
+        return (
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className={cn("text-numeric font-medium", inferred && "text-warn-fg")}>
+              S{s.station_id}
+            </span>
+            <span className="truncate text-ink-faint">{nameOf(s.station_id).slice(0, 20)}</span>
+            {inferred && (
+              <Tooltip content="No continuous sensors at this station — utilisation is inferred, not measured.">
+                <span><Badge variant="warn">INF</Badge></span>
+              </Tooltip>
+            )}
           </span>
-        </nav>
-      </header>
+        );
+      },
+    },
+    { key: "util", header: "Util", align: "right", cell: (s) => <Num>{(s.util * 100).toFixed(1)}%</Num> },
+    {
+      key: "blocked", header: "Blocked", align: "right",
+      cell: (s) => <Num tone={s.blocked > 0.05 ? "danger" : undefined}>{(s.blocked * 100).toFixed(1)}%</Num>,
+    },
+    {
+      key: "starved", header: "Starved", align: "right",
+      cell: (s) => <Num tone={s.starved > 0.05 ? "warn" : undefined}>{(s.starved * 100).toFixed(1)}%</Num>,
+    },
+    { key: "lost", header: "Lost UPH", align: "right", cell: (s) => <Num>{s.lost_uph.toFixed(1)}</Num> },
+  ];
 
-      <div className="p-3 space-y-3">
-        {/* -------------------------------------------------------- KPI row */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Kpi label="CURRENT CONSTRAINT"
-               value={bn ? `S${bn.current_station}` : "—"}
-               sub={bn?.current_station_name}
-               tone="text-signal-red" />
-          <Kpi label="DETECTION ACCURACY"
-               value={bn?.detection_accuracy != null ? `${(bn.detection_accuracy * 100).toFixed(1)}%` : "—"}
-               sub="vs 2h sustained truth" />
-          <Kpi label="CONSTRAINT SHIFTS"
-               value={String(shiftCount)}
-               sub={`in ${timeline.length} windows`} />
-          <Kpi label="FORECAST SKILL"
-               value={metrics ? fmtSigned(metrics.values.forecast_skill_vs_persistence) : "—"}
-               sub="vs persistence baseline"
-               tone={(metrics?.values.forecast_skill_vs_persistence ?? 0) > 0
-                 ? "text-signal-green" : "text-signal-amber"} />
+  return (
+    <AppShell
+      persona="Analysis"
+      plant={plant}
+      onPlantChange={setPlant}
+      role={getRole()}
+      connected={connected}
+      lastKnownAt={lastKnownAt}
+      onRetry={() => setRetryNonce((n) => n + 1)}
+      status={<StaleDataIndicator timestamp={lastKnownAt} />}
+    >
+      <div className="space-y-4">
+        {/* ----------------------------------------------------------- KPI row */}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <Kpi
+            label="Current constraint"
+            value={bn ? `S${bn.current_station}` : "—"}
+            sub={bn?.current_station_name}
+            tone="danger"
+            accent
+          />
+          <Kpi
+            label="Detection accuracy"
+            value={bn?.detection_accuracy != null ? `${(bn.detection_accuracy * 100).toFixed(1)}%` : "—"}
+            sub="vs 2h sustained truth"
+          />
+          <Kpi label="Constraint shifts" value={String(shiftCount)} sub={`in ${timeline.length} windows`} />
+          <Kpi
+            label="Forecast skill"
+            value={metrics ? fmtSigned(metrics.values.forecast_skill_vs_persistence) : "—"}
+            sub="vs persistence baseline"
+            tone={(metrics?.values.forecast_skill_vs_persistence ?? 0) > 0 ? "ok" : "warn"}
+          />
         </div>
 
-        {/* ------------------------------------------- bottleneck timeline */}
-        <Panel title="CONSTRAINT MIGRATION"
-               note="Each point is a 15-minute window. Red = detector disagreed with the 2-hour sustained truth.">
-          <ResponsiveContainer width="100%" height={230}>
-            <ComposedChart data={timeline}>
-              <CartesianGrid stroke={GRID} vertical={false} />
-              <XAxis dataKey="t" tick={AXIS} interval={Math.max(1, Math.floor(timeline.length / 8))} />
-              <YAxis tick={AXIS} domain={[0, "dataMax + 2"]}
-                     label={{ value: "station", angle: -90, position: "insideLeft", fill: "#6b7280", fontSize: 10 }} />
-              <Tooltip contentStyle={{ background: "#111827", border: "1px solid #1f2937", fontSize: 11 }}
-                       formatter={(v: any, n: any) => [`S${v}`, n === "station" ? "detected" : "truth"]} />
-              <Scatter dataKey="station" isAnimationActive={false}>
-                {timeline.map((d, i) => (
-                  <Cell key={i} fill={d.correct ? "#10b981" : "#ef4444"} />
-                ))}
-              </Scatter>
-              <Line type="stepAfter" dataKey="truth" stroke="#8b5cf6" dot={false}
-                    strokeWidth={1.5} isAnimationActive={false} />
-            </ComposedChart>
-          </ResponsiveContainer>
-          <Legend items={[
-            { c: "#10b981", l: "detector correct" },
-            { c: "#ef4444", l: "detector wrong" },
-            { c: "#8b5cf6", l: "sustained truth (2h)" },
-          ]} />
+        {/* -------------------------------------------- bottleneck timeline */}
+        <Panel
+          title="Constraint migration"
+          note="Each point is a 15-minute window. Red = detector disagreed with the 2-hour sustained truth."
+        >
+          {timeline.length === 0 ? (
+            <SkeletonChart height={230} />
+          ) : (
+            <>
+              <ChartFrame height={230}>
+                <ComposedChart data={timeline} margin={{ top: 4, right: 8, bottom: 0, left: -8 }}>
+                  <CartesianGrid {...gridProps} />
+                  <XAxis
+                    dataKey="t"
+                    {...axisProps}
+                    interval={Math.max(1, Math.floor(timeline.length / 8))}
+                  />
+                  <YAxis {...axisProps} domain={[0, "dataMax + 2"]} width={44} />
+                  <RTooltip
+                    cursor={{ stroke: theme.lineStrong, strokeDasharray: "3 3" }}
+                    content={
+                      <ChartTooltip
+                        rows={(p) => (
+                          <div className="space-y-0.5">
+                            {p.map((r, i) => (
+                              <div key={i} className="flex items-center justify-between gap-4 text-xs">
+                                <span className="text-ink-dim">
+                                  {r.dataKey === "station" ? "detected" : "sustained truth"}
+                                </span>
+                                <span className="text-numeric font-semibold text-ink">S{r.value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      />
+                    }
+                  />
+                  <Scatter dataKey="station" isAnimationActive={false}>
+                    {timeline.map((d, i) => (
+                      <Cell key={i} fill={d.correct ? theme.ok : theme.danger} />
+                    ))}
+                  </Scatter>
+                  <Line
+                    type="stepAfter" dataKey="truth" stroke={theme.ai} dot={false}
+                    strokeWidth={1.5} isAnimationActive={false}
+                  />
+                </ComposedChart>
+              </ChartFrame>
+              <ChartLegend
+                items={[
+                  { color: theme.ok, label: "detector correct" },
+                  { color: theme.danger, label: "detector wrong" },
+                  { color: theme.ai, label: "sustained truth (2h)", shape: "line" },
+                ]}
+              />
+            </>
+          )}
         </Panel>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          {/* ------------------------------------------ station league table */}
-          <Panel title="STATION LEAGUE TABLE" note="Ranked by lost throughput. * = inferred (no sensors).">
-            <table className="w-full text-[11px]">
-              <thead className="text-txt-muted">
-                <tr className="text-left">
-                  <th className="py-1">STN</th><th>UTIL</th><th>BLOCKED</th>
-                  <th>STARVED</th><th>LOST UPH</th>
-                </tr>
-              </thead>
-              <tbody>
-                {league.map((s) => {
-                  const inferred = s.provenance === "inferred";
-                  return (
-                    <tr key={s.station_id} className="border-t border-bg-surface">
-                      <td className={`py-1 ${inferred ? "text-signal-amber" : ""}`}>
-                        S{s.station_id} {inferred && "*"}
-                        <span className="text-txt-muted ml-1">{nameOf(s.station_id).slice(0, 18)}</span>
-                      </td>
-                      <td>{(s.util * 100).toFixed(1)}%</td>
-                      <td className={s.blocked > 0.05 ? "text-signal-red" : ""}>{(s.blocked * 100).toFixed(1)}%</td>
-                      <td className={s.starved > 0.05 ? "text-signal-amber" : ""}>{(s.starved * 100).toFixed(1)}%</td>
-                      <td>{s.lost_uph.toFixed(1)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          {/* --------------------------------------- station league table */}
+          <Panel title="Station league table" note="Ranked by lost throughput.">
+            {league.length === 0 ? (
+              <SkeletonTable rows={8} cols={5} />
+            ) : (
+              <DataTable columns={leagueCols} rows={league} rowKey={(s) => String(s.station_id)} />
+            )}
           </Panel>
 
-          {/* --------------------------------------------- root cause pareto */}
-          <Panel title="ROOT CAUSE PARETO"
-                 note="Permutation importance on the held-out test split — measured, not assumed.">
-            <ResponsiveContainer width="100%" height={260}>
-              <ComposedChart data={pareto} layout="vertical" margin={{ left: 110 }}>
-                <CartesianGrid stroke={GRID} horizontal={false} />
-                <XAxis type="number" tick={AXIS} />
-                <YAxis type="category" dataKey="feature" tick={{ ...AXIS, fontSize: 9 }} width={110} />
-                <Tooltip contentStyle={{ background: "#111827", border: "1px solid #1f2937", fontSize: 11 }} />
-                <Bar dataKey="delta" fill="#3b82f6" isAnimationActive={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
+          {/* ------------------------------------------ root cause pareto */}
+          <Panel
+            title="Root cause Pareto"
+            note="Permutation importance on the held-out test split — measured, not assumed."
+          >
+            {pareto.length === 0 ? (
+              <SkeletonChart height={260} />
+            ) : (
+              <ChartFrame height={260}>
+                <ComposedChart data={pareto} layout="vertical" margin={{ left: 104, right: 12, top: 4 }}>
+                  <CartesianGrid {...gridProps} vertical horizontal={false} />
+                  <XAxis type="number" {...axisProps} />
+                  <YAxis
+                    type="category" dataKey="feature" width={104}
+                    {...axisProps} tick={{ ...axisProps.tick, fontSize: 9 }}
+                  />
+                  <RTooltip
+                    cursor={{ fill: theme.surface2 }}
+                    content={
+                      <ChartTooltip
+                        rows={(p) => (
+                          <div className="flex items-center justify-between gap-4 text-xs">
+                            <span className="text-ink-dim">Δ PR-AUC</span>
+                            <span className="text-numeric font-semibold text-ink">
+                              {Number(p[0]?.value).toFixed(4)}
+                            </span>
+                          </div>
+                        )}
+                      />
+                    }
+                  />
+                  <Bar dataKey="delta" fill={theme.info} radius={[0, 3, 3, 0]} isAnimationActive={false} />
+                </ComposedChart>
+              </ChartFrame>
+            )}
           </Panel>
         </div>
 
-        {/* ------------------------------------------------ what-if console */}
-        <Panel title="WHAT-IF SIMULATION"
-               note="Interpolated from a precomputed grid of short simulations (ADR-007).">
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.2fr] gap-6">
-            <div className="space-y-4">
-              <label className="block">
-                <span className="text-[11px] text-txt-muted">STATION</span>
-                <select value={wfStation ?? ""} onChange={(e) => setWfStation(Number(e.target.value))}
-                        className="w-full mt-1 bg-bg-surface border border-bg-surface px-2 py-1 rounded">
-                  {wfStations.map((s) => (
-                    <option key={s.station_id} value={s.station_id}>
-                      S{s.station_id} — {s.station_name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+        {/* ---------------------------------------------- what-if console */}
+        <Panel
+          title="What-if simulation"
+          note="Interpolated from a precomputed grid of short simulations (ADR-007)."
+          actions={wfBusy ? <Badge variant="info" dot>Recomputing</Badge> : undefined}
+        >
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+            <div className="space-y-5">
+              <div>
+                <div className="mb-2 text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+                  Station
+                </div>
+                {wfStations.length === 0 ? (
+                  <Skeleton className="h-7 w-full" />
+                ) : (
+                  <Select
+                    ariaLabel="What-if station"
+                    className="w-full"
+                    value={String(wfStation ?? "")}
+                    onChange={(v) => setWfStation(Number(v))}
+                    options={wfStations.map((s) => ({
+                      value: String(s.station_id),
+                      label: `S${s.station_id} — ${s.station_name}`,
+                    }))}
+                  />
+                )}
+              </div>
 
-              <Slider label="FEED BUFFER" value={buffer} min={-2} max={8} step={1}
-                      display={`${buffer >= 0 ? "+" : ""}${buffer} slots`}
-                      onChange={setBuffer} />
-              <Slider label="CYCLE TIME" value={cycle} min={-10} max={10} step={1}
-                      display={`${cycle >= 0 ? "+" : ""}${cycle}%`}
-                      onChange={setCycle} />
+              <Slider
+                label="Feed buffer" value={buffer} min={-2} max={8}
+                display={`${buffer >= 0 ? "+" : ""}${buffer} slots`} onChange={setBuffer}
+              />
+              <Slider
+                label="Cycle time" value={cycle} min={-10} max={10}
+                display={`${cycle >= 0 ? "+" : ""}${cycle}%`} onChange={setCycle}
+              />
 
-              <p className="text-[10px] text-txt-muted leading-relaxed">
-                <span className="text-signal-amber">Feed buffer</span> = capacity
-                <em> upstream</em> of the selected station. Adding capacity downstream of a
-                constraint does nothing — a bottleneck is never blocked by what follows it.
-              </p>
-              <p className="text-[10px] text-txt-muted leading-relaxed">
-                Only the two constraints and their neighbours are in the grid — 90 simulated
-                scenarios per plant rather than 3,510. A manager tunes the bottleneck, not
-                station 4.
-              </p>
+              <div className="space-y-2.5 rounded-lg border border-line bg-surface-2/60 p-3">
+                <p className="text-2xs leading-relaxed text-ink-faint">
+                  <span className="font-medium text-warn-fg">Feed buffer</span> is capacity{" "}
+                  <em>upstream</em> of the selected station. Adding capacity downstream of a
+                  constraint does nothing — a bottleneck is never blocked by what follows it.
+                </p>
+                <p className="text-2xs leading-relaxed text-ink-faint">
+                  Only the two constraints and their neighbours are in the grid — 90 simulated
+                  scenarios per plant rather than 3,510. A manager tunes the bottleneck, not
+                  station 4.
+                </p>
+              </div>
             </div>
 
             {wf ? (
-              <div>
-                <div className="grid grid-cols-2 gap-3 mb-3">
-                  <Box title="BASELINE" rows={[
-                    ["Throughput", `${wf.baseline.throughput_uph.toFixed(1)} UPH`],
-                    ["WIP", `${wf.baseline.wip_units.toFixed(0)} units`],
-                    ["Bottleneck", `S${wf.baseline.bottleneck_station}`],
-                  ]} />
-                  <Box title="PROJECTED" highlight rows={[
-                    ["Throughput", `${wf.projected.throughput_uph.toFixed(1)} UPH`],
-                    ["WIP", `${wf.projected.wip_units.toFixed(0)} units`],
-                    ["Bottleneck", `S${wf.projected.bottleneck_station}`],
-                  ]} />
+              <div className="min-w-0">
+                <div className="mb-4 grid grid-cols-2 gap-3">
+                  <ScenarioBox
+                    title="Baseline"
+                    rows={[
+                      ["Throughput", `${wf.baseline.throughput_uph.toFixed(1)} UPH`],
+                      ["WIP", `${wf.baseline.wip_units.toFixed(0)} units`],
+                      ["Bottleneck", `S${wf.baseline.bottleneck_station}`],
+                    ]}
+                  />
+                  <ScenarioBox
+                    title="Projected"
+                    highlight
+                    rows={[
+                      ["Throughput", `${wf.projected.throughput_uph.toFixed(1)} UPH`],
+                      ["WIP", `${wf.projected.wip_units.toFixed(0)} units`],
+                      ["Bottleneck", `S${wf.projected.bottleneck_station}`],
+                    ]}
+                  />
                 </div>
-                <div className="flex flex-wrap gap-x-6 gap-y-1 text-[12px]">
-                  <span>
-                    Δ Throughput{" "}
-                    <b className={wf.delta.throughput_uph >= 0 ? "text-signal-green" : "text-signal-red"}>
-                      {wf.delta.throughput_uph >= 0 ? "+" : ""}{wf.delta.throughput_uph.toFixed(2)} UPH
-                    </b>
-                  </span>
-                  <span>
-                    Annual value{" "}
-                    <b className={wf.annual_value >= 0 ? "text-signal-green" : "text-signal-red"}>
-                      ${Math.round(wf.annual_value).toLocaleString()}
-                    </b>
-                  </span>
-                  {wfBusy && <span className="text-txt-muted">recomputing…</span>}
+
+                <div className="mb-3 flex flex-wrap gap-x-6 gap-y-2">
+                  <DeltaStat
+                    label="Δ Throughput"
+                    value={`${wf.delta.throughput_uph >= 0 ? "+" : ""}${wf.delta.throughput_uph.toFixed(2)} UPH`}
+                    positive={wf.delta.throughput_uph >= 0}
+                  />
+                  <DeltaStat
+                    label="Annual value"
+                    value={`$${Math.round(wf.annual_value).toLocaleString()}`}
+                    positive={wf.annual_value >= 0}
+                  />
                 </div>
-                <div className="mt-2 text-[10px] text-txt-muted leading-relaxed">
-                  <div>Mode: <span className="text-signal-amber">{wf.mode}</span> · bottleneck resolved by{" "}
-                    <span className="text-signal-amber">{wf.bottleneck_mode}</span> — a station ID is
-                    categorical and is never interpolated.</div>
-                  <div className="mt-1">{wf.assumptions}</div>
+
+                <div className="space-y-1 rounded-lg border border-line bg-surface-2/60 p-3 text-2xs leading-relaxed text-ink-faint">
+                  <div>
+                    Mode <span className="text-warn-fg">{wf.mode}</span> · bottleneck resolved by{" "}
+                    <span className="text-warn-fg">{wf.bottleneck_mode}</span> — a station ID is
+                    categorical and is never interpolated.
+                  </div>
+                  <div>{wf.assumptions}</div>
                 </div>
               </div>
             ) : (
-              <div className="text-txt-muted text-[11px] flex items-center">Loading scenario grid…</div>
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <Skeleton className="h-24" />
+                  <Skeleton className="h-24" />
+                </div>
+                <Skeleton className="h-5 w-56" />
+                <Skeleton className="h-14 w-full" />
+              </div>
             )}
           </div>
         </Panel>
       </div>
       {ToastElement}
-    </div>
+    </AppShell>
   );
 }
 
@@ -331,68 +417,53 @@ function fmtSigned(v: number | undefined) {
   return `${v >= 0 ? "+" : ""}${v.toFixed(3)}`;
 }
 
-function Kpi({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: string }) {
+function Num({ children, tone }: { children: React.ReactNode; tone?: "danger" | "warn" }) {
   return (
-    <div className="bg-bg-card border border-bg-surface rounded p-3">
-      <div className="text-[10px] text-txt-muted tracking-widest">{label}</div>
-      <div className={`text-2xl font-semibold ${tone ?? ""}`}>{value}</div>
-      {sub && <div className="text-[10px] text-txt-muted truncate">{sub}</div>}
-    </div>
-  );
-}
-
-function Panel({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
-  return (
-    <div className="bg-bg-card border border-bg-surface rounded p-3">
-      <div className="flex items-baseline justify-between mb-2">
-        <h2 className="text-txt-muted tracking-widest text-[11px]">{title}</h2>
-        {note && <span className="text-[10px] text-txt-muted">{note}</span>}
-      </div>
+    <span
+      className={cn(
+        "text-numeric",
+        tone === "danger" ? "text-danger-fg" : tone === "warn" ? "text-warn-fg" : "text-ink-dim"
+      )}
+    >
       {children}
-    </div>
+    </span>
   );
 }
 
-function Legend({ items }: { items: { c: string; l: string }[] }) {
-  return (
-    <div className="flex gap-4 text-[10px] text-txt-muted mt-1">
-      {items.map((i) => (
-        <span key={i.l} className="flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-sm" style={{ background: i.c }} />
-          {i.l}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function Slider({ label, value, min, max, step, display, onChange }: {
-  label: string; value: number; min: number; max: number; step: number;
-  display: string; onChange: (v: number) => void;
+function ScenarioBox({
+  title, rows, highlight,
+}: {
+  title: string; rows: [string, string][]; highlight?: boolean;
 }) {
   return (
-    <label className="block">
-      <div className="flex justify-between text-[11px]">
-        <span className="text-txt-muted">{label}</span>
-        <span className="text-signal-blue">{display}</span>
+    <div
+      className={cn(
+        "rounded-lg border p-3",
+        highlight ? "border-info/40 bg-info/[0.07]" : "border-line bg-surface-2/50"
+      )}
+    >
+      <div className="mb-2 text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+        {title}
       </div>
-      <input type="range" min={min} max={max} step={step} value={value}
-             onChange={(e) => onChange(Number(e.target.value))}
-             className="w-full accent-signal-blue" />
-    </label>
+      <div className="space-y-1">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex items-baseline justify-between gap-2 text-xs">
+            <span className="text-ink-faint">{k}</span>
+            <span className="text-numeric font-medium text-ink">{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
-function Box({ title, rows, highlight }: { title: string; rows: [string, string][]; highlight?: boolean }) {
+function DeltaStat({ label, value, positive }: { label: string; value: string; positive: boolean }) {
   return (
-    <div className={`border rounded p-2 ${highlight ? "border-signal-blue/50 bg-signal-blue/5" : "border-bg-surface"}`}>
-      <div className="text-[10px] text-txt-muted tracking-widest mb-1">{title}</div>
-      {rows.map(([k, v]) => (
-        <div key={k} className="flex justify-between text-[11px]">
-          <span className="text-txt-muted">{k}</span>
-          <span>{v}</span>
-        </div>
-      ))}
+    <div>
+      <div className="text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">{label}</div>
+      <div className={cn("text-numeric text-lg font-semibold", positive ? "text-ok-fg" : "text-danger-fg")}>
+        {value}
+      </div>
     </div>
   );
 }

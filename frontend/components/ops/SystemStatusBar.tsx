@@ -4,6 +4,9 @@
 // as-is -- no derived "is this actually fine" judgment beyond the fields the backend
 // already computed (status, connected, dropout count).
 
+import { cn } from "@/lib/cn";
+import { Badge, Skeleton } from "@/components/ui";
+
 interface Props {
   system: any | null;
 }
@@ -21,9 +24,11 @@ function formatUptime(seconds: number): string {
 export default function SystemStatusBar({ system }: Props) {
   if (!system) {
     return (
-      <div className="flex items-center gap-2 border border-bg-surface rounded px-3 py-2 bg-bg-card text-[11px] text-txt-muted">
-        <span className="inline-block h-2 w-2 rounded-full bg-txt-muted/60 animate-pulse" />
-        Loading system status…
+      <div className="panel-surface flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5">
+        <Skeleton className="h-4 w-28" />
+        <Skeleton className="h-3.5 w-24" />
+        <Skeleton className="h-3.5 w-40" />
+        <Skeleton className="h-3.5 w-32" />
       </div>
     );
   }
@@ -35,50 +40,50 @@ export default function SystemStatusBar({ system }: Props) {
 
   return (
     <div
-      className={`flex flex-wrap items-center gap-x-6 gap-y-1.5 border rounded px-3 py-2 bg-bg-card text-[11px] ${
-        operational ? "border-bg-surface" : "border-signal-red/50"
-      }`}
+      className={cn(
+        "panel-surface flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5",
+        !operational && "border-danger/45"
+      )}
     >
-      <span className="flex items-center gap-1.5">
-        <span
-          className={`inline-block h-2 w-2 rounded-full ${
-            operational ? "bg-signal-green" : "bg-signal-red animate-pulse"
-          }`}
-        />
-        <span className={`font-semibold tracking-widest ${operational ? "text-signal-green" : "text-signal-red"}`}>
-          {operational ? "OPERATIONAL" : "DEGRADED"}
+      <Badge variant={operational ? "ok" : "danger"} dot>
+        {operational ? "Operational" : "Degraded"}
+      </Badge>
+
+      <Item label="Uptime" value={formatUptime(system.uptime_seconds)} />
+
+      <span className="flex items-center gap-1.5 text-2xs">
+        <span className="uppercase tracking-[0.14em] text-ink-faint">DB</span>
+        <span className={cn("size-1.5 rounded-full", db.connected ? "bg-ok" : "bg-danger")} />
+        <span className="text-numeric text-ink-dim">
+          {db.type ?? "—"}
+          {db.latency_ms != null && ` · ${db.latency_ms.toFixed(1)}ms`}
+          {db.connections_active != null && db.connections_max != null &&
+            ` · ${db.connections_active}/${db.connections_max} conns`}
         </span>
       </span>
 
-      <span className="text-txt-muted">
-        UPTIME <span className="text-txt-primary">{formatUptime(system.uptime_seconds)}</span>
-      </span>
-
-      <span className="text-txt-muted">
-        DB{" "}
-        <span className={db.connected ? "text-signal-green" : "text-signal-red"}>●</span>{" "}
-        <span className="text-txt-primary">{db.type ?? "—"}</span>
-        {db.latency_ms != null && <> · {db.latency_ms.toFixed(1)}ms</>}
-        {db.connections_active != null && db.connections_max != null && (
-          <> · {db.connections_active}/{db.connections_max} conns</>
-        )}
-      </span>
-
-      <span className="text-txt-muted">
-        PREDICTIONS/HR <span className="text-txt-primary">{system.predictions_last_hour ?? "—"}</span>
-      </span>
+      <Item label="Predictions/hr" value={String(system.predictions_last_hour ?? "—")} />
 
       {dropoutCount > 0 && (
-        <span className="text-signal-amber">
+        <Badge variant="warn" dot>
           {dropoutCount} sensor dropout{dropoutCount > 1 ? "s" : ""}
-        </span>
+        </Badge>
       )}
 
       {system.last_prediction_at && (
-        <span className="text-txt-muted ml-auto">
+        <span className="text-numeric ml-auto text-2xs text-ink-faint">
           last prediction {String(system.last_prediction_at).slice(11, 19)}
         </span>
       )}
     </div>
+  );
+}
+
+function Item({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="flex items-center gap-1.5 text-2xs">
+      <span className="uppercase tracking-[0.14em] text-ink-faint">{label}</span>
+      <span className="text-numeric text-ink-dim">{value}</span>
+    </span>
   );
 }

@@ -1,15 +1,200 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-:root { color-scheme: dark; }
+/* ============================================================================
+   PulseTwin design system  —  Tailwind v4, CSS-first.
+   Replaces tailwind.config.ts (deleted; v4 has no JS config).
 
-body {
-  background: #0a0e17;
-  font-feature-settings: "tnum" 1, "zero" 1;  /* tabular numerals: columns line up */
+   Dark control-room surfaces with SaaS-product polish. The signal hues keep
+   their CONTRACT meanings and must not be repurposed:
+     ok/green  = measured, healthy       warn/amber  = inferred, warning
+     danger/red = alert, defect          ai/purple   = model prediction
+   See CLAUDE.md §3 (the three contracts) before changing any of them.
+
+   Every value here is mirrored in lib/theme.ts for Recharts, which takes
+   hex strings and cannot read CSS custom properties.
+   ========================================================================= */
+
+@theme {
+  /* ---- surfaces: five layers, cool-neutral rather than blue-black -------- */
+  --color-canvas: #0a0c11;
+  --color-surface: #111419;
+  --color-surface-2: #171b22;
+  --color-surface-3: #1e232c;
+  --color-line: #232834;
+  --color-line-strong: #2f3644;
+
+  /* ---- ink: three weights. The old palette had ONE muted value doing both
+         "secondary text" and "faint label", which is why body copy read as
+         disabled. -------------------------------------------------------- */
+  --color-ink: #e6e9ef;
+  --color-ink-dim: #a0a8b4;
+  --color-ink-faint: #6b7482;
+
+  /* ---- signals: solid for fills/borders, -fg brightened for text on dark - */
+  --color-ok: #10b981;
+  --color-ok-fg: #34d399;
+  --color-danger: #ef4444;
+  --color-danger-fg: #f87171;
+  --color-warn: #f59e0b;
+  --color-warn-fg: #fbbf24;
+  --color-info: #3b82f6;
+  --color-info-fg: #60a5fa;
+  --color-ai: #8b5cf6;
+  --color-ai-fg: #a78bfa;
+
+  /* ---- legacy aliases -------------------------------------------------- *
+     The old token names stay valid so pages migrate one at a time instead of
+     in a single breaking commit. Remove once no page references them.       */
+  --color-bg-primary: #0a0c11;
+  --color-bg-card: #111419;
+  --color-bg-surface: #232834;
+  --color-txt-primary: #e6e9ef;
+  --color-txt-muted: #a0a8b4;
+  --color-signal-green: #10b981;
+  --color-signal-red: #ef4444;
+  --color-signal-amber: #f59e0b;
+  --color-signal-blue: #3b82f6;
+  --color-signal-purple: #8b5cf6;
+
+  /* ---- type scale: replaces 142 ad-hoc text-[Npx] values ---------------- */
+  --text-2xs: 0.625rem; /* 10px — dense table meta, badges           */
+  --text-2xs--line-height: 0.875rem;
+  --text-xs: 0.6875rem; /* 11px — the workhorse label size           */
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.8125rem; /* 13px — body copy in panels                */
+  --text-sm--line-height: 1.125rem;
+  --text-base: 0.875rem; /* 14px — default                           */
+  --text-base--line-height: 1.25rem;
+  --text-lg: 1rem; /* 16px — sub-headings, emphasised facts          */
+  --text-lg--line-height: 1.375rem;
+  --text-xl: 1.25rem; /* 20px — panel stat                           */
+  --text-xl--line-height: 1.625rem;
+  --text-2xl: 1.625rem; /* 26px — KPI value                          */
+  --text-2xl--line-height: 1.875rem;
+  --text-3xl: 2.125rem; /* 34px — landing headline                   */
+  --text-3xl--line-height: 2.5rem;
+
+  /* ---- fonts: injected by next/font in layout.tsx. Before this existed the
+         config named JetBrains Mono but nothing ever fetched it, so every
+         machine rendered a different fallback. ---------------------------- */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, "SF Mono", Menlo, monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-raised: 0 2px 8px -2px rgb(0 0 0 / 0.5);
+  --shadow-pop: 0 12px 32px -8px rgb(0 0 0 / 0.7);
+
+  --ease-soft: cubic-bezier(0.2, 0.8, 0.25, 1);
 }
 
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: #111827; }
-::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #374151; }
+/* ============================================================================
+   Base layer
+   ========================================================================= */
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  /* tabular numerals: every column of figures lines up, everywhere */
+  font-feature-settings: "tnum" 1, "zero" 1, "cv05" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numerals are monospace throughout -- CLAUDE.md §7. Applied per-element via
+   .font-mono rather than globally so prose stays in the sans face. */
+
+::selection {
+  background: color-mix(in oklab, var(--color-info) 35%, transparent);
+  color: var(--color-ink);
+}
+
+/* ---- focus: the app previously had ZERO focus styles. This is the floor;
+       components may add their own ring on top. ------------------------- */
+:focus-visible {
+  outline: 2px solid var(--color-info-fg);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border-radius: 999px;
+  border: 2px solid var(--color-canvas);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3d4657;
+}
+
+/* Recharts injects its own focus outline on every bar/cell; suppress it and
+   let our :focus-visible rule above be the single source of truth. */
+.recharts-wrapper:focus,
+.recharts-surface:focus {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================================
+   Utilities
+   ========================================================================= */
+
+/* The provenance hatch. A DATA CONTRACT (CLAUDE.md §3): inferred values must
+   never be able to read as measured. Restyleable, not removable. */
+@utility hatch-inferred {
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 5px,
+    color-mix(in oklab, var(--color-warn) 28%, transparent) 5px,
+    color-mix(in oklab, var(--color-warn) 28%, transparent) 10px
+  );
+}
+
+/* Panel chrome, previously the string "bg-bg-card border border-bg-surface
+   rounded p-3" copy-pasted into 13 places. */
+@utility panel-surface {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+}
+
+/* Fades the bottom edge of a scroll region so cut-off rows read as "more
+   below" rather than as the end of the list. */
+@utility scroll-fade-b {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent 100%);
+}
+
+@utility text-numeric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}

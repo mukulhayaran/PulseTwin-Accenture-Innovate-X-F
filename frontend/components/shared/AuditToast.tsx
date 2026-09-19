@@ -7,8 +7,32 @@
 // their tree.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 
 const AUTO_DISMISS_MS = 2500;
+
+function Toast({ message, onDismiss }: { message: string | null; onDismiss: () => void }) {
+  return (
+    <AnimatePresence>
+      {message && (
+        <motion.div
+          role="status"
+          onClick={onDismiss}
+          initial={{ opacity: 0, y: 12, scale: 0.96 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 8, scale: 0.98 }}
+          transition={{ duration: 0.2, ease: [0.2, 0.8, 0.25, 1] }}
+          className="fixed bottom-5 right-5 z-50 flex cursor-pointer items-center gap-2 rounded-lg border border-ok/35 bg-surface px-3 py-2 text-xs text-ink shadow-pop"
+        >
+          <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-ok/15 text-2xs text-ok-fg">
+            ✓
+          </span>
+          {message}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
 
 export function useAuditToast() {
   const [message, setMessage] = useState<string | null>(null);
@@ -27,18 +51,7 @@ export function useAuditToast() {
 
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
-  const ToastElement = message ? (
-    <div
-      role="status"
-      onClick={dismiss}
-      className="fixed bottom-4 right-4 z-50 flex cursor-pointer items-center gap-2 rounded border border-signal-green/40 bg-bg-card px-3 py-2 font-mono text-[11px] text-txt-primary shadow-lg"
-    >
-      <span className="text-signal-green">✓</span>
-      <span>{message}</span>
-    </div>
-  ) : null;
-
-  return { show, dismiss, ToastElement };
+  return { show, dismiss, ToastElement: <Toast message={message} onDismiss={dismiss} /> };
 }
 
 // Controlled variant for a call site that already owns its own visibility state
@@ -56,16 +69,5 @@ export default function AuditToast({ message, visible, onDismiss }: AuditToastPr
     return () => clearTimeout(t);
   }, [visible, onDismiss]);
 
-  if (!visible) return null;
-
-  return (
-    <div
-      role="status"
-      onClick={onDismiss}
-      className="fixed bottom-4 right-4 z-50 flex cursor-pointer items-center gap-2 rounded border border-signal-green/40 bg-bg-card px-3 py-2 font-mono text-[11px] text-txt-primary shadow-lg"
-    >
-      <span className="text-signal-green">✓</span>
-      <span>{message}</span>
-    </div>
-  );
+  return <Toast message={visible ? message : null} onDismiss={onDismiss} />;
 }

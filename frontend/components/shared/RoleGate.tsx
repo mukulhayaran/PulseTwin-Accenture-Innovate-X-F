@@ -22,8 +22,20 @@ export default function RoleGate({ allowed, children, fallback }: RoleGateProps)
   return (
     <>
       {fallback ?? (
-        <div className="rounded border border-bg-surface bg-bg-card p-2 text-[11px] text-txt-muted">
-          Requires {allowed.join(" or ")} role
+        <div className="panel-surface flex min-h-24 flex-col items-center justify-center gap-2 p-5 text-center">
+          <span
+            aria-hidden
+            className="flex size-7 items-center justify-center rounded-full border border-line-strong bg-surface-2 text-ink-faint"
+          >
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4">
+              <rect x="2.5" y="6" width="9" height="6.5" rx="1.5" />
+              <path d="M4.75 6V4.25a2.25 2.25 0 0 1 4.5 0V6" strokeLinecap="round" />
+            </svg>
+          </span>
+          <p className="text-2xs text-ink-faint">
+            Requires{" "}
+            <span className="font-medium text-ink-dim">{allowed.join(" or ")}</span> role
+          </p>
         </div>
       )}
     </>
