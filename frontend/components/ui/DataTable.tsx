@@ -35,10 +35,11 @@ export default function DataTable<Row>({
   /** Enables a sticky header and scrolls the body beneath it. */
   maxHeight?: number;
 }) {
-  if (rows.length === 0) {
-    return (
-      <div className="py-8 text-center text-xs text-ink-faint">{empty}</div>
-    );
+  // Only short-circuit when there is nothing at all to show. With a footer present the
+  // table still renders: leadership's investment totals are a footer row, and returning
+  // early here made them disappear entirely whenever the plan came back empty.
+  if (rows.length === 0 && !footer) {
+    return <div className="py-8 text-center text-xs text-ink-faint">{empty}</div>;
   }
 
   return (
@@ -67,6 +68,13 @@ export default function DataTable<Row>({
           </tr>
         </thead>
         <tbody>
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={columns.length} className="py-6 text-center text-xs text-ink-faint">
+                {empty}
+              </td>
+            </tr>
+          )}
           {rows.map((row, i) => (
             <tr
               key={rowKey(row, i)}

@@ -7,8 +7,8 @@ import { cn } from "@/lib/cn";
 import { axisProps, gridProps, theme } from "@/lib/theme";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import {
-  AppShell, Badge, ChartFrame, ChartTooltip, DataTable, Fact, Kpi, Panel, SegmentedControl,
-  SkeletonChart, SkeletonStats, SkeletonTable, Tooltip, type Column,
+  AnimatedNumber, AppShell, Badge, ChartFrame, ChartTooltip, DataTable, Fact, Kpi, Panel,
+  SegmentedControl, SkeletonChart, SkeletonStats, SkeletonTable, type Column,
 } from "@/components/ui";
 
 type Scenario = "pessimistic" | "base" | "optimistic";
@@ -149,21 +149,43 @@ export default function LeadershipPage() {
           </>
         ) : (
           <>
+            {/* Spring-transitioned rather than snapped: every one of these changes when
+                the scenario switches, and a jump-cut across four tiles at once reads as
+                a reload instead of as a recalculation. */}
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              <Kpi label="Net value" value={`${money(roi.net_value)}/yr`} sub={`${scenario} scenario`} tone="ok" accent />
+              <Kpi
+                label="Net value"
+                value={<AnimatedNumber value={roi.net_value} format={(v) => `${money(v)}/yr`} />}
+                sub={`${scenario} scenario`}
+                tone="ok"
+                accent
+              />
               <Kpi
                 label="System ROI"
-                value={roi.roi_pct != null ? `${Math.round(roi.roi_pct)}%` : "—"}
+                value={
+                  roi.roi_pct != null
+                    ? <AnimatedNumber value={roi.roi_pct} format={(v) => `${Math.round(v)}%`} />
+                    : "—"
+                }
                 sub={`on ${money(roi.system_cost)} invested`}
               />
               <Kpi
                 label="Payback"
-                value={roi.payback_months != null ? `${roi.payback_months.toFixed(1)} mo` : "—"}
+                value={
+                  roi.payback_months != null
+                    ? <AnimatedNumber value={roi.payback_months} format={(v) => `${v.toFixed(1)} mo`} />
+                    : "—"
+                }
                 sub="from measured recall"
               />
               <Kpi
                 label="Defects caught"
-                value={`${Math.round(roi.basis.units_per_year * roi.basis.defect_rate * roi.basis.recall_at_budget).toLocaleString()}/yr`}
+                value={
+                  <AnimatedNumber
+                    value={roi.basis.units_per_year * roi.basis.defect_rate * roi.basis.recall_at_budget}
+                    format={(v) => `${Math.round(v).toLocaleString()}/yr`}
+                  />
+                }
                 sub={`${(roi.basis.recall_at_budget * 100).toFixed(0)}% recall at budget`}
               />
             </div>

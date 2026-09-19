@@ -28,7 +28,11 @@
          disabled. -------------------------------------------------------- */
   --color-ink: #e6e9ef;
   --color-ink-dim: #a0a8b4;
-  --color-ink-faint: #6b7482;
+  /* #6b7482 looked right but measured 3.66:1 on surface-2 and 3.91:1 on surface --
+     below WCAG AA's 4.5:1, and this token carries every panel title, axis label and
+     table header in the product. #88919f clears AA on all three surfaces (5.42-6.15)
+     while staying clearly a step below ink-dim. */
+  --color-ink-faint: #88919f;
 
   /* ---- signals: solid for fills/borders, -fg brightened for text on dark - */
   --color-ok: #10b981;
@@ -42,19 +46,9 @@
   --color-ai: #8b5cf6;
   --color-ai-fg: #a78bfa;
 
-  /* ---- legacy aliases -------------------------------------------------- *
-     The old token names stay valid so pages migrate one at a time instead of
-     in a single breaking commit. Remove once no page references them.       */
-  --color-bg-primary: #0a0c11;
-  --color-bg-card: #111419;
-  --color-bg-surface: #232834;
-  --color-txt-primary: #e6e9ef;
-  --color-txt-muted: #a0a8b4;
-  --color-signal-green: #10b981;
-  --color-signal-red: #ef4444;
-  --color-signal-amber: #f59e0b;
-  --color-signal-blue: #3b82f6;
-  --color-signal-purple: #8b5cf6;
+  /* The old bg- / txt- / signal- aliases that carried the pages through the
+     migration lived here. Every view now uses the tokens above, so they are
+     gone -- keeping them would have left two names for one colour. */
 
   /* ---- type scale: replaces 142 ad-hoc text-[Npx] values ---------------- */
   --text-2xs: 0.625rem; /* 10px — dense table meta, badges           */

@@ -539,7 +539,10 @@ export default function SupervisorPage() {
                 {alerts.map((a, i) => (
                   <motion.article
                     key={`${a.unit_id}-${a.ts}`}
-                    layout={!reduced}
+                    // No `layout` prop: it measures every card's box on each render, and
+                    // this list re-renders on the rAF flush with up to 40 cards in it --
+                    // per-frame forced layout is the exact cost the buffering above
+                    // exists to avoid. The enter animation is transform+opacity only.
                     initial={reduced ? false : { opacity: 0, x: 16, scale: 0.97 }}
                     animate={{ opacity: 1, x: 0, scale: 1 }}
                     transition={{ duration: 0.25, ease: [0.2, 0.8, 0.25, 1] }}

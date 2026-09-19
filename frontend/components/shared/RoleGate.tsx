@@ -19,25 +19,26 @@ export default function RoleGate({ allowed, children, fallback }: RoleGateProps)
   const role = getRole();
   if (allowed.includes(role)) return <>{children}</>;
 
+  // `fallback ?? default` was wrong: ?? only short-circuits on null/undefined, so an
+  // explicit fallback={null} -- meaning "render nothing here" -- still produced the
+  // default lock card. RetrainingConsole passes null for its header button, which
+  // wedged a full lock panel into a Panel header for every non-system role.
+  if (fallback !== undefined) return <>{fallback}</>;
+
   return (
-    <>
-      {fallback ?? (
-        <div className="panel-surface flex min-h-24 flex-col items-center justify-center gap-2 p-5 text-center">
-          <span
-            aria-hidden
-            className="flex size-7 items-center justify-center rounded-full border border-line-strong bg-surface-2 text-ink-faint"
-          >
-            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4">
-              <rect x="2.5" y="6" width="9" height="6.5" rx="1.5" />
-              <path d="M4.75 6V4.25a2.25 2.25 0 0 1 4.5 0V6" strokeLinecap="round" />
-            </svg>
-          </span>
-          <p className="text-2xs text-ink-faint">
-            Requires{" "}
-            <span className="font-medium text-ink-dim">{allowed.join(" or ")}</span> role
-          </p>
-        </div>
-      )}
-    </>
+    <div className="panel-surface flex min-h-24 flex-col items-center justify-center gap-2 p-5 text-center">
+      <span
+        aria-hidden
+        className="flex size-7 items-center justify-center rounded-full border border-line-strong bg-surface-2 text-ink-faint"
+      >
+        <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4">
+          <rect x="2.5" y="6" width="9" height="6.5" rx="1.5" />
+          <path d="M4.75 6V4.25a2.25 2.25 0 0 1 4.5 0V6" strokeLinecap="round" />
+        </svg>
+      </span>
+      <p className="text-2xs text-ink-faint">
+        Requires <span className="font-medium text-ink-dim">{allowed.join(" or ")}</span> role
+      </p>
+    </div>
   );
 }

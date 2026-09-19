@@ -10,7 +10,13 @@ import { useEffect, useState } from "react";
 import { getAuditActions, getAuditLog } from "@/lib/api";
 import { Badge, DataTable, Panel, Select, SkeletonTable, type Column } from "@/components/ui";
 
-const ROLES = ["", "supervisor", "manager", "leadership", "system"];
+// Radix Select treats "" as "no value selected" and falls back to its placeholder, so
+// an option whose value is "" renders the trigger BLANK -- both filter dropdowns showed
+// an empty box. A sentinel keeps "no filter" selectable and visible; it is mapped back
+// to undefined before the query is built (an empty string would reach the backend as a
+// literal match, which is QA bug #34 all over again).
+const ALL = "__all__";
+const ROLES = [ALL, "supervisor", "manager", "leadership", "system"];
 
 const ROLE_VARIANT: Record<string, "ok" | "info" | "ai" | "warn" | "neutral"> = {
   supervisor: "ok",
@@ -22,17 +28,22 @@ const ROLE_VARIANT: Record<string, "ok" | "info" | "ai" | "warn" | "neutral"> = 
 export default function AuditLogViewer() {
   const [entries, setEntries] = useState<any[]>([]);
   const [actions, setActions] = useState<string[]>([]);
-  const [role, setRoleFilter] = useState("");
-  const [action, setAction] = useState("");
+  const [role, setRoleFilter] = useState(ALL);
+  const [action, setAction] = useState(ALL);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => { getAuditActions().then((r) => setActions(r.actions)).catch(() => setActions([])); }, []);
 
   useEffect(() => {
     setLoading(true);
-    // role/action are passed as undefined when empty -- NOT as "": an empty string still
-    // serialises into the query and the backend matched it literally (QA bug #34).
-    getAuditLog({ role: role || undefined, action: action || undefined, limit: 50 })
+    // Mapped to undefined, NOT passed through: getAuditLog drops undefined keys, where
+    // any string (including "" or the ALL sentinel) would serialise into the query and
+    // be matched literally by the backend (QA bug #34).
+    getAuditLog({
+      role: role === ALL ? undefined : role,
+      action: action === ALL ? undefined : action,
+      limit: 50,
+    })
       .then((r) => setEntries(r.entries))
       .catch(() => setEntries([]))
       .finally(() => setLoading(false));
@@ -75,14 +86,14 @@ export default function AuditLogViewer() {
             ariaLabel="Filter by role"
             value={role}
             onChange={setRoleFilter}
-            options={ROLES.map((r) => ({ value: r, label: r || "All roles" }))}
+            options={ROLES.map((r) => ({ value: r, label: r === ALL ? "All roles" : r }))}
           />
           <Select
             ariaLabel="Filter by action"
             value={action}
             onChange={setAction}
             options={[
-              { value: "", label: "All actions" },
+              { value: ALL, label: "All actions" },
               ...actions.map((a) => ({ value: a, label: a })),
             ]}
           />

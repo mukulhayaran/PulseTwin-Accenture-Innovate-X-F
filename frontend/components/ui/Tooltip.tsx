@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { cloneElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import * as RT from "@radix-ui/react-tooltip";
 import { cn } from "@/lib/cn";
 
@@ -28,9 +28,23 @@ export default function Tooltip({
 }) {
   if (!content) return <>{children}</>;
 
+  // Radix opens on focus as well as hover -- but only if the trigger can actually BE
+  // focused, and most triggers here are plain <span>/<div>/<label>. Without this, a
+  // keyboard user never sees any of these tooltips, which defeats the whole reason for
+  // replacing title= attributes. Adding tabIndex to the existing element (rather than
+  // wrapping it) keeps the box model untouched, which matters for the fixed-width
+  // header items. Elements that already declare a tabIndex, and native buttons, are
+  // left alone.
+  const trigger =
+    isValidElement(children) &&
+    (children as ReactElement<{ tabIndex?: number }>).props.tabIndex === undefined &&
+    children.type !== "button"
+      ? cloneElement(children as ReactElement<{ tabIndex?: number }>, { tabIndex: 0 })
+      : children;
+
   return (
     <RT.Root>
-      <RT.Trigger asChild>{children}</RT.Trigger>
+      <RT.Trigger asChild>{trigger}</RT.Trigger>
       <RT.Portal>
         <RT.Content
           side={side}

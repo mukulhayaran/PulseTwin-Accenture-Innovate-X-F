@@ -15,7 +15,8 @@ export const theme = {
 
   ink: "#e6e9ef",
   inkDim: "#a0a8b4",
-  inkFaint: "#6b7482",
+  // Raised from #6b7482, which failed WCAG AA (3.66:1) -- see globals.css.
+  inkFaint: "#88919f",
 
   ok: "#10b981",
   okFg: "#34d399",
