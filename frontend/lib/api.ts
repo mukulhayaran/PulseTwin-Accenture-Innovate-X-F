@@ -233,6 +233,88 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+// ------------------------------------------------------------------- agentic triage
+//
+// The agent runs in the genai/ tier, never in serve/. These endpoints only start a run
+// and read the VERIFIED result -- `finding_raw` is deliberately never served, because a
+// redacted claim that reaches a screen has not been redacted.
+
+export interface TriageCitation { call_id: string; pointer: string }
+
+export interface TriageClaim {
+  id: string;
+  text: string;
+  value: number;
+  unit: string;
+  provenance: "measured" | "inferred";
+  citation: TriageCitation;
+  ci_low: number | null;
+  ci_high: number | null;
+  source: string | null;
+}
+
+export interface TriageFinding {
+  question: string;
+  summary: string;
+  claims: TriageClaim[];
+  recommendation: string;
+  alternatives_considered: string[];
+  confidence: "low" | "medium" | "high";
+  unanswered: string[];
+}
+
+export interface TriageVerdict {
+  claim_id: string;
+  code: string;
+  detail: string;
+  resolved_value: number | null;
+}
+
+export interface TriageRun {
+  run_id: string;
+  status: "unknown" | "queued" | "running" | "verified"
+        | "verified_with_redactions" | "rejected" | "failed";
+  mode?: "agent" | "deterministic";
+  acting_role?: string;
+  question?: string;
+  finding?: TriageFinding | null;
+  verification?: {
+    status: string;
+    claims_total: number;
+    claims_verified: number;
+    claim_verdicts: TriageVerdict[];
+    prose_issues: string[];
+    reject_reason: string;
+  } | null;
+  tool_ledger?: { call_id: string; tool_name: string; duration_ms: number }[];
+  claims_total?: number;
+  claims_verified?: number;
+  tool_calls?: number;
+  latency_s?: number;
+  cost_usd?: number;
+  cost_source?: string;
+  error?: string;
+}
+
+export const getTriageAvailability = () =>
+  get<{ enabled: boolean; reason: string; mode: "agent" | "deterministic" }>(
+    "/api/triage/availability"
+  );
+
+export const startTriage = (plant: string, question: string, actingRole?: Role) =>
+  post<{ run_id: string; status: string; mode: string; acting_role: string }>(
+    "/api/triage/runs",
+    { plant_id: plant, question, acting_role: actingRole ?? null, mode: "auto" }
+  );
+
+export const getTriageRun = (runId: string) =>
+  get<TriageRun>(`/api/triage/runs/${runId}`);
+
+export const listTriageRuns = (plant: string, limit = 5) =>
+  get<{ runs: TriageRun[]; count: number }>(
+    `/api/triage/runs?plant_id=${plant}&limit=${limit}`
+  );
+
 export const triggerRetrain = (plant: string) =>
   post<{ job_id: string; status: string }>("/api/admin/trigger-retrain", { plant_id: plant });
 export const getRetrainStatus = (jobId: string) =>

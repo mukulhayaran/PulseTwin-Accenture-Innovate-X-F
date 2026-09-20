@@ -104,6 +104,28 @@ CREATE TABLE IF NOT EXISTS sensor_health (
     last_reading_at TEXT, dropout_duration_s REAL, plant_id TEXT);
 CREATE INDEX IF NOT EXISTS idx_sensor_health_latest
     ON sensor_health (plant_id, station_id, sensor_type, timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS triage_runs (
+    run_id TEXT PRIMARY KEY,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    plant_id TEXT NOT NULL, question TEXT NOT NULL,
+    requested_by TEXT NOT NULL, acting_role TEXT NOT NULL,
+    mode TEXT NOT NULL, status TEXT NOT NULL,
+    provider TEXT, model_id TEXT,
+    finding TEXT, finding_raw TEXT, verification TEXT,
+    claims_total INTEGER DEFAULT 0, claims_verified INTEGER DEFAULT 0,
+    iterations INTEGER DEFAULT 0, tool_calls INTEGER DEFAULT 0,
+    prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0,
+    cost_usd REAL, cost_source TEXT, latency_s REAL, error TEXT);
+CREATE INDEX IF NOT EXISTS idx_triage_runs_plant
+    ON triage_runs (plant_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS triage_tool_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT, call_id TEXT NOT NULL, seq INTEGER NOT NULL,
+    tool_name TEXT NOT NULL, arguments TEXT, result TEXT, duration_ms REAL);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_triage_calls_run
+    ON triage_tool_calls (run_id, call_id);
 """
 
 
@@ -118,8 +140,28 @@ def open_ops_db() -> sqlite3.Connection:
     path = Path(os.environ.get("PULSETWIN_OPS_DB", "")) or None
     if path is None or str(path) == ".":
         path = Path(tempfile.gettempdir()) / "pulsetwin_ops.db"
-    con = sqlite3.connect(path, check_same_thread=False)
+    con = sqlite3.connect(path, check_same_thread=False, timeout=15.0)
     con.row_factory = sqlite3.Row
+    # WAL + a real busy timeout, because this file is genuinely MULTI-PROCESS: the
+    # backend holds a long-lived connection while `mlops.retrainer` and `genai.triage`
+    # are spawned as detached subprocesses (ADR-036) and write to the same tables.
+    #
+    # Under the default DELETE journal a writer is blocked by any open reader, so the
+    # child would die on `sqlite3.OperationalError: database is locked` while the row it
+    # was meant to advance sat at 'queued' forever. Found by actually spawning the job
+    # from a running server -- the standalone process never contends with anything, so
+    # every direct `python -m ...` run had passed.
+    #
+    # WAL lets readers and one writer proceed concurrently; busy_timeout makes a
+    # contended writer WAIT rather than fail instantly. synchronous=NORMAL is the
+    # documented-safe pairing with WAL.
+    for pragma in ("journal_mode=WAL", "busy_timeout=15000", "synchronous=NORMAL"):
+        try:
+            con.execute(f"PRAGMA {pragma}")
+        except sqlite3.DatabaseError:
+            # A filesystem that cannot do WAL (some network mounts) still works in the
+            # default journal mode -- slower under contention, not broken.
+            pass
     con.executescript(_OPS_SCHEMA_SQLITE)
     con.commit()
     return con

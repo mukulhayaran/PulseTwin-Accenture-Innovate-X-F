@@ -44,7 +44,7 @@ from serve.fallback_scorer import FallbackScorer
 from serve.middleware.audit import log_action
 from serve.middleware.auth import get_role, require_role
 from serve.middleware.rate_limit import RateLimitMiddleware
-from serve.routers import admin, alerts_mgmt, audit, model_health, system
+from serve.routers import admin, alerts_mgmt, audit, model_health, system, triage
 from serve.scorer import Scorer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -143,6 +143,7 @@ app.include_router(system.router)
 app.include_router(audit.router)
 app.include_router(alerts_mgmt.router)
 app.include_router(admin.router)
+app.include_router(triage.router)
 
 
 def _plant(plant_id: str) -> dict:

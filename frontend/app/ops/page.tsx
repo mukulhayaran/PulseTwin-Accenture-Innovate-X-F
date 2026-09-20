@@ -16,6 +16,7 @@ import IngestionLagChart from "@/components/ops/IngestionLagChart";
 import SystemStatusBar from "@/components/ops/SystemStatusBar";
 import AuditLogViewer from "@/components/ops/AuditLogViewer";
 import RetrainingConsole from "@/components/ops/RetrainingConsole";
+import TriageConsole from "@/components/ops/TriageConsole";
 import { AppShell, Select, Tooltip } from "@/components/ui";
 
 const ROLES: Role[] = ["supervisor", "manager", "leadership", "system"];
@@ -107,6 +108,13 @@ export default function OpsPage() {
     >
       <div className="space-y-4">
         <SystemStatusBar system={system} />
+
+        {/* Full width and first: the verification verdict is the point of the feature,
+            and dropping "Viewing as" to supervisor makes the agent decline rather than
+            estimate -- which is the most persuasive thing on this page. */}
+        <RoleGate allowed={["manager", "leadership", "system"]}>
+          <TriageConsole plant={plant} onAction={show} />
+        </RoleGate>
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <RoleGate allowed={["leadership", "system"]}>

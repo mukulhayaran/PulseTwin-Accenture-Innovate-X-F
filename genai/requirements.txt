@@ -1,0 +1,14 @@
+# The GenAI tier's ONLY third-party dependency.
+#
+# NOT in serve/requirements.txt and NOT in requirements-dev.txt: `genai/` is a separate
+# deployable, like `ingestion/` and `mlops/`, and `serve/` must never be able to import
+# it (enforced by tests/test_serve_imports.py, which needed no edit -- `genai` is simply
+# absent from its ALLOWED set).
+#
+# xAI Grok speaks the OpenAI wire protocol, so the official OpenAI client talks to it
+# with only a base_url change (https://docs.x.ai/docs/overview). The provider lives in
+# genai/config.py; swapping it touches that file and genai/client.py, nothing else.
+#
+# genai/api_client.py is deliberately stdlib-only (urllib) -- the tool layer that reads
+# PulseTwin's own API carries no dependency at all.
+openai>=1.60
