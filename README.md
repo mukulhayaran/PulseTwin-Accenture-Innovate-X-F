@@ -21,7 +21,7 @@ pip install -r serve/requirements.txt      # runtime only
 make generate        # simulate both plants        (~2 min)
 make train           # train per-plant models      (~2 min)
 make build-artifact  # bake SQLite + numpy models  (~1 min)
-make test            # full suite (226 tests, ~16 min — it runs real models)
+make test            # full suite (339 tests, ~18 min — it runs real models)
 
 make dev-backend     # API on :7860
 make dev-frontend    # UI on :3000
@@ -46,6 +46,24 @@ make retrain         # champion-challenger retraining run
 `docs/PRODUCTION_ARCHITECTURE.md` has the OT/IT diagram this stack implements.
 **Caveat:** `make demo-prod` has not yet been executed end to end — see
 `docs/STATE.md` → NEXT ACTION.
+
+### Agentic triage (`genai/`)
+
+An agent investigates the line through the read-only API and returns claims, each
+carrying the tool call and JSON Pointer its number came from. A deterministic verifier
+then re-checks every one and **removes what it cannot trace** — the model is not trusted,
+it is gated.
+
+```bash
+pip install -r genai/requirements.txt
+python -m genai.triage --plant plant_a --question "The constraint moved. Investigate."
+python -m genai.verify_cli --run-id <id>    # re-run the gate over a stored transcript
+```
+
+Without `XAI_API_KEY` it falls back to a **real, no-LLM triage** that runs the same tools
+by fixed rules and passes the identical verifier — so the feature demos and tests with no
+credential, and doubles as an honest baseline for whether the model added anything.
+`docs/DECISIONS.md` ADR-037 has the reasoning.
 
 ---
 
@@ -135,11 +153,18 @@ The full arithmetic is in `docs/AUDIT.md` §B34.
   ingestion/     MQTT (Unified Namespace) → dedup/reorder → data quality
         │        the ONLY component allowed to touch the OT network
         ▼
-  PostgreSQL     migrations/001-004; SQLite remains the local-dev fallback
+  PostgreSQL     migrations/001-005; SQLite remains the local-dev fallback
         ▲
         │
   mlops/         drift detection → champion-challenger retrain → registry
                  pandas/sklearn live HERE, never in serve/
+
+  ── agentic tier ────────────────────────────────────────────────────
+
+  genai/         tool-use loop over the READ-ONLY API → structured claims
+        │        → genai/verifier.py: a deterministic gate that REDACTS or
+        │          REJECTS any number it cannot trace to a tool result
+        ▼        a separate deployable; serve/ never imports it
 ```
 
 **Precompute heavy, serve thin.** The runtime image contains no model library. The
@@ -186,6 +211,16 @@ banned outright, and the test fails the build if one appears.
 - **Three of four retrofit candidates score zero uplift**, and that is a finding rather
   than a gap. At S15 the operator checklist is already the second strongest driver in the
   whole model, so a temperature/humidity sensor there would buy information we get free.
+- **The model cannot rank within its own alert set.** All 648 alerting units on plant A
+  score `risk_raw` = 0.880117 to sixteen significant figures, so every alert renders the
+  same 41% risk. All 32 trees split on `paint_buffer_dwell_s` at the root; once a unit is
+  past the dwell threshold and under the checklist threshold, no later split
+  discriminates. It identifies the at-risk population correctly and has nothing further
+  to say inside it. Measured, reproduced with the numpy scorer, and left alone — spreading
+  the scores by retraining would be tuning toward a nicer-looking number.
+- **The agent's claims are gated, not trusted.** Anything `genai/verifier.py` cannot trace
+  to a recorded tool result is removed from the answer, and a run with a contract
+  violation is discarded entirely rather than shown with a warning badge.
 
 ---
 

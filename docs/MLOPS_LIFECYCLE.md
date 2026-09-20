@@ -126,6 +126,24 @@ only code path that changes what `/api/predict/defect` actually serves. **Reject
 backend mutation — an un-promoted challenger already has zero effect on serving, so
 "rejecting" it is a client-side dismissal of the review, not an undo of anything.
 
+**What "changes what is served" means concretely, and its one limit.** Promotion loads the
+promoted row's `artifact_path` into the live scorer map
+(`serve/routers/admin.py::_activate_scorer`), so the next request is scored by the new
+model; the response's `serving` block reports whether that swap succeeded and names the
+artifact. The swap is **runtime-only** — it deliberately does not rewrite the committed
+`artifacts/model_<plant>.npz` (a version-controlled build output, ADR-027), so a process
+restart reverts to the committed champion. A production deployment promotes by publishing
+the artifact to object storage and restarting the pods against it; the registry row, not
+the container's local filesystem, is the source of truth in both cases.
+
+*Corrected 2026-09-16.* Until then this paragraph's claim was false in the strongest
+possible way: promote/rollback rewrote `model_registry` rows and nothing else, so
+`/api/predict/defect` returned a byte-identical probability before and after promoting a
+different model. Every challenger also exported to a single reused
+`model_<plant>_challenger.npz`, so each retrain overwrote the weights behind rows already
+marked `champion`; challengers now get one file each, keyed by model id. Found by
+promoting a model and diffing the prediction, not by reading the code.
+
 **Shadow period before promotion:** minimum 1 week of shadow monitoring in a real
 deployment before a challenger is eligible for promotion review, even if `compare()`
 recommends PROMOTE immediately after training — a single comparison against one held-out

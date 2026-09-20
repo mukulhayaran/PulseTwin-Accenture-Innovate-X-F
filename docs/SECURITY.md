@@ -43,11 +43,19 @@ Strict hierarchy — each role can do everything the one before it can (`serve/m
 
 | Minimum role | Endpoints |
 |---|---|
-| **none — open** | `/api/health`, `/api/config/plants`, `/api/config/stations`, `/api/stream`, `/api/predict/defect`, `/api/units`, `/api/units/{id}`, `/api/trace/containment/{id}`, `/api/bottleneck/current`, `/api/bottleneck/history`, `/api/stations/stats`, `/api/metrics`, `/api/whatif/stations` |
-| `supervisor` (any valid role) | `/api/alerts/escalation-policy`; and, via `get_role` rather than `require_role`, `POST /api/feedback` and `POST /api/alerts/{id}/acknowledge` — these accept any role but *record which one acted* |
-| `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag` |
+| **none — open** | `/api/health`, `/api/config/plants`, `/api/config/stations`, `/api/stream`, `/api/predict/defect`, `/api/units`, `/api/units/{id}`, `/api/trace/containment/{id}`, `/api/bottleneck/current`, `/api/bottleneck/history`, `/api/stations/stats`, `/api/metrics`, `/api/whatif/stations`, `/api/triage/availability` |
+| `supervisor` (any valid role) | `/api/alerts/escalation-policy`, `/api/system/sensor-dropouts`; and, via `get_role` rather than `require_role`, `POST /api/feedback` and `POST /api/alerts/{id}/acknowledge` — these accept any role but *record which one acted* |
+| `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag`, `POST /api/triage/runs`, `GET /api/triage/runs`, `GET /api/triage/runs/{id}` |
 | `leadership` | `/api/economics/roi`, `/api/economics/instrumentation-plan`, `/api/model/health`, `/api/model/registry`, `/api/audit/log`, `/api/audit/actions` |
 | `system` | `/api/admin/trigger-retrain`, `/api/admin/retrain-status/{id}`, `/api/admin/promote-model`, `/api/admin/rollback-model` |
+
+`/api/system/sensor-dropouts` is the narrow, supervisor-level slice of `/api/system/health`:
+the same active-dropout list, without the uptime and connection-pool internals. It exists
+because `/supervisor` pins itself to the `supervisor` role and must render
+`SensorDropoutAlert` — a floor supervisor needs to know their own sensor is dark. Before it
+existed that page polled `/api/system/health` and took a silent `403` every ten seconds, so
+the dropout banner never appeared. Splitting the endpoint was chosen over widening the
+`manager` gate precisely so this table keeps meaning what it says.
 
 **Known gap, stated rather than papered over.** The read endpoints in the first row carry
 **no role check at all** — including `/api/units/{id}`, which returns a unit's defect risk,
@@ -91,6 +99,44 @@ JSON payload, IP address. The six covered actions, and the only six — verify w
 | `retrain_triggered` | `POST /api/admin/trigger-retrain` |
 | `model_promoted` | `POST /api/admin/promote-model` |
 | `model_rolled_back` | `POST /api/admin/rollback-model` |
+| `triage_run_started` | `POST /api/triage/runs` — payload records `plant_id`, the capped `acting_role`, and the mode |
+
+### The GenAI tier's security posture (ADR-037)
+
+`genai/` is a separate deployable. `serve/` never imports it, and it never holds a
+database handle — it reads through the same HTTP API a human uses, so its entire
+vocabulary is the ten functions in `genai/tools.py`.
+
+**Privilege capping.** `serve/routers/triage.py::_cap_role` caps the role a run acts as at
+the role that triggered it. Without it an agent is a read-around for the RBAC gate: a
+`manager` could start a run acting as `leadership` and read economics they cannot read
+directly. Capping turns a restricted run into a feature — the agent reports what it could
+not read in `unanswered` instead of estimating it.
+
+**Agent actions are audited and distinguishable.** Every tool call carries
+`X-PulseTwin-Actor: genai_triage/<run_id>` alongside `X-PulseTwin-Role`. The one non-GET
+tool (`POST /api/whatif`) writes a `whatif_simulation_run` audit row, so an agent's
+scenario tests appear in the IATF 16949 trail attributed to the role it ran as, never
+anonymously.
+
+**Data egress is an allowlist, not "whatever the agent asked for."** The tool registry is
+ten plant-level aggregates. Unit-level surfaces (`/api/units/{id}`,
+`/api/trace/containment/{id}`) and anything reading `checklists` are excluded — shipping
+per-unit genealogy or operator-bucketed rows to a third-party API is the worst
+data-governance step this feature could take, and the strongest operator-privacy defence
+is that the data never leaves. `tests/test_genai_tools.py` asserts the registry's path set
+*equals* the approved list, so widening egress requires editing a test.
+
+**Prompt injection through data.** Tool results are model input, and in a real plant
+`station_name` and `notes_code` are attacker-influenceable. Three mitigations: the
+allowlist excludes free-text-heavy endpoints; the system prompt declares tool results to
+be data, not instructions; and structurally, `genai/verifier.py` never reads the narrative
+for facts, so an injected instruction cannot manufacture a *verified* number. It can still
+manufacture prose — which is why the verifier redacts any sentence carrying an uncited
+figure.
+
+**Credential handling.** `XAI_API_KEY` is read from the environment only.
+`GET /api/triage/availability` reports presence, never the value, a prefix, or its length.
 
 **It is not ASGI middleware, despite the directory name.** The finals brief asked for
 audit middleware; what is built is an explicit `log_action()` call at the end of each

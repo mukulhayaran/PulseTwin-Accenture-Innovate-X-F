@@ -2,19 +2,24 @@
 
 Hackathon Round 2 prototype. Mixed-model vehicle assembly line digital twin.
 
-**STATUS: feature-complete, both rounds.** All ten phases of the original brief are built
-— simulator, ML pipeline, artifacts, API, three persona views. The finals upgrade (F1-F8)
-is built on top: PostgreSQL, MQTT ingestion, MLOps (drift/retrain/registry/fallback),
-RBAC + audit trail, graceful degradation, a fourth Ops persona, K8s/Terraform manifests,
-and eight production-readiness documents. 226 tests pass.
+**STATUS: feature-complete, both rounds, plus a GenAI tier.** All ten phases of the
+original brief are built — simulator, ML pipeline, artifacts, API, three persona views.
+The finals upgrade (F1-F8) sits on top: PostgreSQL, MQTT ingestion, MLOps
+(drift/retrain/registry/fallback), RBAC + audit trail, graceful degradation, a fourth Ops
+persona, K8s/Terraform manifests, eight production-readiness documents. Since then: a
+full frontend redesign (Tailwind v4 + Radix + Motion) and `genai/`, an agentic triage
+tier with a deterministic verification gate. **339 tests pass** (~18 min).
 
-Read `docs/STATE.md` first — it has the ledger, all 24 bugs found, and the current
-verify-next list. `docs/AUDIT.md` covers why the build deviates from
-`pulsetwin_final_prompt.md`.
+Read `docs/STATE.md` first — it has the ledger, every bug found, and the verify-next
+list. `docs/AUDIT.md` covers why the build deviates from `pulsetwin_final_prompt.md`.
 
-**The one thing still unverified:** `docker compose -f docker-compose.prod.yml up` has
-never been run end to end (no Docker daemon was available). Everything else in this
-repo has either a passing test or a hand-review behind it.
+**Do not re-read the whole codebase to get oriented.** §4 below maps every subsystem to
+its file and its governing doc. `docs/STATE.md`'s ledger is the change history.
+
+**Still unverified:** `docker compose -f docker-compose.prod.yml up` has never been run
+end to end, and `genai/`'s agent path has never talked to a real provider (no API key in
+the dev environment — the deterministic path and the verifier are fully tested). See
+§8 for the standing gotchas that have each cost a debugging session.
 
 **Before changing anything, know these three:**
 1. **Do not tune the model to raise PR-AUC.** 0.256 is 53% of a *measured* oracle ceiling
@@ -81,6 +86,13 @@ retrain job as a detached process instead of hosting `mlops/` in `serve/` — se
 Heavy libraries live in `offline/` and never ship in the runtime image.
 **Precompute heavy, serve thin.**
 
+**`genai/` is OUTSIDE the wall and the wall was not widened for it.** `genai` is simply
+absent from `ALLOWED`, so `tests/test_serve_imports.py` already fails on any
+`import genai` inside `serve/` — that test needed **no edit** to cover the GenAI tier,
+which is a better outcome than an amendment. `serve/routers/triage.py` triggers a run
+with `subprocess.Popen` exactly as `admin.py` triggers retraining. Never add `openai`,
+`anthropic`, or any provider SDK to the allowlist (ADR-037).
+
 ---
 
 ## 3. THE THREE CONTRACTS
@@ -108,9 +120,30 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 |---|---|
 | `docs/STATE.md` | **Start here.** Progress ledger, every bug found, next action. |
 | `docs/SPEC.md` | The corrected canonical spec. This is the Round 2 build target. |
-| `docs/DECISIONS.md` | 36 numbered ADRs — why we deviate from the original prompt. |
+| `docs/DECISIONS.md` | 37 numbered ADRs — why we deviate from the original prompt. |
 | `docs/AUDIT.md` | The 31-finding flaw analysis of the original prompt (plus B34). |
-| `pulsetwin_final_prompt.md` | The original brief, and the finals brief. **Historical only — do not edit.** |
+| `pulsetwin_final_prompt.md` | The original Round 2 brief. **Historical only — do not edit.** Note: it contains NO finals section and no mention of GenAI, despite older text claiming otherwise. |
+
+### Subsystem map — read the file, not the whole repo
+
+| Subsystem | Entry point | Governing doc |
+|---|---|---|
+| Simulator | `offline/simulator/generate.py` | `docs/SPEC.md` §Phase 2 |
+| Features / model | `offline/ml/{featurize,train,thresholds}.py` | `docs/MODEL_CARD.md` |
+| Artifact build | `offline/build_artifact.py` (16 tables) | ADR-027, ADR-032 |
+| Runtime API | `serve/main.py` (+ 6 routers) — 35 endpoints | `docs/ARCHITECTURE.md` |
+| Numpy scorer | `serve/scorer.py` — decision-path, NOT SHAP | ADR-015 |
+| MQTT ingestion | `ingestion/` — separate deployable | `docs/PRODUCTION_ARCHITECTURE.md` |
+| MLOps | `mlops/{drift_detector,retrainer,model_registry,evaluation,fallback}.py` | `docs/MLOPS_LIFECYCLE.md` |
+| **GenAI triage** | `genai/` — separate deployable, never imported by `serve/` | **ADR-037** |
+| Frontend | `frontend/app/{supervisor,manager,leadership,ops}` + `components/ui/` | §7 below |
+
+**`genai/` file roles** (all provider-independent except `client.py`):
+`config.py` model ID + caps · `client.py` the ONLY `openai` import · `api_client.py`
+stdlib HTTP to PulseTwin's own API · `tools.py` the closed registry = the data-egress
+allowlist · `loop.py` the agent loop · `verifier.py` **the deterministic gate** ·
+`offline_triage.py` no-LLM path that passes the same gate · `store.py` ops-DB writes ·
+`triage.py` CLI entry.
 
 Finals upgrade docs — read the relevant one before changing that subsystem:
 
@@ -144,7 +177,7 @@ it in both. `configs/alert_policies.yaml`'s escalation levels and
 make generate        # simulate both plants
 make train           # train models (per-plant)
 make build-artifact  # bake SQLite + model_<plant>.npz + stream JSONL
-make test            # pytest tests/ -v   (226 tests, ~16 min — it runs real models)
+make test            # pytest tests/ -v   (339 tests, ~18 min — it runs real models)
 make demo            # docker compose: backend + frontend (SQLite runtime)
 
 make dev-backend     # uvicorn on :7860
@@ -158,7 +191,16 @@ make load-data       # bridge the committed artifact into Postgres
 make drift-check     # python -m mlops.drift_detector
 make retrain         # python -m mlops.retrainer (champion-challenger)
 make test-all        # pytest tests/ -v --tb=short
+
+# genai tier (ADR-037) -- needs a running backend; XAI_API_KEY optional
+pip install -r genai/requirements.txt
+python -m genai.triage --plant plant_a --question "..." [--mode deterministic]
+python -m genai.verify_cli --run-id X      # re-run the gate over a stored transcript
 ```
+
+Without `XAI_API_KEY` the triage falls back to `genai/offline_triage.py` — a real,
+no-LLM triage that passes the **same** verifier. That is the default in dev and it is
+how the whole feature is tested keyless.
 
 Always `OMP_NUM_THREADS=1` for anything touching training.
 
@@ -179,10 +221,11 @@ Available and directly relevant — reach for these rather than improvising:
 - **`frontend-design`** (plugin) — visual direction, so the dashboards don't read as
   templated Tailwind.
 - **`feature-dev`** (plugin) — structured explore → question → architect → review.
-- **`playwright`** (plugin) — drive a real browser over the four views, screenshot them,
-  and prove the SSE stream actually renders. **This is still outstanding** — pytest cannot
-  see a React component, and no view has been confirmed rendering since the Ops view
-  landed. "The UI works" is otherwise unverified.
+- **`playwright`** — **the highest-yield tool in this repo.** The MCP server times out
+  here, but Python Playwright + Chromium are installed and work: drive the routes, capture
+  console/network, click through flows. Every one of the last ~20 defects was found by
+  RUNNING the thing, never by reading it. pytest cannot see a React component, and a
+  passing unit suite has repeatedly coexisted with a broken seam.
 - **`pyright-lsp`** / **`typescript-lsp`** (plugins) — live type errors. `npx tsc
   --noEmit -p .` in `frontend/` is the fast whole-project check and currently passes clean.
 
@@ -190,16 +233,32 @@ Available and directly relevant — reach for these rather than improvising:
 
 ## 7. DESIGN LANGUAGE (frontend)
 
-Dark control-room aesthetic. Dense and information-rich — Bloomberg Terminal meets
-factory floor, **not** a SaaS landing page. Monospace for all numbers.
+**Stack: Next.js 15 (static export) · React 19 · Tailwind v4 · Radix · Motion · Recharts.**
+Tailwind v4 is **CSS-first** — there is no `tailwind.config.ts`; all tokens live in the
+`@theme` block of `frontend/app/globals.css`, mirrored in `frontend/lib/theme.ts` for
+Recharts (which takes hex, not class names). Change one, change both.
+
+Dense, information-rich, dark. Linear/Vercel-dashboard polish, not a marketing page.
+Monospace for all numbers.
 
 ```
---bg-primary   #0a0e17    --text-primary  #e5e7eb    --accent-green   #10b981  measured/healthy
---bg-card      #111827    --text-muted    #6b7280    --accent-red     #ef4444  alert/defect
---bg-surface   #1f2937                               --accent-amber   #f59e0b  warning/inferred
-                                                     --accent-blue    #3b82f6  info/selection
-                                                     --accent-purple  #8b5cf6  prediction/AI
+--color-canvas     #0a0c11   --color-ink        #e6e9ef   --color-ok      #10b981  measured/healthy
+--color-surface    #111419   --color-ink-dim    #a0a8b4   --color-danger  #ef4444  alert/defect
+--color-surface-2  #171b22   --color-ink-faint  #88919f   --color-warn    #f59e0b  inferred/warning
+--color-surface-3  #1e232c   (ink-faint is WCAG-AA      --color-info    #3b82f6  info/selection
+--color-line       #232834    tuned -- #6b7482 failed)   --color-ai      #8b5cf6  prediction/AI
 ```
+Each signal also has a brightened `-fg` variant for text on dark (`--color-ok-fg` etc.).
+
+**Use `components/ui/` — do not hand-roll.** `Panel` was once reimplemented 8 times.
+Available: `Panel Badge Button Select Slider SegmentedControl Tooltip DataTable
+AnimatedNumber AppShell Kpi/Stat/Fact Skeleton ChartFrame/ChartTooltip/ChartLegend`.
+Type sizes come from the scale (`text-2xs`…`text-3xl`), never `text-[11px]`.
+
+**`cn()` from `lib/cn.ts`, not template strings.** It registers `text-numeric` as its own
+tailwind-merge class group — without that, tailwind-merge sees the `text-` prefix and
+silently strips it whenever another `text-*` follows, which once cost every figure in the
+app its monospace face.
 
 No `localStorage` / `sessionStorage` in React components — persistent UI state
 (alert budget, shift counters) is derived server-side from the replay clock. The RBAC role
@@ -211,3 +270,72 @@ each pin themselves to one role and show that persona's job. `/ops` is the excep
 carries a live "Viewing as" selector so a demo can drop the role and watch `RoleGate`
 close panels in real time. Put new role-gated UI there, not in the three fixed views,
 where a gate can never actually fire.
+
+---
+
+## 8. GOTCHAS THAT HAVE EACH COST A SESSION
+
+Read this before debugging anything. Every line below was paid for once.
+
+### Running the stack
+- **`next build` wipes `.next` out from under a running `next dev`.** The dev server then
+  404s on its own chunks and every page renders blank with hydration errors. Symptom looks
+  like your code broke; it didn't. Kill dev, `rm -rf .next`, restart.
+- **The frontend does NOT primarily use `NEXT_PUBLIC_API_BASE`.** `lib/api.ts` fetches
+  `/config.json` first (ADR-028 runtime config) and only falls back to the env var. To
+  point a browser at a different backend, intercept `**/config.json` in Playwright rather
+  than editing the committed file.
+- **Port 7860 is often held by a stale process** that `Get-Process` cannot see. Find it
+  with `netstat -ano | grep 7860`; if the PID is invisible, use a different port.
+- **`make` is not installed.** Use the raw commands in §5.
+
+### SQLite (`serve/db.py`)
+- **Two connections to one SQLite file INSIDE one process deadlock each other** exactly as
+  two processes do. `db.execute` commits *after* the statement, so a statement that raises
+  (e.g. a duplicate INSERT) leaves a write transaction open and blocks every later write.
+- The ops DB is genuinely **multi-process** — the backend holds a long-lived handle while
+  `mlops.retrainer` and `genai.triage` are spawned detached. It is opened WAL +
+  `busy_timeout`; do not remove those.
+- **A detached child's failure is invisible** if its stdio goes to `DEVNULL` — the row just
+  sits at `queued` forever. `serve/routers/triage.py` writes a per-run `.log` beside the
+  heartbeat. Do the same for any new spawned job.
+
+### Artifacts and the stream
+- **`stream_index.byte_offset` is unreliable on Windows-built artifacts.** `build_artifact`
+  counted a 1-byte `"\n"` while text mode wrote `"\r\n"`, so offsets drift by one byte per
+  preceding line. Fixed at the source (`newline=""`) and probed around in `serve/main.py`,
+  but the **committed artifact still has drifted offsets** until it is rebuilt.
+- **Never `seek()` a text-mode file to a byte offset.** Text handles only accept values
+  from their own `tell()`. This is what broke `?from_ts=` for the whole life of the repo.
+
+### Frontend traps
+- `fallback ?? default` does **not** short-circuit on `null` — an explicit
+  `fallback={null}` still renders the default. `RoleGate` checks `!== undefined`.
+- **Radix `Select` renders its placeholder for `value=""`**, so an "All" option with an
+  empty value shows a blank trigger. Use a sentinel and map it back to `undefined`.
+- `motion`'s `layout` prop measures every element each render — never put it on a list
+  that re-renders on the SSE flush.
+- The supervisor header must fit **one line**; it wraps when the webfont swaps in and
+  drops `MAIN` 32px (load CLS 0.145 → 0.043 when fixed).
+
+### Testing
+- **`networkidle` never fires on `/supervisor`** — the SSE stream holds the connection
+  open by design. Use `domcontentloaded` + an explicit wait.
+- pytest's default `test*` glob **collects imported helpers** whose names start with
+  `test` (e.g. `testclient_transport`). Alias them on import.
+- Playwright `get_by_role(name=...)` is a substring match: "Start simulation" also matches
+  "Restart simulation". Use `exact=True`.
+
+### Known model behaviour that looks like a bug but isn't
+- **Every alert renders the same risk (41% on plant A).** All 648 alerting units share
+  `risk_raw` = 0.880117 exactly. All 32 trees split on `paint_buffer_dwell_s` at the root;
+  once a unit is past the dwell threshold and under the checklist threshold, no later
+  split discriminates, so every such unit lands in the same leaf in every tree. The model
+  identifies the at-risk set but **cannot rank within it**. This is measured, reproduced
+  with the numpy scorer, and not a rendering fault. Do NOT retrain to spread the scores —
+  that is tuning toward a nicer number, which §1 forbids. If it needs addressing, change
+  the presentation (band + CI) and record it in `docs/MODEL_CARD.md`.
+- **Bottleneck accuracy must never read 100%** (ADR-029), and **`/api/stations/stats`
+  currently ships `provenance: "inferred"` rows with no `ci_low`/`ci_high`**, which
+  violates contract #1 — `genai/offline_triage.py` declines to make point claims about
+  them rather than papering over it.

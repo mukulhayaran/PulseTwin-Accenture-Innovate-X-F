@@ -155,12 +155,253 @@ the full 226-test suite pass as of this session's close** (`OMP_NUM_THREADS=1 py
 tests/ -q` → `226 passed`). Findings 25-30 are documentation corrections and changed no
 code, so the suite is unaffected by them.
 
+### Found by the end-to-end QA pass (2026-09-16, third pass)
+
+A validation pass that **ran** the system rather than reading it: a live backend probed
+across every endpoint × every role, a real browser (Playwright/Chromium) driving all six
+routes with network and console captured, the MLOps lifecycle exercised end to end through
+the API, and the ingestion modules executed directly. Full write-up with reproductions in
+`reports/qa-audit-report.md`; baseline in `reports/baseline-test-report.md`.
+
+**The 226-test suite was green throughout and caught none of these.** All fifteen live in a
+**seam between two components** — detector→API, API→page, publisher→subscriber,
+image→route table — and the suite tests components. Four of them silently disabled a
+feature `docs/FINALS_DEMO_SCRIPT.md` depends on.
+
+31. **`frontend/Dockerfile` served the landing page for every persona route.**
+    `CMD ["serve", "-s", "out", ...]` — `-s` is single-page-app mode, which rewrites every
+    non-file path to `index.html`. Next's static export is multi-page. `/supervisor` and
+    `/` returned byte-identical 8,256-byte responses; without `-s` the five routes return
+    9454/11664/7185/9560/8377 bytes. **`make demo` shipped a UI with no reachable persona
+    view.** Invisible in dev (`next dev` routes itself) and the container had never run.
+32. **`/api/model/health` discarded 19 of 20 PSI features.** `_latest_run` kept only rows
+    matching `rows[0]["timestamp"]`, but `drift_detector` inserts one row per feature and
+    lets the column DEFAULT stamp each — twenty rows, twenty distinct milliseconds. The
+    Ops Drift Monitor rendered `0 / 1 features shifted · healthy · "No action needed"`
+    from a run whose own verdict was `10/20 shifted, worst hour_of_day PSI 4.691,
+    WARNING`. Fixed to latest-per-feature ordered by `id`, the pattern `system.py` already
+    uses for `sensor_health`. Also: `features_shifted` counted only the alert band
+    (PSI>0.2) where the detector counts warning+alert, so the two disagreed 7 vs 10.
+33. **`/supervisor` could never display a sensor dropout.** The page pins itself to
+    `supervisor` and polled `/api/system/health`, which requires `manager` — a 403 every
+    10s, swallowed by the `.catch()` that exists to survive transient failures. Confirmed
+    in-browser: 4 non-200 calls, all the same 403. This is demo Act 2. Fixed with a narrow
+    `GET /api/system/sensor-dropouts` at supervisor level rather than by widening the
+    `/api/system/health` gate — least privilege is the point of SECURITY.md's table.
+34. **The Ops audit-log panel was permanently empty.** `new URLSearchParams({role:
+    undefined})` stringifies to the literal `role=undefined`, which the backend matched as
+    `WHERE user_role = 'undefined'`: 0 rows against a table holding 16. This is demo Act 4
+    ("every action is traceable, IATF 16949").
+35. **Model promotion was cosmetic.** `docs/MLOPS_LIFECYCLE.md` said
+    `POST /api/admin/promote-model` "is the only code path that changes what
+    /api/predict/defect actually serves". It changed a registry row and nothing else — the
+    same feature vector returned `0.011457011658095886` before and after promoting a
+    different model. Two causes: no hot-swap of `STATE["scorers"]`, and every challenger
+    exporting to one reused `model_<plant>_challenger.npz` so each retrain overwrote the
+    weights behind rows already marked `champion`. Fixed: one .npz per challenger (capped
+    at 10, pruned), and promote/rollback load `artifact_path` into the live scorer and
+    report the outcome. Runtime-only by design — it does not rewrite the committed
+    artifact (ADR-027). Doc corrected rather than quietly rewritten.
+36. **`/api/system/ingestion-lag` 500'd the moment any sensor dropped out.**
+    `sensor_health.timestamp` is UTC-aware (column DEFAULT), `last_reading_at` is naive
+    (written from a replayed event); subtracting them raises `TypeError` and the handler
+    caught `ValueError` only. The endpoint looked healthy right up until the exact state
+    demo Act 2 creates on purpose.
+37. **The 60-second reorder window buffered nothing.** `flush_ready` cut on
+    `event_ts <= wall_clock_now - 60`, but the publisher replays the artifact's *simulated*
+    timestamps (2026-01-28) — true for every record on arrival, so the heap drained
+    immediately and late arrivals were written in arrival order. The F2 acceptance
+    criterion "late-arriving messages are correctly reordered" was not met. Fixed with an
+    event-time watermark plus a wall-clock idle drain.
+38. **Every data-quality score was capped at 0.70.** Same root cause: timeliness compared
+    arrival against the simulated event timestamp, so every reading looked 231 days late
+    and `timeliness` was 0.0 always. The publisher now stamps `emitted_at` (wall clock at
+    the edge gateway) beside `ts` — the Source/Server timestamp pair OPC-UA itself carries
+    — and the subscriber measures against that.
+39. **A failed retrain left no registry trace.** `mark_failed()` was UPDATE-only but
+    `retrainer` calls it from an `except` block that usually fires *before* `register()`
+    inserts the row, so it matched zero rows. `status='failed'` is one of the four states
+    `migrations/003` defines and it was unreachable on the path that produces it.
+40. **Models reported a negative age.** `time.strftime` is local naive; the column
+    DEFAULTs are UTC; `model_health` computes `age_days` against `now(timezone.utc)`. The
+    Ops view displayed **AGE -1d**. The same mixed clocks feed `ORDER BY retired_at DESC`,
+    which is how rollback picks its target. UTC at all seven write sites now.
+41. **429 and 403 reached the browser as opaque CORS errors.** `add_middleware` pushes onto
+    the *top* of the stack, so `RateLimitMiddleware` — added last — wrapped CORS and its
+    early return never passed through it. A rate-limited or role-denied browser could not
+    distinguish the rejection from the backend being down, which is exactly what `/ops`'s
+    "Viewing as" selector exists to demonstrate.
+42. **`model_registry.rollback()` recorded no approver** while `admin.py`'s copy did — the
+    drift the module docstring explicitly warns about, in the column an IATF 16949 audit
+    would read.
+43. **A negative `limit` disabled the cap.** SQLite treats `LIMIT -1` as no limit;
+    `/api/units?limit=-1` returned all 1423 rows, `/api/bottleneck/history?limit=-1` 2688.
+    `audit.py` already clamped, `main.py` did not.
+44. **Unauthenticated input could mint unbounded Prometheus labels.**
+    `predictions_total.labels(plant_id=...)` incremented *before* validation, so any
+    made-up `plant_id` created a permanent new time series.
+45. **The retrofit capital plan was ranked upside down.** `/api/economics/instrumentation-
+    plan` used `ORDER BY payback_months`, and SQLite sorts NULLs FIRST -- NULL being
+    exactly the candidates worth $0. The Leadership view renders the rows in API order, so
+    plant A listed its single fundable retrofit (S10, $30,792/yr, 1.2-month payback) **4th
+    of 4**, below three DEFER rows, and plant B listed its two **7th and 8th of 8**. The
+    endpoint's own docstring calls it "ranking by measured marginal model value per
+    dollar", and `docs/SCALING_COST_MODEL.md` builds its capex argument on this table.
+    Second defect in the same line: Postgres sorts NULLs LAST, so the identical request
+    returned a different order per backend -- exactly what `serve/db.py` exists to prevent.
+    Fixed with `ORDER BY (payback_months IS NULL), payback_months`, which both dialects
+    accept (`NULLS LAST` does not work -- SQLite lacks it).
+
+**`250 passed, 0 failed`** after the fixes, confirmed by two independent full runs against
+separate ops databases (16m53s and 16m41s) — the 226 pre-existing tests plus a new
+`tests/test_qa_regressions.py` (24 tests, one per defect, each reproduced before it was
+fixed). Two of them assert against non-Python files (a Dockerfile `CMD`, a TypeScript
+query-string builder): there is no JS test runner here and both defects silently emptied a
+headline feature, so a text assertion beats none.
+
+**Verified for the first time this pass:** all four persona views rendering real data in a
+real browser (item 3 of the NEXT ACTION list below), and the full F5 graceful-degradation
+cycle — backend killed with the browser open, `TWIN OFFLINE` banner in 1s with the line map
+and station tiles retained, backend restarted, banner cleared in 1s and `SSE LIVE` restored.
+That was the only end-to-end acceptance criterion in the finals brief that needed no fix.
+
+**Twelve further issues were found and deliberately NOT fixed** — §6 of
+`reports/qa-audit-report.md` says why for each. The one that matters most:
+
+> **The model that serves traffic is not in the registry.** `/api/predict/defect` scores
+> with `artifacts/model_<plant>.npz`, built by `make train`; only `mlops/retrainer` ever
+> calls `register()`. So the Ops view's "champion" has never scored a request, and the
+> model that has, has no registry row, no drift attribution and no promotion record. This
+> is the finding a judge could turn into a question — *"which model is actually running?"*
+> — that the current answer does not survive. Fixing it is a design decision (should
+> `build_artifact` register?), not a bug fix, so it is reported rather than patched.
+
 **Not verified this session:** `docker compose -f docker-compose.prod.yml up --build`
 end-to-end. The Docker CLI is present in this sandbox but has no daemon behind it (no
 `Docker Desktop.exe` process, no `com.docker.service`) — `docker compose up` fails
 immediately with a named-pipe connection error, before any image even builds. Every
 manifest and Dockerfile was reviewed by hand instead (catching bug #22 above); an actual
 `up` run needs a machine with a working Docker daemon.
+
+> *Postscript, 2026-09-16 (QA pass):* still true, and hand-review is demonstrably not
+> equivalent. Bug #31 — `frontend/Dockerfile`'s `serve -s out` serving the landing page for
+> all five persona routes — was found by **running that image's serve command against the
+> built `out/`**, not by reading the line. The same `CMD` had been reviewed and passed
+> twice. Treat every remaining "reviewed by hand" claim about the container stack as
+> unverified rather than as evidence.
+
+---
+
+## Sessions after the finals close (2026-09-19 / 2026-09-20)
+
+Two pieces of work sit on top of F1-F8: a **full frontend redesign** and a new **`genai/`
+agentic triage tier**. **339 tests pass** (was 250).
+
+### Frontend redesign (2026-09-19)
+
+Tailwind v3 → **v4** (CSS-first `@theme`; `tailwind.config.ts` deleted), plus Radix
+primitives, Motion, `next/font`, and a new `frontend/components/ui/` layer of 14 shared
+primitives. All six routes and 13 components refactored onto it.
+
+The largest single defect: **`tailwind.config.ts` named JetBrains Mono while nothing ever
+fetched it**, so every machine rendered a different fallback. Now self-hosted via
+`next/font`.
+
+Measured after: 0 console errors and 0 failed requests on all six routes; 232 keyboard
+stops all with a visible focus ring (the app previously had **zero** focus styles);
+0 contrast failures; 0 horizontal overflow at 400px; **stream CLS 0 at 50×**; load CLS
+0.043 (was 0.147).
+
+### GenAI tier (2026-09-20) — ADR-037
+
+`genai/` is a separate deployable, like `ingestion/` and `mlops/`. An agent investigates
+through the READ-ONLY HTTP API and returns claims, each carrying the tool call and RFC
+6901 pointer its number came from. `genai/verifier.py` — no model, no network, no clock —
+re-checks them and **redacts or rejects** rather than flagging.
+`genai/offline_triage.py` runs the same tools by fixed rules and passes the same gate, so
+the feature works with no API key and doubles as an honest baseline.
+
+**The import wall was NOT widened.** `genai` is absent from `ALLOWED`, so
+`tests/test_serve_imports.py` already failed on any `import genai` in `serve/` and needed
+no edit. Provider: xAI Grok (`grok-4.6`), OpenAI-compatible, isolated to
+`genai/client.py`.
+
+### Bugs found in these two sessions
+
+**Frontend — found by code review plus a Chromium audit:**
+
+46. **`cn()` silently stripped `text-numeric`.** tailwind-merge saw the `text-` prefix and
+    filed it under text-colour, dropping it whenever another `text-*` followed. 71 call
+    sites across 19 files lost their monospace face — inconsistently, which is worse than
+    uniformly.
+47. `RoleGate`'s `fallback ?? default` ignored an explicit `fallback={null}` (`??` does
+    not short-circuit on null), wedging a lock card into a Panel header.
+48. Radix `Select` renders its placeholder for `value=""`, so both audit-log filters
+    showed blank triggers.
+49. `DataTable`'s empty-rows early return dropped the footer — leadership's investment
+    totals vanished on an empty plan.
+50. Tooltips never opened on keyboard focus: most triggers are plain `<span>`s.
+51. `motion`'s `layout` prop on up to 40 alert cards re-measured every box on each rAF
+    flush — the exact cost the SSE buffering exists to avoid.
+52. **`ink-faint` failed WCAG AA** at 3.66:1 on surface-2, and it carries every panel
+    title, axis label and table header. Raised to `#88919f` (5.42–6.15:1).
+53. Hydration mismatch from `Math.sin()` float precision in the chart skeleton.
+54. The supervisor header **wrapped to two rows when the webfont swapped in**, dropping
+    `MAIN` 32px. Load CLS 0.147 → 0.043.
+55. The SSE cleanup called `setConnected(false)` on every speed change, so changing replay
+    speed **flashed the full-width TWIN OFFLINE banner** — the degradation banner crying
+    wolf mid-demo.
+
+**Backend — found by running the spawned job, not by reading it:**
+
+56. **`serve/db.py::open_ops_db()` opened SQLite with no WAL and no busy timeout.** That
+    file is genuinely multi-process — the backend holds a long-lived handle while
+    `mlops.retrainer` and `genai.triage` are spawned detached — so a child died on
+    `database is locked` while its row sat at `queued` forever. `mlops.retrainer` has the
+    identical pattern and the same latent flakiness; retraining is just rare enough that
+    nobody hit it. Every standalone `python -m …` run had passed, because a standalone
+    process contends with nothing.
+57. Two SQLite connections **inside one process** deadlocked each other: a duplicate
+    INSERT raised, and since `db.execute` commits AFTER the statement, the failed write
+    left a transaction open that blocked the same process's other handle.
+58. **`stream_index.byte_offset` is wrong on every Windows-built artifact.**
+    `build_artifact` counted a 1-byte `\n` while text mode wrote `\r\n` — one byte of
+    drift per line, compounding. Fixed at source with `newline=""`; `serve/main.py` probes
+    around it for the already-committed artifact.
+59. **`serve/main.py` seeked a TEXT-mode file to a byte offset.** Text handles only accept
+    values from their own `tell()`, so the first `json.loads` got a fragment. Combined
+    with #58, **`?from_ts=` had never worked for the life of the repo** — nothing called
+    it until the replay pause/resume control did.
+
+**Reported, deliberately NOT fixed:**
+
+60. **`/api/stations/stats` ships `provenance: "inferred"` rows with no `ci_low`/`ci_high`**,
+    violating contract #1 (CLAUDE.md §3). Found by the triage verifier rejecting its own
+    deterministic path. `genai/offline_triage.py` now declines to make point claims about
+    those rows rather than papering over it; the endpoint is unchanged.
+61. **Every alert renders an identical risk (41% on plant A).** All 648 alerting units
+    share `risk_raw` = 0.880117 to 16 significant figures. All 32 trees split on
+    `paint_buffer_dwell_s` at the root; past the dwell threshold and under the checklist
+    threshold no later split discriminates, so every such unit lands in the same leaf in
+    every tree. Reproduced independently with the numpy scorer — not a rendering fault.
+    The model identifies the at-risk set but **cannot rank within it**. Not fixed because
+    retraining to spread the scores is tuning toward a nicer number, which CLAUDE.md §1
+    forbids. The fix, if wanted, is presentational (band + CI) plus a MODEL_CARD entry.
+
+### Also added
+
+- **Replay transport on `/supervisor`**: Start / Stop / Restart. Pause closes the SSE
+  connection and keeps the last line state; resume seeks with `?from_ts=` — which is what
+  surfaced #58 and #59. A deliberate pause is not reported as an outage.
+- `python -m genai.verify_cli --run-id X` re-runs the gate over a stored transcript and
+  must reach a byte-identical verdict — the property that makes the audit claim real.
+
+### Known test-isolation weakness
+
+`tests/test_qa_regressions.py`'s model-registry tests read the **default temp ops DB** and
+fail if an earlier manual run left rows in it. They pass against a clean
+`PULSETWIN_OPS_DB`. Pre-existing; set that env var when running them after any hand-run of
+`genai.triage` or `mlops.retrainer`.
 
 ---
 
@@ -319,22 +560,41 @@ fixed property of the method.
 Everything in the Round 2 brief and everything in the finals brief (F1-F8) is built and
 committed. What is left is **verification, not construction** — in priority order:
 
-1. **Run the production stack for real.** `docker compose -f docker-compose.prod.yml up
-   --build` on a machine with a working Docker daemon. This is the one acceptance
-   criterion in the finals brief that has never actually been executed (see the "Not
-   verified" note above). Expect to find things; hand-review already caught one
-   (`serve/Dockerfile` not copying `migrations/`).
-2. **Walk `docs/FINALS_DEMO_SCRIPT.md` end to end**, including the live sensor-dropout
-   injection over MQTT, which needs that same stack running. Act 2 is the only part of
-   the demo whose mechanism has never been exercised outside unit tests.
-3. **Drive the four views in a browser.** `make dev-backend` + `make dev-frontend`. The
-   frontend type-checks clean (`npx tsc --noEmit`) and every panel is wired to a real
-   endpoint, but no view has been confirmed *rendering* since the Ops view was added —
-   pytest cannot see a React component.
-4. **Re-run `make generate && make train && make build-artifact`** if any headline number
+1. **Decide what to do about the registry not knowing the production model** (the quoted
+   finding at the end of the QA section above). This is the only open item that is a
+   *design* question rather than a verification one, and it is the one most likely to come
+   back as a judge's follow-up.
+2. **Run the production stack for real.** `docker compose -f docker-compose.prod.yml up
+   --build` on a machine with a working Docker daemon. Still never executed. The QA pass
+   found bug #31 — a container in which no persona view was reachable — only by
+   reproducing the frontend image's serve command by hand, which is fair warning that an
+   actual `up` will find more.
+3. **Walk `docs/FINALS_DEMO_SCRIPT.md` end to end**, including the live sensor-dropout
+   injection over MQTT, which needs that same stack running. Act 2's *rendering* is now
+   verified (bug #33 fixed, banner confirmed in-browser), but the MQTT injection path that
+   feeds it still has not run against a real broker. Note the pre-flight also needs
+   `pip install -r ingestion/requirements.txt` on the host, which the script does not say.
+4. ~~**Drive the four views in a browser.**~~ **Done 2026-09-16**, and again after the
+   2026-09-19 redesign — six routes, 0 console errors, 0 failed requests.
+
+6. **Run one live `genai.triage` against a real provider.** Set `XAI_API_KEY` and run
+   `python -m genai.triage --plant plant_a --question "..."`. Everything except one API
+   call's wire format is already proven keyless — loop, tools, verifier, persistence,
+   RBAC, degradation — but the agent path itself has never talked to a provider. Given
+   this repo's history with untested paths, treat it as mandatory before demoing it.
+
+7. **Decide what to do about every alert showing the same risk** (finding #61 above).
+   It is a measured property of a saturated model, not a bug, but it reads as broken.
+   The non-tuning fix is presentational.
+
+8. **Rebuild the artifact when convenient** — `stream_index.byte_offset` is drifted in
+   the committed one (#58). `serve/main.py` probes around it, so nothing is broken, but
+   a rebuild makes the index correct rather than tolerated.
+5. **Re-run `make generate && make train && make build-artifact`** if any headline number
    needs to change, then update `README.md`, `docs/MODEL_CARD.md`, `docs/STATE.md` and
    `docs/ASSUMPTIONS.md` **together**. Those four drifting apart is exactly what produced
-   the correction note above.
+   the correction note above. A rebuild also writes `trained_at` in UTC for the first time
+   (bug #40) — not urgent, the existing value is stale demo state, not wrong code.
 
 **Do not** retune the model to raise PR-AUC. The oracle framing is stronger than a
 higher number, and ADR-020 makes the band advisory.
@@ -493,4 +753,34 @@ knowing whether we are ahead or behind.
                      records but the docs omitted, and an alarm-budget overshoot nothing
                      explained. No code changed; every headline number now names the
                      table it came from.
+2026-09-16  QA       End-to-end validation pass: ran the system instead of reading it.
+                     Live backend probed across every endpoint x every role; all six
+                     routes driven in real Chromium with network+console captured; MLOps
+                     lifecycle exercised through the API; ingestion modules executed
+                     directly. 15 defects found (bugs 31-45), all fixed and verified;
+                     12 more reported and deliberately not fixed (reports/
+                     qa-audit-report.md SS6). The 226-test suite was green throughout and
+                     caught none of them -- every defect sits in a SEAM between two
+                     components, and the suite tests components. 4 of the 14 silently
+                     disabled a feature the finals demo depends on. Added
+                     tests/test_qa_regressions.py (24 tests, one per defect, each
+                     reproduced before it was fixed) -> 250 passed. First confirmed
+                     browser rendering of all four persona views, and first end-to-end
+                     run of the F5 offline/reconnect cycle.
+2026-09-19  UI       Frontend redesign: Tailwind v3->v4 (CSS-first @theme, config
+                     deleted), Radix, Motion, next/font, and a components/ui/ layer of
+                     14 primitives. 10 defects fixed (46-55) -- incl. a font that was
+                     named but never loaded, and a cn() bug that stripped monospace from
+                     71 call sites. Verified in Chromium across six routes: 0 console
+                     errors, 0 contrast failures, 232 keyboard stops all with a focus
+                     ring (was zero focus styles), stream CLS 0 at 50x.
+2026-09-20  GenAI    genai/ agentic triage tier (ADR-037): tool-use loop over the
+                     read-only API, with a deterministic verifier that redacts or
+                     rejects rather than flags. Import wall NOT widened -- genai was
+                     already outside ALLOWED, so test_serve_imports.py needed no edit.
+                     Provider xAI Grok, isolated to genai/client.py; the no-LLM
+                     offline_triage path passes the same gate, so the feature tests
+                     keyless. Added Start/Stop/Restart replay transport, which surfaced
+                     that ?from_ts= had never worked (bugs 58-59). Found 4 real bugs
+                     (56-59), reported 2 more (60-61) without fixing. 339 tests pass.
 ```

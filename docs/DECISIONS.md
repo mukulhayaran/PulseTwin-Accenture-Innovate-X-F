@@ -743,3 +743,82 @@ have been.
 
 *Still banned, no exception:* everything in ADR-033's and ADR-019's banned lists. Neither
 addition lets a heavy library through -- `admin.py` still cannot `import mlops`.
+
+---
+
+### ADR-037 — The GenAI tier sits outside the import wall, and its output is gated, not trusted
+**Audit:** Agentic triage · **Status:** ACCEPTED
+
+An AI-focused audience does not recognise a calibrated HistGB ensemble as AI, so an
+agentic layer was added. The brief never asked for one (`pulsetwin_final_prompt.md`
+contains no mention of LLM, GenAI, agentic or natural language), so it is judged purely
+on whether it strengthens the project without weakening its thesis.
+
+That thesis — *measured, not assumed* — is what makes the design non-obvious. A language
+model is the one component here that cannot be regenerated deterministically. Bolting a
+chatbot onto a project whose distinguishing feature is an oracle ceiling and published
+negative results would trade the strongest thing it has for the most common thing at a
+hackathon.
+
+*Decision 1 — `genai/` is a separate deployable; the wall is NOT widened.*
+It joins `ingestion/` and `mlops/` as a tier `serve/` never imports. `genai` is absent
+from `tests/test_serve_imports.py`'s `ALLOWED` set, so that test already fails on any
+`import genai` inside `serve/` — **it needed no edit to cover this feature**, which is a
+better outcome than an amendment. The backend triggers a run with `subprocess.Popen`
+exactly as it triggers retraining (ADR-036): trigger heavy, don't host it.
+
+This also preserves a security claim that a naive implementation would have broken.
+`configs/deployment.yaml` sets `network.internet_egress_allowed: false` for the backend
+pod and `infrastructure/kubernetes/network-policy.yaml` enforces it; a hosted LLM call
+from `serve/` would contradict both. An IT-tier job with its own egress policy does not,
+and the backend's allow-list stays `[postgres, redis]` verbatim.
+
+*Decision 2 — the agent reads through the HTTP API, not the database.*
+`serve/db.py::open_ops_only()` returns a *writable* handle on the Postgres path, so a
+direct-DB tool layer would hand the agent write capability and "read-only" would rest on
+nobody having typed an INSERT. Over HTTP its entire vocabulary is ten function names, it
+carries `X-PulseTwin-Role`, and a 403 becomes a fact it must report rather than an
+exception. `serve/routers/triage.py::_cap_role` caps the acting role at the caller's own
+— without it, an agent is a read-around for the role gate.
+
+*Decision 3 — the tool registry IS the data-egress allowlist.*
+Ten plant-level aggregate endpoints. Unit-level surfaces (`/api/units/{id}`,
+`/api/trace/containment/{id}`) and anything reading `checklists` are excluded: shipping
+per-unit genealogy or operator-bucketed rows to a third-party API is the worst
+data-governance step this feature could take, and the best privacy defence is that the
+data never leaves. `tests/test_genai_tools.py` asserts the registry's path set *equals*
+the approved list, so widening egress requires editing a test — the same trick
+`test_serve_imports.py` plays on the import wall.
+
+*Decision 4 — verification is the feature; the model is not trusted.*
+The agent returns claims, each carrying the tool call and RFC 6901 pointer its number
+came from. `genai/verifier.py` — no model, no network, no clock — re-checks all four
+ways a number can be wrong: the citation resolves (C1), the value matches within a
+tolerance *derived from the claim's own printed precision* (C2), every number in the
+prose is accounted for (C3 — the claim table is the part a model tries hard on, the
+summary is where it relaxes), and the three contracts hold (C4, including a cross-check
+of claimed provenance against the cited row's own `provenance` column).
+
+Failure **redacts or rejects**; it does not flag. A flagged number is still a rendered
+number and a reader will read it. A rejected run serves no finding at all and says why —
+the same posture as ADR-030/031's published negative results.
+
+*Decision 5 — a deterministic path that passes the same gate.*
+`genai/offline_triage.py` runs the same tools in a fixed order and assembles a finding in
+code. It means the feature demos and tests with no credential, it survives a provider
+outage mid-demo, and — the reason that matters — it is an honest **baseline**: whether
+the agent found anything the rules did not is then a measurable question rather than an
+impression.
+
+*Cost:* one more tier to deploy, one more allowlist to review, and a provider dependency
+that only `genai/requirements.txt` carries. The unverifiable surface of the whole feature
+is one API call's wire format, isolated to `genai/client.py`.
+
+*Found while building this:* `serve/db.py::open_ops_db()` opened SQLite with no WAL and
+no busy timeout. The file is genuinely multi-process — the backend holds a long-lived
+connection while detached children write — so a spawned job died on `database is locked`
+while its row sat at `queued` forever. `mlops.retrainer` uses the identical pattern and
+has the same latent flakiness; retraining is just rare enough that nobody hit it. Now
+WAL + `busy_timeout`. Found by spawning the job from a running server, not by reading:
+every standalone `python -m ...` run had passed, because a standalone process contends
+with nothing.
