@@ -145,9 +145,17 @@ export async function postFeedback(plant: string, unitId: string, verdict: strin
   });
 }
 
-export async function streamUrl(plant: string, speed: number): Promise<string> {
+export async function streamUrl(
+  plant: string,
+  speed: number,
+  fromTs?: string | null
+): Promise<string> {
   const base = await apiBase();
-  return `${base}/api/stream?plant_id=${plant}&speed=${speed}`;
+  // from_ts seeks via the stream_index table (minute granularity), so resuming after a
+  // pause continues the shift rather than restarting it. Omitted entirely when absent --
+  // an empty from_ts would seek to offset 0 and silently replay from the beginning.
+  const seek = fromTs ? `&from_ts=${encodeURIComponent(fromTs)}` : "";
+  return `${base}/api/stream?plant_id=${plant}&speed=${speed}${seek}`;
 }
 
 // ---------------------------------------------------------------- manager / leadership

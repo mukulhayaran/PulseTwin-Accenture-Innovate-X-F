@@ -482,7 +482,12 @@ def build(config_path: str) -> dict:
     alert_by_unit = sc["alert_fired"].to_dict()
     ck_by = {(r.unit_seq, r.station_id): r for r in ckw.itertuples()}
 
-    with stream_path.open("w", encoding="utf-8") as fh:
+    # newline="" disables universal-newline translation. Without it, Windows writes
+    # "\r\n" for every "\n" while the offset accounting below counts the 1-byte form --
+    # so every stream_index.byte_offset drifts by the number of preceding lines and
+    # `?from_ts=` seeks land mid-record. serve/main.py probes around this for already-
+    # committed artifacts; this is the fix at the source.
+    with stream_path.open("w", encoding="utf-8", newline="") as fh:
         offset = 0
         last_key = None
         for r in win.sort_values("entry_ts").itertuples():

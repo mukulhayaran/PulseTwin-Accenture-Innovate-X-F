@@ -57,6 +57,11 @@ export default function SupervisorPage() {
   const [voted, setVoted] = useState<Record<string, string>>({});
   const [lastKnownAt, setLastKnownAt] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
+  // Replay transport. `running` gates the SSE effect; resumeTs is a REF, not state, so
+  // the simulated clock advancing on every flush does not retrigger the effect and
+  // reopen the connection sixty times a second.
+  const [running, setRunning] = useState(true);
+  const resumeTs = useRef<string | null>(null);
   const [dropouts, setDropouts] = useState<
     { station_id: number; sensor: string; since: string; duration_s: number }[]
   >([]);
@@ -122,6 +127,7 @@ export default function SupervisorPage() {
 
     const last = batch[batch.length - 1];
     setClock(last.ts);
+    resumeTs.current = last.ts;
     if (last.alerts_budget) setBudget({ used: last.alerts_used ?? 0, max: last.alerts_budget });
 
     const newAlerts = batch.filter((e) => e.alert);
@@ -142,9 +148,16 @@ export default function SupervisorPage() {
   }, [plant]);
 
   useEffect(() => {
+    if (!running) {
+      // Paused: no connection at all. The line map keeps its last state rather than
+      // clearing, which is the same principle as OfflineBanner retaining the last known
+      // state -- a paused twin still shows what it last saw.
+      setConnected(false);
+      return;
+    }
     let es: EventSource | null = null;
     let cancelled = false;
-    streamUrl(plant, speed).then((url) => {
+    streamUrl(plant, speed, resumeTs.current).then((url) => {
       if (cancelled) return;
       es = new EventSource(url);
       es.onopen = () => setConnected(true);
@@ -161,7 +174,21 @@ export default function SupervisorPage() {
     // retryNonce has no effect on what the stream does -- it exists so OfflineBanner's
     // [Retry Now] button (and its auto-retry ticker) can force this effect to re-run and
     // open a fresh EventSource without duplicating the connection logic above.
-  }, [plant, speed, push, retryNonce]);
+  }, [plant, speed, push, retryNonce, running]);
+
+  // Switching plant must not resume the NEW plant at the OLD plant's timestamp.
+  useEffect(() => { resumeTs.current = null; }, [plant]);
+
+  const restart = () => {
+    resumeTs.current = null;
+    setLive({});
+    setAlerts([]);
+    setSelected(null);
+    setContainment(null);
+    setClock("");
+    setRunning(true);
+    setRetryNonce((n) => n + 1);
+  };
 
   const openUnit = async (unitId: string) => {
     const [u, c] = await Promise.all([getUnit(unitId, plant), getContainment(unitId, plant)]);
@@ -212,11 +239,35 @@ export default function SupervisorPage() {
       plant={plant}
       onPlantChange={setPlant}
       role={getRole()}
-      connected={connected}
+      // A deliberate pause is NOT an outage: without `|| !running` the offline banner
+      // would claim "TWIN OFFLINE" the moment an operator pressed Stop, and start an
+      // auto-retry countdown against a connection nobody wants reopened.
+      connected={connected || !running}
       lastKnownAt={lastKnownAt}
       onRetry={() => setRetryNonce((n) => n + 1)}
       controls={
         <>
+          {/* Replay transport. Pause closes the SSE connection outright rather than
+              buffering: the server is streaming a file, so a paused client that keeps
+              the socket open would just accumulate a backlog to flush on resume. */}
+          <div className="flex shrink-0 items-center gap-1">
+            <Tooltip content={running ? "Pause the replay — the line map keeps its last state" : "Resume from where the replay stopped"}>
+              <Button
+                variant={running ? "warn" : "ok"}
+                size="sm"
+                onClick={() => setRunning((r) => !r)}
+                aria-label={running ? "Stop simulation" : "Start simulation"}
+              >
+                {running ? "■ Stop" : "▶ Start"}
+              </Button>
+            </Tooltip>
+            <Tooltip content="Restart the shift from the beginning and clear the alert feed">
+              <Button variant="ghost" size="sm" onClick={restart} aria-label="Restart simulation">
+                ↻
+              </Button>
+            </Tooltip>
+          </div>
+
           <SegmentedControl
             name="speed"
             aria-label="Replay speed"
@@ -266,8 +317,12 @@ export default function SupervisorPage() {
               {simTime}
             </span>
           </Tooltip>
-          <Badge variant={connected ? "ok" : "danger"} dot className="w-[4.25rem] justify-center">
-            {connected ? "Live" : "Down"}
+          <Badge
+            variant={!running ? "neutral" : connected ? "ok" : "danger"}
+            dot
+            className="w-[4.75rem] justify-center"
+          >
+            {!running ? "Paused" : connected ? "Live" : "Down"}
           </Badge>
           <span className="w-8 shrink-0">
             <StaleDataIndicator timestamp={lastKnownAt} />

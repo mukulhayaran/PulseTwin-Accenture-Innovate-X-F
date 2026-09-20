@@ -240,13 +240,30 @@ async def stream(
         budget = int(STATE["plants"][plant_id]["alert_budget"])
         prom_metrics.active_connections.inc()
         try:
-            with path.open("r", encoding="utf-8") as fh:
+            # BINARY mode, deliberately: stream_index.byte_offset is a BYTE offset, and
+            # a text-mode file only accepts seek() values produced by its own tell().
+            # Seeking a text handle to an arbitrary byte lands mid-line, so the first
+            # json.loads() got a fragment and the generator died before emitting a
+            # single event -- `from_ts` had never worked, because nothing called it
+            # until the replay pause/resume control did. json.loads takes bytes.
+            with path.open("rb") as fh:
                 fh.seek(offset)
+                # stream_index offsets can be stale by one byte per preceding line when
+                # the artifact was written on Windows: build_artifact counted a 1-byte
+                # "\n" while text mode wrote "\r\n". Rather than trust the index, probe:
+                # if the line at `offset` does not start a record we landed mid-line, so
+                # keep the discard; if it does, rewind and lose nothing. Costs one
+                # readline and makes the seek correct for artifacts built either way.
+                if offset:
+                    if fh.readline().lstrip().startswith(b"{"):
+                        fh.seek(offset)
                 prev_ts = None
                 last_ping = time.time()
                 n = 0
                 alerts_by_shift: dict[str, set] = {}
                 for line in fh:
+                    if not line.strip():
+                        continue
                     n += 1
                     rec = json.loads(line)
                     if prev_ts is not None:
