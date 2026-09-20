@@ -60,10 +60,43 @@ python -m genai.triage --plant plant_a --question "The constraint moved. Investi
 python -m genai.verify_cli --run-id <id>    # re-run the gate over a stored transcript
 ```
 
-Without `XAI_API_KEY` it falls back to a **real, no-LLM triage** that runs the same tools
+Without `GROQ_API_KEY` it falls back to a **real, no-LLM triage** that runs the same tools
 by fixed rules and passes the identical verifier — so the feature demos and tests with no
 credential, and doubles as an honest baseline for whether the model added anything.
 `docs/DECISIONS.md` ADR-037 has the reasoning.
+
+### AI Operations Copilot (`/copilot`)
+
+The agent, as a conversation. Ask in plain language, or run a named action — investigate
+an incident, generate shift intelligence, generate a handover, run a what-if. Available
+full-page at `/copilot` and as a dock on every persona view.
+
+```bash
+make dev-backend && make dev-frontend        # then open http://localhost:3000/copilot
+python -m genai.triage --plant plant_a --intent handover --mode deterministic
+```
+
+Four things make it different from a chatbot bolted onto a dashboard:
+
+- **Nothing reaches the screen before the verifier passes on it.** The run is
+  non-streaming on purpose — streaming the model's text would render numbers before they
+  were checked. What streams is tool activity: a phase trail showing *Checking production
+  state → Examining risk signals → Running simulation → Verifying every number*. Model
+  prose never enters it, and a test asserts that.
+- **Citations do not cross turns.** Call ids restart every run, so a replayed citation
+  could resolve against a different turn's evidence and be marked verified on a
+  coincidence. Only already-verified *values* carry forward, as a prose exemption and
+  nothing else (ADR-039).
+- **Every named action works with no model.** Each has a deterministic plan that passes
+  the same gate — the demo survives a provider outage with its guarantees intact.
+- **The evidence is computed in the backend.** Alert triage, shift summaries, data
+  quality and the evidence graph are deterministic endpoints; the agent narrates them.
+  A verifier can only check a claim against a tool result, so the tool result has to be
+  the trustworthy thing.
+
+The agent is **read-only**: eighteen tools, and the one that is not a GET posts to a
+simulator. It cannot promote a model, change a config, or touch the line.
+`docs/DECISIONS.md` ADR-038/039 and `docs/COPILOT_DEMO_SCRIPT.md` have the rest.
 
 ---
 

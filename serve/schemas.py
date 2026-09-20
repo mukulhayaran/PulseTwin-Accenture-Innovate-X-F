@@ -79,11 +79,32 @@ class BottleneckResponse(BaseModel):
 
 
 class MetricsResponse(BaseModel):
+    """Everything stored in `metrics` and `metrics_json` for a plant.
+
+    The four fields below `permutation_importance` were STORED BY THE ARTIFACT BUILDER
+    AND SILENTLY DISCARDED HERE until 2026-09-20: `serve/main.py::metrics` splats all of
+    `metrics_json` into this model, and pydantic v2's default `extra="ignore"` dropped
+    every key the model did not declare. `bottleneck_report` (the forecast detail behind
+    the headline skill number) and `soft_sensor_validation` (the masked-station R^2 that
+    ADR-031's negative result rests on) were therefore unreachable through any endpoint,
+    even though both are computed, committed and cited in the docs.
+
+    Declare a field here for every key the builder writes, or it vanishes without error.
+    Two keys are still deliberately absent because they have dedicated endpoints that
+    serve them with computation attached rather than raw: `whatif_baseline` (POST
+    /api/whatif) and `instrumentation_plan` (GET /api/economics/instrumentation-plan,
+    which is leadership-gated -- surfacing it here would route around that gate).
+    """
+
     plant_id: str
     values: dict[str, float]
     reliability: list[dict[str, Any]] = Field(default_factory=list)
     alarm_budget_curve: list[dict[str, Any]] = Field(default_factory=list)
     permutation_importance: list[dict[str, Any]] = Field(default_factory=list)
+    bottleneck_report: dict[str, Any] = Field(default_factory=dict)
+    soft_sensor_validation: dict[str, Any] = Field(default_factory=dict)
+    soft_sensor_ablation: dict[str, Any] = Field(default_factory=dict)
+    station_value: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WhatIfRequest(BaseModel):

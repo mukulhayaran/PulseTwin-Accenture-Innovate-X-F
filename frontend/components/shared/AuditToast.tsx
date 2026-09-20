@@ -22,7 +22,10 @@ function Toast({ message, onDismiss }: { message: string | null; onDismiss: () =
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 8, scale: 0.98 }}
           transition={{ duration: 0.2, ease: [0.2, 0.8, 0.25, 1] }}
-          className="fixed bottom-5 right-5 z-50 flex cursor-pointer items-center gap-2 rounded-lg border border-ok/35 bg-surface px-3 py-2 text-xs text-ink shadow-pop"
+          // Bottom-LEFT, not right: the copilot launcher (components/copilot/CopilotDock)
+          // owns the bottom-right corner on every persona page, and grew enough (h-11,
+          // pill, icon) that a bottom-right toast would sit on top of it.
+          className="fixed bottom-5 left-5 z-50 flex cursor-pointer items-center gap-2 rounded-lg border border-ok/35 bg-surface px-3 py-2 text-xs text-ink shadow-pop"
         >
           <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-ok/15 text-2xs text-ok-fg">
             ✓

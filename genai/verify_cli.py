@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from genai import verifier as V
@@ -52,6 +54,42 @@ def _loads(v: Any) -> Any:
         return None
 
 
+def _station_ids(db: Any, ops_con: Any, plant_id: str) -> set[int]:
+    """Every station in the plant, for the verifier's C3 station-id exemption.
+
+    This USED to read `SELECT DISTINCT station_id FROM sensor_health`, and that is wrong
+    in a way that defeats the tool: `sensor_health` is a change log, so it only contains
+    stations that have had a sensor transition -- 1 of 30 on plant_a, and frequently 0.
+    Every other station id in a finding's prose would then fail the uncited-number sweep
+    on replay but not when served, and this tool would report the verifier as
+    non-deterministic for runs that were fine.
+
+    `station_config` is an ARTIFACT table. On Postgres one handle serves both, so the
+    ops handle finds it; on SQLite they are separate files and the artifact has to be
+    opened directly. Try the cheap path, fall back, and return an empty set rather than
+    raising -- a replay that cannot find the config should still run, and will simply be
+    stricter about station ids than the original.
+    """
+    try:
+        rows = db.query_all(
+            ops_con, "SELECT station_id FROM station_config WHERE plant_id = ?",
+            (plant_id,))
+        if rows:
+            return {int(r["station_id"]) for r in rows}
+    except Exception:  # noqa: BLE001 - table absent on the SQLite ops file
+        pass
+
+    artifacts = Path(os.environ.get("PULSETWIN_ARTIFACTS",
+                                    Path(__file__).resolve().parents[1] / "artifacts"))
+    try:
+        art = db.open_readonly(artifacts / "pulsetwin.db")
+        rows = db.query_all(
+            art, "SELECT station_id FROM station_config WHERE plant_id = ?", (plant_id,))
+        return {int(r["station_id"]) for r in rows}
+    except Exception:  # noqa: BLE001 - no artifact on this machine
+        return set()
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Re-verify a stored triage run.")
     p.add_argument("--run-id", required=True)
@@ -63,8 +101,8 @@ def main(argv: list[str] | None = None) -> int:
     con, _ = db.open_ops_only()
     row = db.query_one(
         con,
-        "SELECT question, plant_id, finding_raw, verification FROM triage_runs "
-        "WHERE run_id = ?",
+        "SELECT question, plant_id, finding_raw, verification, carried_values "
+        "FROM triage_runs WHERE run_id = ?",
         (args.run_id,),
     )
     if row is None:
@@ -72,6 +110,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     raw = _loads(row["finding_raw"])
+    if isinstance(raw, dict) and "unparsed_model_output" in raw:
+        # The run was rejected before a Finding existed, and what is stored is the
+        # model's raw text kept for diagnosis. There is no verdict to reproduce -- print
+        # the output so the operator can see WHY it would not parse.
+        print(f"run {args.run_id} stored no finding: the model's output did not parse.",
+              file=sys.stderr)
+        print(str(raw["unparsed_model_output"]), file=sys.stderr)
+        return 3
     if raw is None:
         print(f"run {args.run_id} stored no finding (rejected before parse)",
               file=sys.stderr)
@@ -84,16 +130,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     transcript = {c["call_id"]: _loads(c["result"]) for c in calls}
 
-    stations = {
-        s["station_id"]
-        for s in db.query_all(
-            con, "SELECT DISTINCT station_id FROM sensor_health WHERE plant_id = ?",
-            (row["plant_id"],),
-        )
+    stations = _station_ids(db, con, str(row["plant_id"]))
+
+    # The values this turn was ALLOWED to carry from earlier turns of its thread
+    # (ADR-039). Replaying without them re-verifies under different rules than the run
+    # was served under, so a perfectly good threaded turn would be reported as
+    # non-deterministic -- the exact failure this tool exists to detect.
+    carried = _loads(row.get("carried_values")) or []
+    carried_values = {
+        float(v) for v in carried
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
     }
 
     ver, served = V.verify(_rehydrate(raw, str(row["question"])), transcript,
-                           station_ids=stations)
+                           station_ids=stations, carried_values=carried_values)
 
     if args.json:
         print(json.dumps(ver.to_dict(), indent=2, sort_keys=True))

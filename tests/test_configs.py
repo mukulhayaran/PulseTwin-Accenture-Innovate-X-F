@@ -325,3 +325,69 @@ def test_cost_optimal_and_budget_are_irreconcilable(
         f"alarm budget allows {budget_rate:.2%} of units but the defect rate is "
         f"{base_rate:.1%} -- the budget no longer forces misses"
     )
+
+
+# ------------------------------------------------- configs/alert_policies.yaml <-> serve/
+#
+# That file says serve/ hardcodes its numbers as constants and calls itself "the
+# reviewable, editable source an ops team would actually change". It also claimed the two
+# were kept in sync by "tests/test_auth.py's escalation test" -- which did not exist, and
+# nothing in tests/ read the file at all. The pairs below are what that sentence promised.
+#
+# This matters more than ordinary duplication: an ops team editing the yaml would believe
+# they had changed the system's behaviour, and nothing would have changed.
+
+
+@pytest.fixture(scope="module")
+def alert_policies() -> dict:
+    return yaml.safe_load((CONFIG_DIR / "alert_policies.yaml").read_text(encoding="utf-8"))
+
+
+def test_escalation_levels_match_the_router(alert_policies) -> None:
+    pytest.importorskip("fastapi")
+    from serve.routers.alerts_mgmt import ESCALATION_LEVELS
+
+    yaml_levels = alert_policies["escalation"]["levels"]
+    assert len(yaml_levels) == len(ESCALATION_LEVELS)
+    for spec, code in zip(yaml_levels, ESCALATION_LEVELS):
+        assert spec["level"] == code["level"]
+        assert spec["name"] == code["name"]
+        assert spec["response_window_min"] == code["response_window_min"]
+
+
+def test_containment_escalation_matches_the_router(alert_policies) -> None:
+    pytest.importorskip("fastapi")
+    from serve.routers.alerts_mgmt import (
+        CONTAINMENT_AT_RISK_THRESHOLD, CONTAINMENT_SKIP_TO_LEVEL,
+    )
+
+    block = alert_policies["escalation"]["containment_escalation"]
+    assert block["at_risk_threshold"] == CONTAINMENT_AT_RISK_THRESHOLD
+    assert block["skip_to_level"] == CONTAINMENT_SKIP_TO_LEVEL
+
+
+def test_triage_thresholds_match_the_router(alert_policies) -> None:
+    """ADR-038. The alert-triage rules are alert policy, so they live beside the
+    escalation policy and are mirrored into serve/routers/intelligence.py by hand."""
+    pytest.importorskip("fastapi")
+    from serve.routers import intelligence as I
+
+    triage = alert_policies["triage"]
+    sev = triage["severity_x_threshold"]
+    assert sev["critical"] == I.SEVERITY_CRITICAL
+    assert sev["investigate"] == I.SEVERITY_INVESTIGATE
+    assert sev["monitor"] == I.SEVERITY_MONITOR
+
+    esc = triage["escalation_inputs"]
+    assert esc["peers_above_threshold"] == I.CONTAINMENT_ESCALATION_PEERS
+    assert esc["lead_time_urgent_min"] == I.LEAD_TIME_URGENT_MIN
+
+
+def test_triage_severity_thresholds_are_ordered(alert_policies) -> None:
+    sev = alert_policies["triage"]["severity_x_threshold"]
+    assert sev["critical"] > sev["investigate"] > sev["monitor"] > 0
+
+
+def test_low_confidence_can_never_downgrade_a_critical(alert_policies) -> None:
+    """A sensor problem is a reason to look harder, not less."""
+    assert alert_policies["triage"]["low_confidence"]["never_downgrades"] == "critical"

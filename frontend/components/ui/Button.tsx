@@ -6,7 +6,7 @@ import { cn } from "@/lib/cn";
 // nothing across 2,758 lines, so keyboard users had no visible caret at all.
 
 type Variant = "default" | "ghost" | "outline" | "danger" | "ok" | "warn" | "ai";
-type Size = "xs" | "sm" | "md";
+type Size = "xs" | "sm" | "md" | "lg";
 
 const VARIANTS: Record<Variant, string> = {
   default:
@@ -22,9 +22,12 @@ const VARIANTS: Record<Variant, string> = {
 };
 
 const SIZES: Record<Size, string> = {
-  xs: "h-6 gap-1 px-2 text-2xs rounded-md",
-  sm: "h-7 gap-1.5 px-2.5 text-xs rounded-md",
-  md: "h-8 gap-2 px-3 text-xs rounded-md",
+  xs: "h-7 gap-1 px-2 text-2xs rounded-md",
+  sm: "h-8 gap-1.5 px-3 text-xs rounded-md",
+  md: "h-9 gap-2 px-3.5 text-xs rounded-md",
+  // For a launcher that has to read as its own destination, not an in-panel action --
+  // currently only the copilot dock's toggle.
+  lg: "h-11 gap-2 px-4 text-sm rounded-lg",
 };
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {

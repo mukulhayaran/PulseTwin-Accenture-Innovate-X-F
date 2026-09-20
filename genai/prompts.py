@@ -55,7 +55,48 @@ If a tool returns a 403, you are acting at a role that cannot read it. Put that 
 valuable answer. Never estimate a number you were refused.
 
 Finish by returning one JSON object in the required shape. Do not call tools in the same \
-turn as your final answer."""
+turn as your final answer.
+
+HOW TO ANSWER -- READ THIS TWICE
+Your final answer is an ORDINARY ASSISTANT MESSAGE whose whole content is one JSON \
+object. It is NOT a tool call.
+
+There is no tool for citations, no tool called `citation`, and no tool for returning \
+your finding. Tools ONLY fetch data, and their names are exactly the ones listed for \
+you -- never invent one. A citation is a FIELD inside the JSON you write \
+(`"citation": {"call_id": "...", "pointer": "..."}`), never a function you call.
+
+When you have enough evidence, stop calling tools and write the JSON object. Every tool \
+call you make must have a `name` from the provided list and an `arguments` value that \
+is valid JSON -- never prose.
+
+THE OUTPUT SHAPE -- EXACTLY THESE KEYS, NO OTHERS
+This schema is ALSO sent as `response_format` when the provider supports it, but many OpenAI-compatible endpoints will not accept a response schema alongside tools, so it is written out here too. This text is the contract; treat it as binding either way.
+
+There is NO top-level `citations` key. Every number lives in `claims`, and its citation is a FIELD ON ITS CLAIM. A finding with a top-level `citations` array is rejected unparsed -- the numbers in it are never even read.
+
+{
+  "summary": "<prose, no figures except ones that are also claims>",
+  "recommendation": "<prose, same rule>",
+  "confidence": "low" | "medium" | "high",
+  "alternatives_considered": ["<what you ruled out, and why>"],
+  "unanswered": ["<what you could not establish, e.g. a 403 at this role>"],
+  "claims": [
+    {
+      "id": "c1",
+      "text": "<one sentence a supervisor could read aloud>",
+      "value": 12.0,
+      "unit": "uph"|"pct"|"usd"|"count"|"station_id"|"minutes"|"ratio"|"seconds",
+      "provenance": "measured" | "inferred",
+      "citation": {"call_id": "call_0001", "pointer": "/data/current_station"},
+      "ci_low": null,
+      "ci_high": null,
+      "source": null
+    }
+  ]
+}
+
+Every one of those keys must be present on every claim. `ci_low`/`ci_high` are null for a measured value and REQUIRED numbers for an inferred one. `source` is null unless `unit` is "usd", where it is required and must be the `source` string the tool returned beside the figure. Emit `[]` for an empty list and `null` for an absent number -- never omit a key."""
 
 
 USER_TEMPLATE = """Plant: {plant_id}
@@ -64,6 +105,64 @@ Acting role: {acting_role}
 {question}
 
 Investigate using the tools, then return your finding as a single JSON object."""
+
+
+# ---------------------------------------------------------------------- thread context
+#
+# Replayed into a follow-up turn as ONE user message, ahead of the new question.
+#
+# The rule in capitals is the whole of ADR-039 compressed into the only place the model
+# will read it. `call_id`s are assigned per RUN (`call_0001` upward, restarting every
+# turn), so turn 1 and turn 3 both have a `call_0003` pointing at different results. A
+# model that cites an earlier turn's id either fails verification -- and looks amnesiac --
+# or, far worse, resolves it against THIS turn's transcript into an unrelated number that
+# happens to fall inside the rounding tolerance, and gets a green verified badge on a
+# coincidence. Re-calling the tool costs one call out of twenty-four and is also the
+# correct semantics: on a live line, a number restated twenty minutes later should be
+# restated against current data.
+THREAD_CONTEXT_TEMPLATE = """EARLIER IN THIS CONVERSATION
+
+{turns}
+
+HOW TO USE THIS
+These are findings you already delivered in this conversation, kept so you understand \
+what the operator is referring to. They are NOT current readings, and they are NOT \
+evidence.
+
+CITATIONS DO NOT CROSS TURNS. The call_ids above no longer exist. To make any claim \
+about a number established earlier, CALL THE TOOL AGAIN NOW and cite this turn's \
+call_id. A claim citing an id you were not shown in this turn will be removed."""
+
+TURN_TEMPLATE = """--- Turn {turn_index} ({intent}) ---
+Asked: {question}
+You found: {summary}
+You recommended: {recommendation}{claims}"""
+
+
+def render_thread_context(turns: list) -> str:
+    """Render prior turns for replay, or "" when there are none.
+
+    Returning "" for an empty thread is load-bearing: `genai/loop.py::build_messages`
+    then produces a messages array byte-identical to the pre-thread one, so turn 0 of
+    every conversation runs the code path the existing loop tests already cover.
+    """
+    if not turns:
+        return ""
+    blocks = []
+    for t in turns:
+        claim_texts = getattr(t, "claim_texts", None) or []
+        claims = ""
+        if claim_texts:
+            claims = "\nEstablished: " + "; ".join(str(c) for c in claim_texts)
+        blocks.append(TURN_TEMPLATE.format(
+            turn_index=getattr(t, "turn_index", 0),
+            intent=getattr(t, "intent", "ask"),
+            question=getattr(t, "question", ""),
+            summary=getattr(t, "summary", ""),
+            recommendation=getattr(t, "recommendation", ""),
+            claims=claims,
+        ))
+    return THREAD_CONTEXT_TEMPLATE.format(turns="\n\n".join(blocks))
 
 
 # Passed as a HINT to cut retries. `genai/finding.py::parse_finding` never depends on the

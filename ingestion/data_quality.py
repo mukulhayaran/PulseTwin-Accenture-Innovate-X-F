@@ -25,11 +25,21 @@ DROPOUT_FACTOR = 3.0       # no reading for this many nominal-cycles => dropout
 
 # Physically plausible ranges. Anything outside is flagged invalid and excluded from
 # feature computation, matching offline/simulator/physics.py's own signal set.
+#
+# `weld_current_a` WAS (0.0, 2000.0), which is wrong by roughly a factor of five and was
+# silently discarding every weld reading the plant produces. Resistance spot welding on a
+# body line runs at 8-15 kA, and offline/simulator/physics.py::_station_targets sets the
+# nominal to `8200 + (station_id % 6) * 140` -- so the committed artifact's 8,610 weld
+# readings all sit in 7.75-9.25 kA and were ALL being scored invalid. The upper bound is
+# now 20 kA: comfortably above any real spot-weld schedule, still low enough to catch a
+# decimal-shift or a unit-conversion fault, which is what a validity bound is for.
+# `tests/test_ingestion.py` now asserts the simulator's own output falls inside these
+# ranges, so the two cannot drift apart again without a test failing.
 VALID_RANGES: dict[str, tuple[float, float]] = {
     "torque_nm": (0.0, 200.0),
     "vibration_mm_s": (0.0, 50.0),
     "temperature_c": (-10.0, 250.0),
-    "weld_current_a": (0.0, 2000.0),
+    "weld_current_a": (0.0, 20_000.0),
     "humidity_pct": (0.0, 100.0),
     "film_thickness_um": (0.0, 500.0),
 }

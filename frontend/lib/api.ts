@@ -186,7 +186,18 @@ export async function getWhatIf(
 
 // ------------------------------------------------------------------------ ops (F6)
 
-export const getModelHealth = (plant: string) => get<any>(`/api/model/health?plant_id=${plant}`);
+// Only the fields AiTrustPanel actually reads are typed. The endpoint returns more, and
+// typing the rest as `any` would let a renamed field fail silently at runtime on the one
+// panel whose entire job is being trustworthy.
+export interface ModelHealthLike {
+  current_model?: { id?: string; status?: string; age_days?: number | null };
+  drift?: { overall_status?: string };
+  fallback?: { status?: string };
+  recommendation?: string;
+}
+
+export const getModelHealth = (plant: string) =>
+  get<ModelHealthLike>(`/api/model/health?plant_id=${plant}`);
 export const getSystemHealth = (plant: string) => get<any>(`/api/system/health?plant_id=${plant}`);
 // Supervisor-gated slice of the same dropout list. /supervisor must NOT call
 // getSystemHealth: that endpoint requires `manager`, so a page that pins itself to
@@ -278,6 +289,28 @@ export interface TriageVerdict {
   resolved_value: number | null;
 }
 
+// The named actions the copilot offers. An intent is a KEY, not a canned English
+// sentence: the deterministic path selects a plan on the same key with no language
+// understanding at all, which is why every button still works with no provider
+// credential. Mirrors genai/intents.py.
+export type TriageIntent = "ask" | "incident" | "handover" | "shift_intel" | "whatif";
+
+export interface TriageToolEvent {
+  call_id: string;
+  tool_name: string;
+  phase?: string;
+  status?: "ok" | "running";
+  duration_ms: number | null;
+}
+
+export interface TriageProgress {
+  phase: string | null;
+  phase_index: number | null;
+  iteration: number | null;
+  max_iterations: number | null;
+  elapsed_s: number | null;
+}
+
 export interface TriageRun {
   run_id: string;
   status: "unknown" | "queued" | "running" | "verified"
@@ -285,6 +318,11 @@ export interface TriageRun {
   mode?: "agent" | "deterministic";
   acting_role?: string;
   question?: string;
+  intent?: TriageIntent;
+  thread_id?: string;
+  turn_index?: number;
+  station_id?: number | null;
+  capability_profile?: string | null;
   finding?: TriageFinding | null;
   verification?: {
     status: string;
@@ -293,27 +331,72 @@ export interface TriageRun {
     claim_verdicts: TriageVerdict[];
     prose_issues: string[];
     reject_reason: string;
+    carried_values_used?: number;
   } | null;
-  tool_ledger?: { call_id: string; tool_name: string; duration_ms: number }[];
+  tool_ledger?: TriageToolEvent[];
+  progress?: TriageProgress;
+  phase_order?: string[];
   claims_total?: number;
   claims_verified?: number;
   tool_calls?: number;
   latency_s?: number;
   cost_usd?: number;
   cost_source?: string;
+  created_at?: string;
   error?: string;
 }
 
-export const getTriageAvailability = () =>
-  get<{ enabled: boolean; reason: string; mode: "agent" | "deterministic" }>(
-    "/api/triage/availability"
-  );
+export interface TriageThread {
+  thread_id: string;
+  created_at: string;
+  plant_id: string;
+  title: string;
+  opened_by: string;
+  turn_count: number;
+  last_run_at: string | null;
+}
 
-export const startTriage = (plant: string, question: string, actingRole?: Role) =>
-  post<{ run_id: string; status: string; mode: string; acting_role: string }>(
-    "/api/triage/runs",
-    { plant_id: plant, question, acting_role: actingRole ?? null, mode: "auto" }
-  );
+export interface TriageThreadDetail {
+  thread: TriageThread;
+  turns: TriageRun[];
+  count: number;
+  phase_order: string[];
+}
+
+export const getTriageAvailability = () =>
+  get<{
+    enabled: boolean;
+    reason: string;
+    mode: "agent" | "deterministic";
+    intents: Record<TriageIntent, string>;
+    phase_order: string[];
+  }>("/api/triage/availability");
+
+export interface StartTriageArgs {
+  plant: string;
+  question?: string;
+  intent?: TriageIntent;
+  threadId?: string | null;
+  // ALWAYS structured, never parsed out of the question text: CLAUDE.md §1 bans station
+  // literals, and regexing "S17" out of prose is how a copilot simulates the wrong
+  // station with complete confidence.
+  stationId?: number | null;
+  actingRole?: Role;
+}
+
+export const startTriage = (args: StartTriageArgs) =>
+  post<{
+    run_id: string; status: string; mode: string; acting_role: string;
+    thread_id: string; turn_index: number; intent: TriageIntent;
+  }>("/api/triage/runs", {
+    plant_id: args.plant,
+    question: args.question ?? null,
+    intent: args.intent ?? "ask",
+    thread_id: args.threadId ?? null,
+    station_id: args.stationId ?? null,
+    acting_role: args.actingRole ?? null,
+    mode: "auto",
+  });
 
 export const getTriageRun = (runId: string) =>
   get<TriageRun>(`/api/triage/runs/${runId}`);
@@ -321,6 +404,157 @@ export const getTriageRun = (runId: string) =>
 export const listTriageRuns = (plant: string, limit = 5) =>
   get<{ runs: TriageRun[]; count: number }>(
     `/api/triage/runs?plant_id=${plant}&limit=${limit}`
+  );
+
+export const listTriageThreads = (plant: string, limit = 20) =>
+  get<{ threads: TriageThread[]; count: number }>(
+    `/api/triage/threads?plant_id=${plant}&limit=${limit}`
+  );
+
+export const getTriageThread = (threadId: string) =>
+  get<TriageThreadDetail>(`/api/triage/threads/${threadId}`);
+
+// ------------------------------------------------------- decision intelligence (ADR-038)
+//
+// Deterministic, computed in the backend. The copilot narrates these; it does not
+// produce them, because a verifier can only check a claim against a tool result -- so
+// the tool result has to be the trustworthy thing.
+
+export interface TriageFactor {
+  name: string;
+  value: number | null;
+  unit: string;
+  informative?: boolean;
+  note: string;
+}
+
+export interface AlertTriageRow {
+  unit_id: string;
+  prediction_ts: string;
+  alert_fired: boolean;
+  current_station: number | null;
+  implicated_station: number | null;
+  triage_class: "CRITICAL" | "INVESTIGATE" | "MONITOR" | "LOW_CONFIDENCE";
+  risk: number | null;
+  ci_low: number | null;
+  ci_high: number | null;
+  severity_x_threshold: number | null;
+  lead_time_min: number | null;
+  peers_above_threshold: number;
+  units_sharing_fingerprint: number;
+  reasons: string[];
+  factors: TriageFactor[];
+  provenance: "measured" | "inferred";
+  rank: number;
+}
+
+export interface AlertTriage {
+  plant_id: string;
+  alerts: AlertTriageRow[];
+  count: number;
+  already_fired: number;
+  candidate_set: string;
+  counts_by_class: Record<string, number>;
+  budget_threshold: number;
+  diagnostics: {
+    distinct_risk_values: number;
+    severity_discriminates: boolean;
+    confidence_interval_is_derived: boolean;
+    notes: string[];
+  };
+  method: string;
+  thresholds: Record<string, number>;
+}
+
+export interface ShiftSummary {
+  plant_id: string;
+  shift: {
+    label: string; window_start: string; window_end: string;
+    anchor_ts: string; anchor_source: string;
+  };
+  production: {
+    units: number; alerts_fired: number; alert_budget: number;
+    confirmed_defects: number; mean_risk: number | null;
+    units_per_hour_target: number | null; achieved_uph: number | null;
+  };
+  bottleneck: {
+    windows_in_shift: number; shift_events: number;
+    opened_at_station: number | null; closed_at_station: number | null;
+    detector_agreement: number | null;
+    moves: { at: string; to_station: number; confidence: number | null }[];
+  };
+  worst_stations: {
+    station_id: number; lost_uph: number | null; util: number | null;
+    provenance: string;
+  }[];
+  sensors: {
+    dropouts_active: number; stations_affected: number[];
+    detail: { station_id: number; sensor: string; since: string | null }[];
+  };
+  model: {
+    drift_metrics_breached: number;
+    breached: { metric_type: string; feature: string; value: number | null;
+                threshold: number | null }[];
+  };
+  method: string;
+}
+
+export interface DataQualityStation {
+  station_id: number; station_name: string | null; sensor_tier: string | null;
+  readings: number; signals: number;
+  completeness: number | null; timeliness: number | null; validity: number | null;
+  overall: number | null; measured: number; inferred: number;
+  provenance: "measured" | "inferred"; sensors_dark: string[];
+}
+
+export interface DataQuality {
+  plant_id: string;
+  stations: DataQualityStation[];
+  count: number;
+  plant_score: number | null;
+  components_used: string[];
+  components_unavailable: string[];
+  notes: string[];
+  method: string;
+  weights: Record<string, number>;
+}
+
+export interface EvidenceNode {
+  id: string;
+  kind: "station" | "signal" | "line_factor" | "window" | "fingerprint"
+      | "risk" | "unit_group" | "inspection";
+  label: string;
+  [key: string]: unknown;
+}
+
+export interface EvidenceEdge {
+  from: string; to: string; relation: string;
+  evidence_source: string; window: string | null;
+  provenance: "measured" | "inferred";
+  confidence: number | null; model: string | null;
+}
+
+export interface EvidenceGraph {
+  plant_id: string; unit_id: string;
+  nodes: EvidenceNode[]; edges: EvidenceEdge[];
+  causality: "association";
+  causality_statement: string;
+  containment_window_min: number;
+  method: string;
+}
+
+export const getAlertTriage = (plant: string, limit = 50) =>
+  get<AlertTriage>(`/api/alerts/triage?plant_id=${plant}&limit=${limit}`);
+
+export const getShiftSummary = (plant: string) =>
+  get<ShiftSummary>(`/api/shift/summary?plant_id=${plant}`);
+
+export const getDataQuality = (plant: string) =>
+  get<DataQuality>(`/api/system/data-quality?plant_id=${plant}`);
+
+export const getEvidenceGraph = (unitId: string, plant: string) =>
+  get<EvidenceGraph>(
+    `/api/trace/evidence-graph/${encodeURIComponent(unitId)}?plant_id=${plant}`
   );
 
 export const triggerRetrain = (plant: string) =>

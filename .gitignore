@@ -9,10 +9,16 @@ node_modules/
 out/
 
 data/
-artifacts/
+artifacts/ 
 
 .DS_Store
 *.log
+
+# Provider credentials. GROQ_API_KEY is read from the environment only
+# (docs/SECURITY.md); this keeps a local key file from ever becoming committable.
+.env
+.env.*
+!.env.example
 frontend/node_modules/
 frontend/.next/
 frontend/out/

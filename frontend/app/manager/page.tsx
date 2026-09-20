@@ -17,6 +17,7 @@ import {
   AppShell, Badge, ChartFrame, ChartLegend, ChartTooltip, DataTable, Kpi, Panel,
   Select, Skeleton, SkeletonChart, SkeletonTable, Slider, Tooltip, type Column,
 } from "@/components/ui";
+import CopilotDock from "@/components/copilot/CopilotDock";
 
 export default function ManagerPage() {
   const [plant, setPlant] = useState("plant_a");
@@ -408,6 +409,8 @@ export default function ManagerPage() {
         </Panel>
       </div>
       {ToastElement}
+      <CopilotDock plant={plant}
+        onAction={show} />
     </AppShell>
   );
 }

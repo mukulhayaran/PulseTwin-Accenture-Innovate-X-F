@@ -116,17 +116,91 @@ CREATE TABLE IF NOT EXISTS triage_runs (
     claims_total INTEGER DEFAULT 0, claims_verified INTEGER DEFAULT 0,
     iterations INTEGER DEFAULT 0, tool_calls INTEGER DEFAULT 0,
     prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0,
-    cost_usd REAL, cost_source TEXT, latency_s REAL, error TEXT);
+    cost_usd REAL, cost_source TEXT, latency_s REAL, error TEXT,
+    thread_id TEXT, turn_index INTEGER DEFAULT 0, intent TEXT DEFAULT 'ask',
+    station_id INTEGER, carried_values TEXT, capability_profile TEXT);
 CREATE INDEX IF NOT EXISTS idx_triage_runs_plant
     ON triage_runs (plant_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS triage_threads (
+    thread_id TEXT PRIMARY KEY,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    plant_id TEXT NOT NULL, title TEXT NOT NULL, opened_by TEXT NOT NULL,
+    turn_count INTEGER DEFAULT 0, last_run_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_triage_threads_plant
+    ON triage_threads (plant_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS triage_tool_calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT, call_id TEXT NOT NULL, seq INTEGER NOT NULL,
-    tool_name TEXT NOT NULL, arguments TEXT, result TEXT, duration_ms REAL);
+    tool_name TEXT NOT NULL, arguments TEXT, result TEXT, duration_ms REAL,
+    phase TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_triage_calls_run
     ON triage_tool_calls (run_id, call_id);
 """
+
+# Columns added to tables that already exist on disk. See _ensure_columns.
+_OPS_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "triage_runs": {
+        "thread_id": "TEXT",
+        "turn_index": "INTEGER DEFAULT 0",
+        "intent": "TEXT DEFAULT 'ask'",
+        "station_id": "INTEGER",
+        "carried_values": "TEXT",
+        "capability_profile": "TEXT",
+    },
+    "triage_tool_calls": {"phase": "TEXT"},
+}
+
+# Indexes over columns that _ensure_columns may have just added. They CANNOT live in
+# _OPS_SCHEMA_SQLITE: that script runs first, and on a database created before those
+# columns existed the CREATE INDEX fails with `no such column` and takes the whole
+# executescript with it -- which is exactly what happened the first time this ran.
+_OPS_POST_MIGRATION_INDEXES = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_triage_runs_thread_turn"
+    " ON triage_runs (thread_id, turn_index)",
+)
+
+
+def _ensure_columns(con: sqlite3.Connection) -> None:
+    """Additive-only SQLite migration for the long-lived ops file.
+
+    `CREATE TABLE IF NOT EXISTS` is a NO-OP against a table that already exists, and
+    SQLite has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. The ops database is not a
+    rebuilt artifact -- it sits at `%TEMP%/pulsetwin_ops.db` and survives every run -- so
+    without this, every column added above would be missing at RUNTIME on any machine
+    that had started the server once before, and the first symptom would be an
+    `OperationalError: no such column` from a detached worker whose stderr goes to a log
+    file nobody is reading.
+
+    Additive only. It cannot rename or drop; if a future change needs either, the answer
+    is to delete the ops file, not to grow this into a migration framework.
+    """
+    for table, columns in _OPS_ADDED_COLUMNS.items():
+        try:
+            existing = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+        except sqlite3.DatabaseError:
+            continue
+        if not existing:
+            continue
+        for name, decl in columns.items():
+            if name not in existing:
+                try:
+                    con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                except sqlite3.DatabaseError:
+                    # A concurrent process may have added it between the PRAGMA and here.
+                    pass
+
+    for statement in _OPS_POST_MIGRATION_INDEXES:
+        try:
+            con.execute(statement)
+        except sqlite3.DatabaseError:
+            # An ops file carrying rows from before threads existed has many runs with a
+            # NULL thread_id. SQLite treats NULLs as distinct in a UNIQUE index, so this
+            # normally succeeds; if a genuine duplicate exists the index is skipped and
+            # the application-level turn allocation in serve/routers/triage.py still
+            # holds. Never fatal at startup.
+            pass
 
 
 def open_ops_db() -> sqlite3.Connection:
@@ -163,6 +237,7 @@ def open_ops_db() -> sqlite3.Connection:
             # default journal mode -- slower under contention, not broken.
             pass
     con.executescript(_OPS_SCHEMA_SQLITE)
+    _ensure_columns(con)
     con.commit()
     return con
 

@@ -11,11 +11,13 @@ import { cn } from "@/lib/cn";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import SensorDropoutAlert from "@/components/supervisor/SensorDropoutAlert";
 import EscalationChain from "@/components/supervisor/EscalationChain";
+import AlertTriageTable from "@/components/supervisor/AlertTriageTable";
 import { useAuditToast } from "@/components/shared/AuditToast";
 import {
   AppShell, Badge, Button, DataTable, Panel, SegmentedControl, Skeleton, Stat, Tooltip,
   type Column,
 } from "@/components/ui";
+import CopilotDock from "@/components/copilot/CopilotDock";
 
 // Station state -> surface treatment. Tint + border rather than a flat fill, so a
 // 42-station line reads as a map instead of a block of colour.
@@ -569,6 +571,11 @@ export default function SupervisorPage() {
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* ------------------------------------------------------- alert triage */}
+          {/* Selecting a row drives the same unit panel the line map does, so the
+              ranking and the detail view are never looking at different units. */}
+          <AlertTriageTable plant={plant} onSelect={openUnit} refreshKey={retryNonce} />
         </div>
 
         {/* ------------------------------------------------------------ alert feed */}
@@ -647,6 +654,8 @@ export default function SupervisorPage() {
         </Panel>
       </div>
       {ToastElement}
+      <CopilotDock plant={plant}
+        onAction={show} />
     </AppShell>
   );
 }

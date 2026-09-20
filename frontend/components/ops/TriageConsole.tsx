@@ -102,7 +102,7 @@ export default function TriageConsole({
     setErr(null);
     setRun(null);
     try {
-      const r = await startTriage(plant, q.trim());
+      const r = await startTriage({ plant, question: q.trim() });
       setRunId(r.run_id);
       onAction?.(`Triage started (${r.mode}, acting as ${r.acting_role})`);
     } catch (e) {

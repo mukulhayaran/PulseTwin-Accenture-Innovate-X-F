@@ -94,6 +94,10 @@ class Verification:
     claim_verdicts: list[ClaimVerdict] = field(default_factory=list)
     prose_issues: list[str] = field(default_factory=list)
     reject_reason: str = ""
+    # How many values from EARLIER TURNS of this thread rescued a sentence in the C3
+    # sweep (ADR-039). Surfaced rather than silent: a verdict that leaned on evidence
+    # from outside this run should not look identical to one that did not.
+    carried_values_used: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +107,7 @@ class Verification:
             "claim_verdicts": [asdict(v) for v in self.claim_verdicts],
             "prose_issues": list(self.prose_issues),
             "reject_reason": self.reject_reason,
+            "carried_values_used": self.carried_values_used,
         }
 
 
@@ -214,6 +219,7 @@ def verify(
     transcript: dict[str, Any],
     *,
     station_ids: set[int] | None = None,
+    carried_values: set[float] | None = None,
 ) -> tuple[Verification, Finding]:
     """Check a finding against the tool results the model actually saw.
 
@@ -222,10 +228,24 @@ def verify(
     one would let a citation resolve into data the model never received, which inverts
     the entire guarantee.
 
+    `carried_values` (ADR-039) is the ONE concession threads required, and its scope is
+    deliberately tiny: numbers a PREVIOUS turn of the same thread already verified,
+    admitted as a fourth exemption in the C3 prose sweep AND NOWHERE ELSE. Without it,
+    "the 41.8 UPH we established is unchanged" loses its sentence on every follow-up and
+    a conversation reads as visibly shredded. With it, the guarantee weakens from
+    "traceable to a tool result in this run" to "traceable to a tool result in this
+    thread" -- and the earlier turn's results are in `triage_tool_calls` permanently, so
+    the weaker claim is still auditable.
+
+    A CLAIM is never verified by a carried value. Do not "fix" that: `_verify_claim` is
+    untouched on purpose, and a claim that resolves against nothing in THIS run's
+    transcript must still fail.
+
     Returns (verification, served_finding). The served finding has failing claims and
     uncited prose sentences removed -- on REJECTED nothing is served at all.
     """
     station_ids = station_ids or set()
+    carried = carried_values or set()
     verdicts: list[ClaimVerdict] = []
 
     # Every number anywhere in the recorded results, for the C3 sweep.
@@ -246,11 +266,12 @@ def verify(
     ok_ids = {v.claim_id for v in verdicts if v.ok}
     cited_values = {c.value for c in finding.claims if c.id in ok_ids}
 
-    prose_issues, clean_summary = _sweep_prose(
-        finding.summary, cited_values, corpus, station_ids)
-    more_issues, clean_reco = _sweep_prose(
-        finding.recommendation, cited_values, corpus, station_ids)
+    prose_issues, clean_summary, used_summary = _sweep_prose(
+        finding.summary, cited_values, corpus, station_ids, carried)
+    more_issues, clean_reco, used_reco = _sweep_prose(
+        finding.recommendation, cited_values, corpus, station_ids, carried)
     prose_issues.extend(more_issues)
+    carried_used = used_summary | used_reco
 
     # ---- outcome
     total = len(finding.claims)
@@ -300,7 +321,8 @@ def verify(
     )
     return (
         Verification(status=status, claims_total=total, claims_verified=verified,
-                     claim_verdicts=verdicts, prose_issues=prose_issues),
+                     claim_verdicts=verdicts, prose_issues=prose_issues,
+                     carried_values_used=len(carried_used)),
         served,
     )
 
@@ -362,15 +384,24 @@ def _sweep_prose(
     cited: set[float],
     corpus: set[float],
     station_ids: set[int],
-) -> tuple[list[str], str]:
+    carried: set[float] | None = None,
+) -> tuple[list[str], str, set[float]]:
     """C3. Drop any sentence carrying a number that is not accounted for.
 
-    Exemptions, narrow and explicit: a value that equals a verified claim, a value that
-    appears verbatim somewhere in the recorded tool results, and a station id that is a
-    real station in this plant's config.
+    Exemptions, narrow and explicit, in the order they are tried:
+      1. the value equals a claim verified in THIS run;
+      2. the value appears verbatim somewhere in THIS run's recorded tool results;
+      3. the value is a station id that is real in this plant's config;
+      4. the value was verified in an EARLIER TURN of the same thread (ADR-039).
+
+    Exemption 4 is the only one that reaches outside this run, which is why the third
+    return value reports exactly which carried values were used: a verdict that leans on
+    it says so, rather than looking identical to one that did not.
     """
+    carried = carried or set()
     issues: list[str] = []
     kept: list[str] = []
+    used: set[float] = set()
 
     for sentence in _SENTENCE_SPLIT.split(text.strip()) if text.strip() else []:
         bad: list[str] = []
@@ -381,6 +412,10 @@ def _sweep_prose(
                 continue
             if value.is_integer() and int(value) in station_ids:
                 continue
+            match = next((c for c in carried if abs(value - c) < 1e-6), None)
+            if match is not None:
+                used.add(match)
+                continue
             bad.append(token)
         if bad:
             issues.append(f"{UNCITED_NUMBER}: {', '.join(bad)} in {sentence.strip()!r}")
@@ -388,7 +423,7 @@ def _sweep_prose(
         else:
             kept.append(sentence)
 
-    return issues, " ".join(kept).strip()
+    return issues, " ".join(kept).strip(), used
 
 
 def _reject(

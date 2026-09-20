@@ -44,8 +44,8 @@ Strict hierarchy — each role can do everything the one before it can (`serve/m
 | Minimum role | Endpoints |
 |---|---|
 | **none — open** | `/api/health`, `/api/config/plants`, `/api/config/stations`, `/api/stream`, `/api/predict/defect`, `/api/units`, `/api/units/{id}`, `/api/trace/containment/{id}`, `/api/bottleneck/current`, `/api/bottleneck/history`, `/api/stations/stats`, `/api/metrics`, `/api/whatif/stations`, `/api/triage/availability` |
-| `supervisor` (any valid role) | `/api/alerts/escalation-policy`, `/api/system/sensor-dropouts`; and, via `get_role` rather than `require_role`, `POST /api/feedback` and `POST /api/alerts/{id}/acknowledge` — these accept any role but *record which one acted* |
-| `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag`, `POST /api/triage/runs`, `GET /api/triage/runs`, `GET /api/triage/runs/{id}` |
+| `supervisor` (any valid role) | `/api/alerts/escalation-policy`, `/api/system/sensor-dropouts`, `/api/alerts/triage`, `/api/system/data-quality`, `/api/trace/evidence-graph/{id}`; and, via `get_role` rather than `require_role`, `POST /api/feedback` and `POST /api/alerts/{id}/acknowledge` — these accept any role but *record which one acted* |
+| `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag`, `/api/shift/summary`, `POST /api/triage/runs`, `GET /api/triage/runs`, `GET /api/triage/runs/{id}`, `GET /api/triage/threads`, `GET /api/triage/threads/{id}`, `GET /api/triage/intents` |
 | `leadership` | `/api/economics/roi`, `/api/economics/instrumentation-plan`, `/api/model/health`, `/api/model/registry`, `/api/audit/log`, `/api/audit/actions` |
 | `system` | `/api/admin/trigger-retrain`, `/api/admin/retrain-status/{id}`, `/api/admin/promote-model`, `/api/admin/rollback-model` |
 
@@ -99,7 +99,7 @@ JSON payload, IP address. The six covered actions, and the only six — verify w
 | `retrain_triggered` | `POST /api/admin/trigger-retrain` |
 | `model_promoted` | `POST /api/admin/promote-model` |
 | `model_rolled_back` | `POST /api/admin/rollback-model` |
-| `triage_run_started` | `POST /api/triage/runs` — payload records `plant_id`, the capped `acting_role`, and the mode |
+| `triage_run_started` | `POST /api/triage/runs` — payload records `plant_id`, the capped `acting_role`, the mode, the `intent`, and the `thread_id`/`turn_index` so a whole conversation is reconstructable from the audit trail |
 
 ### The GenAI tier's security posture (ADR-037)
 
@@ -135,7 +135,39 @@ for facts, so an injected instruction cannot manufacture a *verified* number. It
 manufacture prose — which is why the verifier redacts any sentence carrying an uncited
 figure.
 
-**Credential handling.** `XAI_API_KEY` is read from the environment only.
+### The agent's authority (ADR-037, ADR-038, ADR-039)
+
+The copilot is **read-only by construction**, not by policy. Its entire vocabulary is the
+eighteen entries in `genai/tools.py::build_registry`, and seventeen are GETs; the one POST
+targets `/api/whatif`, a precomputed simulator that changes nothing. There is no tool that
+can promote a model, edit a config, acknowledge an alert or stop the line, so "the agent
+was instructed to do X" has no path to X — `dispatch` answers an unknown tool name with
+`unknown_tool` and a list of what exists.
+
+Four boundaries, each with a test:
+
+| Boundary | Mechanism | Test |
+|---|---|---|
+| Privilege | `_cap_role` caps an agent's acting role at the caller's own, so a run can never read more than the human who started it | `tests/test_triage_api.py` |
+| Egress | the tool registry IS the allowlist; its path set is asserted equal to a list written longhand | `tests/test_genai_tools.py` |
+| Path injection | path parameters are URL-quoted with `safe=""`, so a unit id cannot add a segment and walk out of the allowlist | `tests/test_prompt_injection.py` |
+| Grounding | a claim must resolve to a number in the recorded transcript; injected prose can manufacture a sentence, never a verified figure | `tests/test_prompt_injection.py` |
+
+**Retrieved data is DATA.** Tool results reach the model as `role: "tool"` messages
+carrying our own runner-assigned `call_id`, never as system or assistant turns. An
+instruction embedded in a station name or an assumptions string cannot become authority,
+and following one cannot produce a served number — which is the guarantee this tier
+actually makes. It does not claim the model ignores such text; that is a property of the
+model and is not assertable.
+
+**Chain of thought is never surfaced.** `openai/gpt-oss-120b` returns a `reasoning` field.
+The progress heartbeat is assembled from an explicit key allowlist
+(`genai/triage.py::_HEARTBEAT_KEYS`), and `tests/test_genai_progress.py` drives the loop
+with a stub whose content *and* reasoning carry a magic string, asserting it appears in no
+heartbeat. The file is written to disk and rendered in a browser, so this is a disclosure
+boundary rather than a UX preference.
+
+**Credential handling.** `GROQ_API_KEY` is read from the environment only.
 `GET /api/triage/availability` reports presence, never the value, a prefix, or its length.
 
 **It is not ASGI middleware, despite the directory name.** The finals brief asked for

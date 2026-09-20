@@ -7,8 +7,10 @@ original brief are built — simulator, ML pipeline, artifacts, API, three perso
 The finals upgrade (F1-F8) sits on top: PostgreSQL, MQTT ingestion, MLOps
 (drift/retrain/registry/fallback), RBAC + audit trail, graceful degradation, a fourth Ops
 persona, K8s/Terraform manifests, eight production-readiness documents. Since then: a
-full frontend redesign (Tailwind v4 + Radix + Motion) and `genai/`, an agentic triage
-tier with a deterministic verification gate. **339 tests pass** (~18 min).
+full frontend redesign (Tailwind v4 + Radix + Motion), `genai/` — an agentic triage tier
+with a deterministic verification gate — and, on top of that, an **AI Operations Copilot**:
+multi-turn threads, five named actions, eighteen tools, four new deterministic
+decision-intelligence endpoints, and a `/copilot` route plus a dock on every persona view.
 
 Read `docs/STATE.md` first — it has the ledger, every bug found, and the verify-next
 list. `docs/AUDIT.md` covers why the build deviates from `pulsetwin_final_prompt.md`.
@@ -17,9 +19,11 @@ list. `docs/AUDIT.md` covers why the build deviates from `pulsetwin_final_prompt
 its file and its governing doc. `docs/STATE.md`'s ledger is the change history.
 
 **Still unverified:** `docker compose -f docker-compose.prod.yml up` has never been run
-end to end, and `genai/`'s agent path has never talked to a real provider (no API key in
-the dev environment — the deterministic path and the verifier are fully tested). See
-§8 for the standing gotchas that have each cost a debugging session.
+end to end. The agent path **has** now run against a live provider (OpenRouter,
+2026-09-21): cold-cache start, soft-degrade to L4, six tool calls, 4/5 claims verified
+with the fifth correctly redacted for a ratio-vs-percent mismatch — plus a 10/10 run on
+`incident`. The four defects that first live run exposed are ADR-040. See §8 for the
+standing gotchas that have each cost a debugging session.
 
 **Before changing anything, know these three:**
 1. **Do not tune the model to raise PR-AUC.** 0.256 is 53% of a *measured* oracle ceiling
@@ -91,7 +95,15 @@ absent from `ALLOWED`, so `tests/test_serve_imports.py` already fails on any
 `import genai` inside `serve/` — that test needed **no edit** to cover the GenAI tier,
 which is a better outcome than an amendment. `serve/routers/triage.py` triggers a run
 with `subprocess.Popen` exactly as `admin.py` triggers retraining. Never add `openai`,
-`anthropic`, or any provider SDK to the allowlist (ADR-037).
+`anthropic`, `groq`, `openrouter`, or any provider SDK to the allowlist (ADR-037). The
+provider has now moved TWICE — to Groq in ADR-038, to OpenRouter in ADR-040 — and the
+DEPENDENCY did not change either time, because all three speak the OpenAI wire protocol.
+That is the whole reason this ban survives a provider swap.
+
+Three constants in `serve/` MIRROR `genai/` by hand because of this wall, and a change to
+one without the other is a bug: `API_KEY_ENV` (↔ `genai/config.py`), `INTENT_LABELS` /
+`INTENT_KEYS` (↔ `genai/intents.py`), and `PHASE_ORDER` (↔ `genai/tools.py`). Each pair
+has a test asserting they agree.
 
 ---
 
@@ -107,7 +119,9 @@ differently (amber `INFERRED` badge + hatch pattern). Never silently mix the two
 element without a `source` field pointing at `configs/economics.yaml` or a named
 assumption in `docs/ASSUMPTIONS.md`.
 
-**Operator privacy.** Never surface individual operator identity or performance —
+**Operator privacy.** The authoritative definition is
+`genai/verifier.py::_contains_operator_identity` — use it rather than writing a second,
+looser string match. Never surface individual operator identity or performance —
 not in an API response, not in a table, not in a tooltip. Aggregate to shift, team, or
 opaque hashed bucket only. This includes `shared_factors` in the containment endpoint:
 emit `"operator_group_B"`, never a real or stable operator ID.
@@ -192,17 +206,30 @@ make drift-check     # python -m mlops.drift_detector
 make retrain         # python -m mlops.retrainer (champion-challenger)
 make test-all        # pytest tests/ -v --tb=short
 
-# genai tier (ADR-037) -- needs a running backend; XAI_API_KEY optional
+# genai tier (ADR-037/038/040) -- needs a running backend; a provider key is optional
 pip install -r genai/requirements.txt
 python -m genai.triage --plant plant_a --question "..." [--mode deterministic]
 python -m genai.verify_cli --run-id X      # re-run the gate over a stored transcript
 ```
 
-Without `XAI_API_KEY` the triage falls back to `genai/offline_triage.py` — a real,
+Without a provider key the triage falls back to `genai/offline_triage.py` — a real,
 no-LLM triage that passes the **same** verifier. That is the default in dev and it is
 how the whole feature is tested keyless.
 
+The key goes in **`PULSETWIN_GENAI_API_KEY`**, never in a provider-named variable.
+`genai/config.py::KEY_ENVS` takes the first name that is SET, and `GROQ_API_KEY` is
+ahead of `OPENROUTER_API_KEY` in that list — so an environment holding both sends the
+Groq key to OpenRouter and every run dies on a bare `provider_status_401` (ADR-040).
+Nothing in this repo auto-loads `.env.local`; export it, or the defaults in
+`genai/config.py` are exactly what runs.
+
 Always `OMP_NUM_THREADS=1` for anything touching training.
+
+`tests/conftest.py` is the ONLY shared test fixture and does one thing: it resets the
+rate limiter between tests. Every test file otherwise stays self-contained, by
+convention. Do not move per-file setup into it — but do remember it exists, because
+without it a long suite trips a production `role:ip` limit and tests that pass alone
+fail together (`docs/STATE.md` bug 72).
 
 The suite is slow because it trains and scores real models rather than mocking them —
 budget ~16 minutes, and prefer running a single file while iterating. Do not "fix" a slow
@@ -325,6 +352,30 @@ Read this before debugging anything. Every line below was paid for once.
   `test` (e.g. `testclient_transport`). Alias them on import.
 - Playwright `get_by_role(name=...)` is a substring match: "Start simulation" also matches
   "Restart simulation". Use `exact=True`.
+
+### The GenAI provider seam (ADR-040 — all measured against OpenRouter on 2026-09-21)
+- **An OpenAI-compatible endpoint can reject a parameter with HTTP 200.** OpenRouter
+  accepts `response_format` alongside `tools` and the model then makes **zero** tool
+  calls. `capabilities.is_capability_rejection` only sees 400/422, so nothing degraded
+  and a cold run died on L0 with an unparseable finding. `suppresses_tool_calls` is the
+  soft probe that catches it — and it needs BOTH halves of its signature, because "no
+  tool call on turn 0" alone is a legitimate finish that two existing tests pin.
+- **The output schema reaches the model through the PROMPT, not just `response_format`.**
+  At L4 no schema is sent at all, and L4 is where the ladder lands on both providers.
+  A model that never saw the schema invents one (`citations` instead of `claims`) and a
+  perfectly good six-tool investigation is thrown away by the parser. Change
+  `prompts.RESPONSE_FORMAT`, change the OUTPUT SHAPE block in `prompts.SYSTEM` too.
+- **`store.py`'s rate card is pinned to a model id that is an environment variable.**
+  Left alone it bills a free model at another provider's prices with a `cost_source` that
+  names them — contract #2 broken by the tier that enforces contract #2. `_cost()` now
+  prefers the provider's `usage.cost`; OpenRouter reports it, Groq does not.
+- **`:free` means 50 requests per DAY across all free models**, and one agent run spends
+  7-12. Four or five conversations exhaust the account and every later run fails
+  `rate_limited`. Check it with `curl -H "Authorization: Bearer $PULSETWIN_GENAI_API_KEY"
+  https://openrouter.ai/api/v1/key` — the answer is in `free_model_daily_requests`.
+- **Nemotron is a reasoning model**: a trivial prompt spent 11,555 reasoning tokens
+  against 341 of visible output. Budget latency accordingly (a 6-tool run is ~70s), and
+  do not read a large `completion_tokens` as a large answer.
 
 ### Known model behaviour that looks like a bug but isn't
 - **Every alert renders the same risk (41% on plant A).** All 648 alerting units share

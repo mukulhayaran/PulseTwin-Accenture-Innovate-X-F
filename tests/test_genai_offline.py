@@ -121,3 +121,92 @@ def test_a_restricted_role_reports_rather_than_invents(ctx) -> None:
     ver, _ = V.verify(finding, loop.transcript,
                       station_ids=_station_ids(client, "plant_a"))
     assert ver.status in (V.VERIFIED, V.VERIFIED_WITH_REDACTIONS), ver.reject_reason
+
+
+# --------------------------------------------------------------- named-action parity
+#
+# Every named action the copilot offers must answer with NO credential. A button that
+# works only when a provider is reachable is a button that breaks on stage -- and the
+# whole argument for this module is that the demo survives an outage with its guarantees
+# intact, not with a weaker version of them.
+
+PLANS = ["general", "handover", "shift_intel", "whatif", "incident"]
+
+
+def _grid_station(client, plant: str):
+    rows = client.get(f"/api/whatif/stations?plant_id={plant}").json()
+    return rows[0]["station_id"] if rows else None
+
+
+@pytest.mark.parametrize("plant", PLANTS)
+@pytest.mark.parametrize("plan", PLANS)
+def test_every_plan_passes_the_same_verifier(ctx, plant, plan) -> None:
+    registry, api, client = ctx
+    loop, finding = offline_triage.run_plan(
+        plan, registry, api, plant_id=plant, question=f"[{plan}] parity",
+        station_id=_grid_station(client, plant))
+    ver, served = V.verify(finding, loop.transcript,
+                           station_ids=_station_ids(client, plant))
+
+    assert ver.status != V.REJECTED, f"{plan}/{plant}: {ver.reject_reason}"
+    assert ver.claims_total > 0
+    assert served.summary and served.recommendation
+
+
+@pytest.mark.parametrize("plan", PLANS)
+def test_every_plan_labels_itself_as_deterministic(ctx, plan) -> None:
+    """Labelled as emphatically as the SPC fallback: an honest lesser thing, never a
+    pretence that a model was involved."""
+    registry, api, client = ctx
+    _loop, finding = offline_triage.run_plan(
+        plan, registry, api, plant_id="plant_a", question="label check",
+        station_id=_grid_station(client, "plant_a"))
+    assert offline_triage.BANNER in finding.summary or \
+        offline_triage.BANNER in finding.recommendation
+
+
+@pytest.mark.parametrize("plan", PLANS)
+def test_every_plan_cites_only_calls_it_actually_made(ctx, plan) -> None:
+    registry, api, client = ctx
+    loop, finding = offline_triage.run_plan(
+        plan, registry, api, plant_id="plant_a", question="citation check",
+        station_id=_grid_station(client, "plant_a"))
+    made = {r.call_id for r in loop.records}
+    for claim in finding.claims:
+        assert claim.citation.call_id in made, f"{plan} cited {claim.citation.call_id}"
+
+
+def test_an_uncovered_station_refuses_and_still_serves_something(ctx) -> None:
+    """A refusal needs evidence too. The verifier rejects a finding with no claims, and a
+    rejected run serves NOTHING -- so an un-evidenced "simulation unavailable" would
+    reach the operator as a blank panel, which is worse than the refusal it was trying to
+    deliver."""
+    registry, api, client = ctx
+    loop, finding = offline_triage.run_plan(
+        "whatif", registry, api, plant_id="plant_a", question="what if?",
+        station_id=999_999)
+    ver, served = V.verify(finding, loop.transcript,
+                           station_ids=_station_ids(client, "plant_a"))
+
+    assert ver.status != V.REJECTED
+    assert "SIMULATION UNAVAILABLE" in served.recommendation
+    assert any("not in the precomputed what-if grid" in u for u in finding.unanswered)
+
+
+def test_the_whatif_plan_never_substitutes_a_different_station(ctx) -> None:
+    """"Do not invent simulation results" -- borrowing a covered station's response for
+    an uncovered one would be a plausible-looking lie."""
+    registry, api, _client = ctx
+    _loop, finding = offline_triage.run_plan(
+        "whatif", registry, api, plant_id="plant_a", question="what if?",
+        station_id=999_999)
+    assert not any(c.unit == "uph" for c in finding.claims)
+
+
+def test_intents_and_plans_are_in_sync() -> None:
+    """Every intent names a plan that exists."""
+    from genai import intents
+
+    named = {i.plan for i in intents.INTENTS.values()}
+    missing = named - set(offline_triage.PLANS)
+    assert not missing, f"intents name missing plans: {missing}"

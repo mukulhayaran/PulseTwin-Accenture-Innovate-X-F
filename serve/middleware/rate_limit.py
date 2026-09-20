@@ -28,12 +28,33 @@ LIMITS_PER_MINUTE = {
 }
 DEFAULT_LIMIT = 120
 
+# Counters live at MODULE scope rather than on the middleware instance.
+#
+# Behaviourally identical for the deployment this is built for -- `--workers 1`, one
+# process, one middleware instance (ADR-009, and the docstring above). What it buys is a
+# reset hook, and that is not cosmetic: the middleware instance is constructed inside
+# Starlette's middleware stack when the app first handles a request, so a test that wants
+# to clear the counters would have to walk `app.middleware_stack`'s `.app` chain to find
+# it -- reaching into framework internals to reach our own state.
+#
+# The test suite needs that hook because every test in the process shares one client IP
+# and one counter, so a long suite trips a production limit that no single test would.
+# That is a test-infrastructure problem, and the fix belongs here rather than in a
+# weakened limit: see tests/conftest.py.
+_HITS: dict[str, deque] = defaultdict(deque)
+
+
+def reset() -> None:
+    """Clear every counter. Test-suite hook; never called by the application."""
+    _HITS.clear()
+
+
+def snapshot() -> dict[str, int]:
+    """Current hit count per `role:ip` key. Diagnostics only."""
+    return {key: len(hits) for key, hits in _HITS.items()}
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app) -> None:
-        super().__init__(app)
-        self._hits: dict[str, deque] = defaultdict(deque)
-
     async def dispatch(self, request: Request, call_next):
         role = request.headers.get("X-PulseTwin-Role", "supervisor").strip().lower()
         client_ip = request.client.host if request.client else "unknown"
@@ -41,7 +62,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         limit = LIMITS_PER_MINUTE.get(role, DEFAULT_LIMIT)
 
         now = time.time()
-        hits = self._hits[key]
+        hits = _HITS[key]
         while hits and now - hits[0] > WINDOW_S:
             hits.popleft()
 

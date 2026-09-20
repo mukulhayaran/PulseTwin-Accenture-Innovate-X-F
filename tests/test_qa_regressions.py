@@ -77,10 +77,27 @@ def test_model_health_reports_every_feature_of_a_drift_run(client):
     assert psi["worst_feature"]["psi"] >= 0.30
 
 
+def _drop_registry_row(ops, model_id: str) -> None:
+    """Remove a fixture row from model_registry, before AND after the test that owns it.
+
+    The ops database is NOT a fixture. `serve/db.py::open_ops_db` puts it at
+    `%TEMP%/pulsetwin_ops.db` and it survives the process, so a test that INSERTs a fixed
+    `model_id` and never deletes it passes exactly once per machine and then fails
+    forever with `UNIQUE constraint failed: model_registry.model_id`. Both tests below
+    did that; both failed on the second run of the suite on this machine.
+
+    Cleaning up front as well as after matters: the rows from the run that discovered
+    this are already on disk, and a test that only cleans up afterwards would still fail
+    on its first run after the fix.
+    """
+    db.execute(ops, "DELETE FROM model_registry WHERE model_id = ?", (model_id,))
+
+
 def test_model_health_age_days_is_never_negative(client):
     """`trained_at` written with time.strftime (LOCAL naive) but read back as UTC made a
     model trained seconds ago report `age_days: -1` on any host east of Greenwich."""
     ops = app.state.ops
+    _drop_registry_row(ops, "qa_regress_champion")
     trained = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     db.execute(
         ops,
@@ -91,9 +108,14 @@ def test_model_health_age_days_is_never_negative(client):
         ("qa_regress_champion", "defect_risk", 1, "champion", "plant_qa_age", trained,
          "", "{}", "", "qa regression"),
     )
-    body = client.get("/api/model/health?plant_id=plant_qa_age", headers=LEADERSHIP).json()
-    age = body["current_model"]["age_days"]
-    assert age is not None and age >= 0, f"freshly trained model reported age_days={age}"
+    try:
+        body = client.get("/api/model/health?plant_id=plant_qa_age",
+                          headers=LEADERSHIP).json()
+        age = body["current_model"]["age_days"]
+        assert age is not None and age >= 0, (
+            f"freshly trained model reported age_days={age}")
+    finally:
+        _drop_registry_row(ops, "qa_regress_champion")
 
 
 def test_registry_timestamps_are_utc_not_local():
@@ -275,6 +297,7 @@ def test_promotion_actually_changes_what_is_served(client):
     artifact = ROOT / "artifacts" / "model_plant_a.npz"
     if not artifact.exists():
         pytest.skip("plant_a model artifact not built")
+    _drop_registry_row(ops, "qa_regress_swap")
     db.execute(
         ops,
         """INSERT INTO model_registry
@@ -285,12 +308,19 @@ def test_promotion_actually_changes_what_is_served(client):
          datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "", "{}",
          str(artifact), "qa regression"),
     )
-    r = client.post("/api/admin/promote-model", json={"model_id": "qa_regress_swap"},
-                     headers=system)
-    assert r.status_code == 200, r.text
-    serving = r.json().get("serving")
-    assert serving is not None, "promote-model does not report whether it swapped the scorer"
-    assert serving["swapped"] is True, f"scorer was not hot-swapped: {serving}"
+    try:
+        r = client.post("/api/admin/promote-model", json={"model_id": "qa_regress_swap"},
+                        headers=system)
+        assert r.status_code == 200, r.text
+        serving = r.json().get("serving")
+        assert serving is not None, (
+            "promote-model does not report whether it swapped the scorer")
+        assert serving["swapped"] is True, f"scorer was not hot-swapped: {serving}"
+    finally:
+        # Promotion RETIRES the previous champion, so leaving this row behind also leaves
+        # plant_a with a champion pointing at a test fixture for every later test in the
+        # session and every later run on this machine.
+        _drop_registry_row(ops, "qa_regress_swap")
 
 
 def test_challenger_artifacts_are_pruned(tmp_path, monkeypatch):

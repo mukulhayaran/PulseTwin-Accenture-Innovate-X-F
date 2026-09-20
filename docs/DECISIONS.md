@@ -822,3 +822,355 @@ has the same latent flakiness; retraining is just rare enough that nobody hit it
 WAL + `busy_timeout`. Found by spawning the job from a running server, not by reading:
 every standalone `python -m ...` run had passed, because a standalone process contends
 with nothing.
+
+---
+
+### ADR-038 — The copilot: a new provider, a wider egress allowlist, and a request that degrades
+**Audit:** AI Operations Copilot · **Status:** ACCEPTED
+
+ADR-037 built an agentic tier that answers one question, once, about line balance. The
+copilot turns that into a conversation an operator can actually use, and three things
+had to change to allow it. Each is a loosening of something ADR-037 deliberately
+tightened, so each is argued here rather than assumed.
+
+*Decision 1 — the provider is Groq; the DEPENDENCY does not change.*
+`genai/config.py` now points at `https://api.groq.com/openai/v1` with
+`openai/gpt-oss-120b`, and the credential is `GROQ_API_KEY`. Groq speaks the OpenAI wire
+protocol, so this is a base-URL change inside the existing abstraction: no second
+provider SDK, which CLAUDE.md §2 and ADR-037 both ban outright. `genai/client.py` is
+still the only file in the repository that imports a provider SDK, and
+`genai/requirements.txt` is still the only file that declares one.
+
+Two consequences worth stating. The rate card in `genai/store.py` was xAI's, so
+`triage_runs.cost_usd` would have been a dollar figure whose stated `cost_source` named a
+price list that was never used — contract #2 broken by the feature that enforces contract
+#2. It now carries Groq's published rates for this model with the date they were read.
+And `serve/routers/triage.py::API_KEY_ENV` is a hand-maintained mirror whose own comment
+says changing one without the other is a bug; both moved in the same commit, and
+`tests/test_triage_api.py` reads the name symbolically so the assertion cannot drift.
+
+*Decision 2 — the request degrades; the guarantee does not.*
+An OpenAI-compatible endpoint is not an OpenAI endpoint. `strict` on tool schemas, a
+nested `json_schema` response format and `seed` are all model-dependent on Groq, and a
+rejection is an HTTP 400 that `classify_error` maps to `provider_status_400` — which
+**failed the entire run**. Pointing the tier at a model that dislikes strict schemas
+would have turned every question into a hard error with no diagnosis.
+
+`genai/capabilities.py` walks a five-rung ladder against the real payload (not a startup
+probe — a probe costs a round trip on the happy path and can pass while the real request,
+carrying eighteen tools plus a nested schema, fails on the *combination*). The order
+surrenders the guarantees this package has already documented as non-load-bearing, weakest
+first: `strict` goes first because `tools.py::to_wire` already says `validate_args`
+re-checks locally regardless; `json_schema → json_object → absent` next because
+`finding.py::parse_finding` already says it works whether or not the provider honoured
+the format; `seed` last because `config.py` already disclaims that it makes a hosted model
+reproducible.
+
+It degrades on 400 and 422 only. Deliberately **not** on 401, 403, 404 or 413: a wrong
+key or a wrong model id must fail loudly on the first attempt rather than walk four rungs
+and then fail anyway with a misleading profile recorded. Widening that set is how this
+module would start hiding real misconfiguration. The settled rung is persisted as
+`triage_runs.capability_profile` and rendered — a degraded run is visibly degraded, which
+is the same posture as labelling the SPC fallback.
+
+*Decision 3 — the egress allowlist widens from ten paths to eighteen, on purpose.*
+ADR-037 excluded unit-level surfaces because "shipping per-unit genealogy to a
+third-party API is the single worst data-governance step this feature could take". That
+reasoning holds for `/api/units/{id}`, which returns a vehicle's full station journey and
+raw readings, and it is still excluded. It does not hold for the question the copilot is
+actually asked — *which vehicles are affected?* — because
+`/api/trace/containment/{unit_id}` answers exactly that and already emits opaque operator
+GROUPS by construction (ADR-017). The narrower tool answers the question; the wider one
+just exports the line.
+
+Admitted: containment, the alert list (bounded by `limit`), deterministic alert triage,
+a shift summary, data quality, sensor dropouts, the evidence graph, and the
+instrumentation plan. Still absent, and still a governance decision: `/api/units/{id}`,
+anything reading `checklists` (that table carries `operator_group`, and the best privacy
+defence remains that the data never leaves), `/api/stream` (unbounded SSE),
+`/api/audit/*` (the agent must not read the record of who did what), and `/api/admin/*`
+(mutating — the registry contains no tool that can change a model, a config, or the
+line). `tests/test_genai_tools.py` pins the exact path set, so this paragraph and that
+test have to move together.
+
+*Decision 4 — the new evidence is computed in the backend, not by the model.*
+`serve/routers/intelligence.py` decides, counts, ranks and links; `genai/` explains.
+This is not tidiness. The verifier can only check a claim against a tool result, which
+means the tool result is the one thing nothing downstream checks — so a triage class, a
+shift statistic or a causal edge produced by a language model would be unfalsifiable by
+construction. The evidence graph is built by a deterministic join and carries
+`causality: "association"` on every response, because nothing in this repository
+establishes causation: the features are correlated with a label, the fingerprint is a
+shared-lot-and-window join, and the simulator's true causes are deliberately partly
+unobservable (`docs/AUDIT.md` B34).
+
+*Measured against the live endpoint, 2026-09-21 — and it changed the design.* The ladder
+was written before anything had talked to Groq. What the real endpoint does:
+
+- **Every rung carrying `response_format` fails**, with one identical 400: `json mode
+  cannot be combined with tool/function calling`, `param: response_format`. Not the
+  strictness — the parameter, at all, whenever `tools` is present. The ladder converged
+  on L4 correctly but paid four rejected round trips to learn one fact, and on a free
+  tier those four count against the provider's own limit. `degrade()` now reads the
+  error text and jumps past every rung that would fail for the reason just stated. The
+  rung order still earns its place on an endpoint whose objection IS the strictness.
+- **A 400 is not always our fault.** Groq validates tool syntax server-side and returns
+  `code: tool_use_failed` carrying the text it could not parse. Ours was
+  `{"name": "citaton", "arguments": The current bottleneck in **plant_a** is...` — the
+  model inventing a tool name and writing prose where the arguments JSON belongs, trying
+  to emit its *citation* as a tool call. That is downstream of the first finding: with
+  `response_format` unavailable, nothing pins the output shape but the prompt, which had
+  been written assuming the schema would. Now classified separately, retried without
+  touching the ladder, and the prompt states that the final answer is an ordinary message
+  and that no citation tool exists.
+- **The binding limit is tokens, not requests:** 8,000 TPM against 1,000 requests/day.
+  One round trip costs ~3,200 tokens before any tool result, because the system prompt
+  and eighteen tool schemas are re-sent every turn. The loop's flat five-second retry
+  could not recover from a budget that resets in 17.1s; it now reads the provider's own
+  `retry-after` / `x-ratelimit-reset-tokens`, bounded by the run's wallclock cap.
+
+*Cost:* eight more paths leaving the network, a rate card tied to one model id, and a
+ladder that is now part measured and part still a guess about endpoints nobody here has
+run. A wrong guess costs one extra round trip, once per process.
+
+*Found while building this — four real defects, none of them in the new code.*
+
+1. **`serve/schemas.py::MetricsResponse` silently discarded six stored blobs.**
+   `serve/main.py::metrics` splats all of `metrics_json` into the model, and pydantic v2's
+   default `extra="ignore"` dropped every key the model did not declare — including
+   `bottleneck_report` (the forecast detail behind the headline skill number) and
+   `soft_sensor_validation` (the masked-station R² that ADR-031's negative result rests
+   on). Both are computed, committed, and cited in the docs, and neither was reachable
+   through any endpoint.
+
+2. **`ingestion/data_quality.py` scored every weld reading invalid.** Its
+   `VALID_RANGES["weld_current_a"]` was `(0, 2000)` while
+   `offline/simulator/physics.py::_station_targets` generates `8200 + (station_id % 6) *
+   140` — so all 8,610 weld readings in the committed artifact sit in 7.75–9.25 kA and
+   were all being excluded from feature computation in the live path. Resistance spot
+   welding runs at 8–15 kA; the bound was wrong by roughly a factor of five. Now 20 kA,
+   with a test asserting the simulator's own output falls inside the ranges.
+
+3. **The first version of `/api/alerts/triage` could not rank anything.** It triaged rows
+   where `alert_fired = 1`, and that flag means `calibrated_risk >= budget_threshold` *by
+   construction* — 0 of 141 fired rows across both plants violate it. Severity was
+   therefore a tautology and every candidate landed CRITICAL. The right population is
+   everything the cost model says is worth inspecting (`above_cost_threshold`, 1,423 rows
+   on plant_a against 113 fired); the gap between those two numbers is this project's
+   thesis, so triage is the surface that decides which of the 1,423 get some of the 113.
+
+4. **The stored confidence interval carries no information.** Across both plants every
+   one of ~1,250 distinct `calibrated_risk` values maps to exactly one interval width, and
+   there are exactly as many distinct widths as distinct risks: the interval is a
+   deterministic function of the point estimate. Ranking on it would have been
+   double-counting one number and presenting the second copy as corroborating evidence.
+   `LOW_CONFIDENCE` now keys on input quality — dark sensors, reconstructed station
+   statistics — and the interval is returned flagged `informative: false`.
+
+   Relatedly, and published rather than tuned away: on plant_a all 113 fired alerts share
+   ONE calibrated risk, the top plateau of the isotonic calibration. Severity cannot
+   discriminate there at all. The endpoint reports that in `diagnostics.notes` and ranks
+   on lead time and peer count instead, which is the same posture as ADR-030/031 — a
+   measurement that came out flat is reported flat.
+
+---
+
+### ADR-039 — Citations do not cross turns
+**Audit:** AI Operations Copilot · **Status:** ACCEPTED
+
+A conversation needs memory. The verifier's entire guarantee is that every served number
+resolves to a tool result *in this run*. Those two facts collide, and the collision has a
+silent failure mode that is worth more than the feature.
+
+*The failure.* `genai/loop.py` assigns `call_id` per run — `call_0001` upward, restarting
+every turn. Turn 1 and turn 3 both have a `call_0003`, pointing at different tool
+results. If an earlier turn's citations were replayed as usable, a claim citing
+`call_0003` would be resolved against **turn 3's** transcript. Two outcomes: the pointer
+fails to resolve, and the agent looks amnesiac; or it resolves to an unrelated number
+that happens to fall inside `derive_tolerance`, and the claim is marked **verified** and
+traced to evidence that has nothing to do with it. A green badge on a coincidence,
+silently reachable. That is the worst thing this feature could produce.
+
+*Decision 1 — the rule is categorical, and it is in the prompt in those words.*
+`CITATIONS DO NOT CROSS TURNS. The call_ids above no longer exist. To make any claim
+about a number established earlier, CALL THE TOOL AGAIN NOW.` Re-fetching costs one call
+out of twenty-four, and it is also the correct semantics: on a live line, a number
+restated twenty minutes later should be restated against current data.
+
+*Decision 2 — `carried_values`, and its scope is one check.*
+Without some memory, C3's prose sweep shreds every follow-up: "the 41.8 UPH we
+established is unchanged" loses its whole sentence. So values a previous turn's verifier
+already passed are admitted as a **fourth exemption in `_sweep_prose` and nowhere else**.
+A *claim* can still never be verified by a carried value — `_verify_claim` is untouched
+on purpose, and the next person to read it will want to "fix" that.
+
+Two filters that are easy to get wrong and are tested: only runs with status `verified`
+or `verified_with_redactions` contribute (a rejected turn served nothing, so it has
+nothing to carry), and claims whose text begins `[claim removed` are skipped — they carry
+`value: 0.0` as a placeholder, and admitting it would exempt every sentence containing a
+zero in every later turn, which is the easiest possible way to accidentally disarm the
+uncited-number sweep.
+
+*Decision 3 — the set is derived on the server, never supplied by a client.*
+The obvious cheap implementation is to have the browser post prior findings back. That is
+a security defect, not an inelegance: it would let the caller control both the text
+entering the model's context and the verifier's exemption list, so a manager could paste
+a fabricated "$4.2M established earlier" and have it restated with the sweep disarmed.
+`_cap_role` exists to stop the agent being a read-around for the role gate; client-supplied
+context would make it a write-around into the verifier.
+
+*What this costs, named.* The guarantee weakens from *traceable to a tool result in this
+run* to *traceable to a tool result in this thread*. It is bounded: carried values are
+server-derived, persisted per run in `triage_runs.carried_values` so
+`genai/verify_cli.py` still reproduces a turn's verdict byte-identically, surfaced as
+`carried_values_used` in the verdict, and the earlier turn's evidence stays in
+`triage_tool_calls` permanently. A stale value can still be restated as current an hour
+later; the prompt says so and the UI badges it, and recency invalidation is not built.
+
+*Decision 4 — named actions are intent KEYS, not canned sentences.*
+"Generate Shift Handover" posts `intent: "handover"`. Not an English string chosen by the
+browser, because then the deterministic path would have to string-match it, the behaviour
+of a button would live half in TypeScript, and the ledger could not be queried without a
+`LIKE`. `genai/intents.py` holds the expansion; `serve/` mirrors only the keys and short
+labels, with a test asserting the two agree. There is deliberately no NL intent
+classifier: typing "generate a handover" posts `intent: "ask"` and the agent handles it as
+a question. A classifier would be a second unverifiable model call to save a click on a
+button already on screen. For the same reason a station id is always **structured** —
+regexing "S17" out of prose is how a copilot simulates the wrong station with complete
+confidence.
+
+*Decision 5 — every named action has a deterministic plan.*
+`genai/offline_triage.py` grows `run_handover`, `run_shift_intel`, `run_whatif` and
+`run_incident` beside the original. A button that works only when a provider is reachable
+is a button that breaks on stage, and the argument for that module was always that the
+demo survives an outage *with its guarantees intact*. All four are citation-bearing by
+construction and pass the identical verifier on both plants.
+
+`run_whatif` carries the one lesson that cost a rewrite: **a refusal needs evidence too.**
+The what-if grid covers a fixed set of stations and two intervention types, so an
+unsupported request must say the simulation is unavailable rather than substitute a
+nearby scenario. But the verifier rejects a finding with no claims, and a rejected run
+serves *nothing* — so the first version's honest refusal reached the operator as a blank
+panel, which is strictly worse than the refusal it was trying to deliver. The refusal now
+cites the grid's own coverage, and is served.
+
+*Decision 6 — progress is polled, and the model's text is never streamed.*
+The only thing worth streaming from a language model is its text, and streaming this
+model's text would render numbers on a screen *before* the verifier runs — a viewer
+watching "$4.2M annual saving" type itself out and then vanish is the exact opposite of
+ADR-037's "failure redacts, it does not flag". So the run is non-streaming by design, and
+what the UI polls is phase status: a ~400-byte document that changes maybe fifteen times
+per run, which 1 Hz polling renders indistinguishably from a push. An SSE progress
+endpoint was rejected for a second reason as well: `EventSource` cannot set
+`X-PulseTwin-Role`, so it would be either ungated or role-in-query-string, and `serve/`
+runs a single worker with a test already protecting its event loop from long-lived
+connections.
+
+The highest-leverage part of this is six lines in `serve/routers/triage.py`: the router
+writes the first heartbeat **before** spawning the worker. The longest wait in a run is
+interpreter startup plus the first model round trip, all of it before the worker can
+write anything — the window that used to show a bare spinner at exactly the moment an
+audience decides whether the thing works.
+
+Phase labels live on `ToolSpec.phase`, not in a React map: a UI map desynchronises the
+moment a tool is added, would need duplicating for the page and the dock, and would give
+the deterministic path no labels at all. And because `openai/gpt-oss-120b` returns a
+`reasoning` field, the heartbeat is assembled from an explicit key allowlist with a test
+asserting model prose never reaches it — structure that is not tested is a convention.
+
+*Found while building this:* `serve/db.py` creates the ops tables with `CREATE TABLE IF
+NOT EXISTS`, which is a no-op against a table that already exists — and the ops database
+is not a rebuilt artifact, it is a long-lived file in the system temp directory. Every new
+column would have been missing at runtime on any machine that had started the server
+once, with the first symptom an `OperationalError` from a detached worker whose stderr
+goes to a log file nobody is reading. `_ensure_columns` now does an additive
+PRAGMA-then-ALTER pass, and the index over the new columns had to move after it — the
+first version failed at startup with `no such column: thread_id` because `CREATE UNIQUE
+INDEX` ran inside the same script that was supposed to create them.
+
+Separately, two tests in `tests/test_qa_regressions.py` inserted fixed `model_id` values
+into that same long-lived ops file and never deleted them, so they passed exactly once per
+machine and then failed forever on `UNIQUE constraint failed`. A test that only passes on
+a clean machine is a test that fails on the demo machine.
+
+---
+
+### ADR-040 — OpenRouter/Nemotron, and a rung the ladder could not see
+**Audit:** GenAI provider swap · **Status:** ACCEPTED
+
+The provider moved again, from Groq's `openai/gpt-oss-120b` to OpenRouter's
+`nvidia/nemotron-3-ultra-550b-a55b:free`. ADR-038's central claim survives the move
+intact and is the reason the move was cheap: OpenRouter speaks the OpenAI wire protocol,
+so this is a base-URL and a model id, `genai/client.py` is still the only file importing
+a provider SDK, and `genai/requirements.txt` still declares exactly one. That is twice
+now that a provider change has cost nothing structural, which is the whole argument for
+the abstraction.
+
+What it did cost was four defects, each invisible to the test suite because each one
+lives in the seam between this repository and a real endpoint. They are recorded here
+because three of them are general, not OpenRouter trivia.
+
+*1 — The ladder degrades on a status code, and this endpoint never returns one.*
+ADR-038 reasoned about `response_format` alongside `tools` as an HTTP 400: Groq refuses
+that combination with `json mode cannot be combined with tool/function calling`, the
+ladder reads the message and jumps. OpenRouter **accepts** the same request with HTTP 200
+— and the model then emits no tool call at all, answering from nothing and wrapping it in
+unbalanced JSON. `is_capability_rejection` never fires, so a cold run sat on L0, the top
+rung, made zero tool calls, and was rejected as `unparseable_finding`. Every new model
+starts on that rung, so this was the *default* first experience of the tier.
+
+The fix is `capabilities.suppresses_tool_calls`: a soft probe on the first round trip
+only. It required two attempts to get right, and the failed one is the instructive half.
+The obvious rule — "no tool call on turn 0 means `response_format` broke it" — is wrong,
+and two existing tests said so before any endpoint did. A model may legitimately answer
+without calling anything; that answer carries no evidence and the **verifier** rejects
+it, which is the correct place for the judgement and costs no extra request. The rule
+that survives needs both halves: no tool call **and** output that is not even a JSON
+object, when a JSON object is the one thing `response_format` was sent to guarantee. It
+is also skipped once anything else has degraded the run, because an endpoint that
+answered a 400 has already named the rung it wants and inferring from silence is only
+sound while there has been silence.
+
+*2 — The output schema only ever reached the model through `response_format`.*
+Which means it never reached it at L4 — the rung the ladder lands on for **both**
+providers. `prompts.SYSTEM` described the citation contract in detail and never named
+`claims`, `summary`, `confidence` or any other key. gpt-oss-120b guessed the shape often
+enough to hide this; Nemotron emitted a well-researched finding, six correct tool calls
+and a role-capped `unanswered` entry, under a top-level `citations` key it invented, and
+the parser threw `missing required field: claims`. The schema is now written out in the
+prompt as well as sent as `response_format`, so the contract survives every rung.
+`genai/finding.py::parse_finding` being tolerant does not help when the model was never
+told what to be tolerant *of*.
+
+*3 — The rate card is per-model, and nothing enforced that.*
+`store.py` billed every run at Groq's gpt-oss-120b prices with a `cost_source` naming
+them. Against a model that is free this produced $0.015 a run, carrying a source string
+that named a provider the run never called — precisely the contract #2 violation ADR-038
+congratulated itself on fixing, reintroduced by the same mechanism one provider later.
+A rate card pinned to a model id, in a module where the model id is an environment
+variable, is a latent wrong number. `_cost()` now prefers the provider's own
+`usage.cost`, which OpenRouter returns on every response; the rate card survives only as
+a labelled fallback for endpoints that report nothing.
+
+*4 — Credential precedence picks the first name SET, not the right one.*
+`LEGACY_KEY_ENVS` is ordered `GROQ_API_KEY, OPENROUTER_API_KEY, XAI_API_KEY`. An
+environment carrying both a Groq key and an OpenRouter key therefore sends the Groq key
+to OpenRouter, and the run dies on a bare `provider_status_401` — which the ladder
+correctly refuses to degrade on, so the diagnosis is a single status code. The
+provider-neutral `PULSETWIN_GENAI_API_KEY` is checked before all of them and is now what
+the documented setup sets. The ordering is left alone: changing it would break exactly
+the deployments the fallback exists for.
+
+*Also fixed, because it is what made three of these take as long as they did:*
+`finding_raw` was set to NULL whenever parsing failed, so the row recorded that the
+output was unparseable and discarded the output. "Invented a schema" and "was cut off
+mid-sentence" want opposite fixes and were indistinguishable from the database. The raw
+text is now kept, capped, and still never served — `serve/routers/triage.py` drops
+`finding_raw` from every response, so it stays operator-only.
+
+*One property that is not a defect and cannot be fixed in code.* The `:free` suffix caps
+the account at 50 requests per day across all free models, and one agent run spends 7-12
+of them. Four or five conversations exhaust a day, after which every run fails
+`rate_limited` — correctly surfaced in the UI, but a demo that must not run dry should
+drop the `:free` suffix or fund the account. `genai/offline_triage.py` remains the answer
+that needs no provider at all and passes the identical verifier.

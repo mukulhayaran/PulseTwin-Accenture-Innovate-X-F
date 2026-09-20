@@ -4,7 +4,10 @@
 # serve/ does NOT parse this file at runtime (yaml is outside the import wall, CLAUDE.md
 # SS2) -- the thresholds below are hardcoded as constants in that router, and this file is
 # the reviewable, editable source an ops team would actually change. Keeping the numbers
-# in both places in sync is covered by tests/test_auth.py's escalation test.
+# in both places in sync is covered by tests/test_configs.py -- which reads THIS file and
+# compares it to the router's constants. It previously named a test in test_auth.py that
+# did not exist, and no test read this file at all: an ops team editing it would have
+# believed they had changed the system's behaviour when nothing had changed.
 #
 # Operator privacy (CLAUDE.md SS3): every notification target below is a ROLE or a shift,
 # never a named individual. No roster of real people is stored anywhere in this repo.
@@ -33,6 +36,54 @@ escalation:
     # level 2 -- waiting 5 minutes on a possible multi-unit lot issue is the wrong default.
     at_risk_threshold: 3
     skip_to_level: 2
+
+triage:
+  # The autonomous triage rules GET /api/alerts/triage implements. Same arrangement as
+  # `escalation` above: serve/ cannot parse yaml (the import wall), so these numbers are
+  # hardcoded as constants in serve/routers/intelligence.py and THIS file is the
+  # reviewable source an ops team would actually change. Keep the two in sync.
+  #
+  # The candidate set is deliberately WIDER than the alerts that fired. `alert_fired = 1`
+  # means risk >= budget_threshold by construction, so triaging only those rows makes
+  # severity a tautology and lands every unit in one class. The population is everything
+  # above the cost-optimal inspection threshold -- roughly 1,400 units per plant against
+  # ~100 fired -- because the gap between those two numbers IS the attention constraint
+  # this system exists to manage.
+  candidate_set: above_cost_threshold
+
+  # Severity is expressed as a MULTIPLE of the plant's own alert threshold, read from
+  # plant_meta at runtime, never written here. A raw probability means nothing across
+  # plants; a multiple of the threshold the plant actually alerts at transfers unchanged.
+  severity_x_threshold:
+    critical: 1.25
+    investigate: 1.00
+    monitor: 0.75
+
+  escalation_inputs:
+    # Peers in the +/-30min containment window that are THEMSELVES above the alert
+    # threshold. Mirrors containment_escalation.at_risk_threshold above.
+    #
+    # Note which peer measure this is. The containment panel's own list (same lot, or
+    # risk above 0.6x threshold, capped at 12) saturates its cap for every unit in the
+    # committed artifact, so escalating on it escalates everything. It is still reported,
+    # for agreement with that panel, but it is not what triggers.
+    peers_above_threshold: 3
+    # Below this, a correct prediction is not actionable -- the unit reaches inspection
+    # before anyone can intervene. Matches level 1's response_window_min above.
+    lead_time_urgent_min: 5.0
+
+  low_confidence:
+    # LOW_CONFIDENCE is a RANK, never a deletion: the row is still returned, still
+    # counted, and still carries its reasons. An alert nobody sees is an alert nobody can
+    # overrule.
+    #
+    # It keys on INPUT quality, not on the stored confidence interval. Measured across
+    # both plants, every distinct calibrated_risk maps to exactly one interval width --
+    # the interval is a deterministic function of the point estimate and carries no
+    # independent information, so ranking on it would double-count one number and present
+    # the second copy as corroborating evidence.
+    triggers: [sensor_dark_at_implicated_station, station_statistics_inferred]
+    never_downgrades: critical   # a sensor problem is a reason to look harder, not less
 
 notification_channels:
   in_app: { description: "Alert feed + toast in the active dashboard view" }

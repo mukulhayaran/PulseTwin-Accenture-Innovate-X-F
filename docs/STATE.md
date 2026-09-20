@@ -323,10 +323,152 @@ the feature works with no API key and doubles as an honest baseline.
 
 **The import wall was NOT widened.** `genai` is absent from `ALLOWED`, so
 `tests/test_serve_imports.py` already failed on any `import genai` in `serve/` and needed
-no edit. Provider: xAI Grok (`grok-4.6`), OpenAI-compatible, isolated to
+no edit. Provider: Groq (`openai/gpt-oss-120b`), OpenAI-compatible, isolated to
 `genai/client.py`.
 
-### Bugs found in these two sessions
+### AI Operations Copilot (2026-09-20) — ADR-038, ADR-039
+
+The agentic tier answered one question, once. This session turned it into a
+**conversation**, widened what it can see, and added the deterministic evidence it
+reasons over.
+
+**Provider.** xAI Grok → **Groq `openai/gpt-oss-120b`**, same OpenAI wire protocol, no
+second SDK (ADR-038 §1). `genai/capabilities.py` walks a five-rung degradation ladder when
+the provider rejects `strict` / `json_schema` / `seed`, because a rejection is an HTTP 400
+that used to fail the whole run. The settled rung is persisted and rendered.
+
+**Conversation.** `triage_threads` + `thread_id`/`turn_index` on `triage_runs`.
+**Citations never cross turns** — `call_id`s restart every run, so a replayed citation
+could resolve against a different turn's transcript and be marked verified on a
+coincidence. Only `carried_values` crosses, as a C3 prose exemption and nothing else,
+server-derived and persisted for replay (ADR-039).
+
+**Named actions.** Five intents (`ask`, `incident`, `handover`, `shift_intel`, `whatif`),
+each with a deterministic plan in `genai/offline_triage.py` so every button works with no
+credential. No NL intent classifier; station ids are always structured, never regexed.
+
+**Progress.** Phases live on `ToolSpec.phase`; the router writes the first heartbeat
+*before* spawning the worker. Polling, never token streaming — streaming would render
+numbers before the verifier ran.
+
+**Egress: 10 tools → 18** (ADR-038 §3). Admitted containment, alerts, alert triage, shift
+summary, data quality, sensor dropouts, the evidence graph and the instrumentation plan.
+Still excluded: `/api/units/{id}`, anything reading `checklists`, `/api/stream`,
+`/api/audit/*`, `/api/admin/*`.
+
+**New deterministic endpoints** (`serve/routers/intelligence.py`): `/api/alerts/triage`,
+`/api/shift/summary`, `/api/system/data-quality`,
+`/api/trace/evidence-graph/{unit_id}`. Computed in the backend on purpose — the verifier
+can only check a claim against a tool result, so the tool result has to be trustworthy.
+
+**Frontend.** New `/copilot` route plus a `CopilotDock` on all four persona views, a
+`PhaseTrail`, an extracted `FindingView` shared with the ops console, an `AiTrustPanel`,
+an `AlertTriageTable` on `/supervisor`, and an `EvidenceGraph` that encodes provenance in
+colour + dash + texture and says `association, not cause` on its face.
+
+### Bugs found while building the copilot
+
+62. **`MetricsResponse` silently discarded six stored blobs.** `serve/main.py::metrics`
+    splats all of `metrics_json` into the model and pydantic v2's `extra="ignore"` dropped
+    everything undeclared — including `bottleneck_report` (forecast detail) and
+    `soft_sensor_validation` (the masked-station R² ADR-031 rests on). Both computed,
+    committed, cited in docs, and unreachable through any endpoint.
+63. **`ingestion/data_quality.py` scored every weld reading invalid.**
+    `VALID_RANGES["weld_current_a"]` was `(0, 2000)` while
+    `offline/simulator/physics.py` generates ~8,200–8,900 A. All 8,610 weld readings in
+    the artifact were being excluded from feature computation in the live path. Real spot
+    welding is 8–15 kA; the bound was wrong by ~5×. Now 20 kA, with a test asserting the
+    simulator's own output falls inside the ranges.
+64. **The first `/api/alerts/triage` could not rank anything.** It triaged only
+    `alert_fired = 1` rows, and that flag means `risk >= budget_threshold` by construction
+    (0 of 141 rows violate it), so severity was a tautology and everything landed
+    CRITICAL. Widened to the cost-optimal candidate set.
+65. **The stored confidence interval carries no information.** Every distinct
+    `calibrated_risk` maps to exactly one interval width across both plants — the interval
+    is a deterministic function of the point estimate. Ranking on it was double-counting
+    one number as two pieces of evidence. `LOW_CONFIDENCE` now keys on input quality;
+    the interval is returned flagged `informative: false`.
+66. **The evidence graph indicted all 30 stations.** It substring-matched signal names
+    against factor names, so `torque_nm` matched that signal at every station. Features
+    encode their station as an `s<N>_` prefix; parsing it collapsed a 70-node graph to 11.
+67. **Triage keyed on the wrong station.** `current_station` is
+    `MAX(genealogy.station_id)`, which for a finished unit is simply the last station on
+    the line — identically for every row. Now keyed on the station the top-ranked factor
+    names.
+68. **An honest refusal was served as a blank panel.** The what-if plan correctly refused
+    an uncovered station, but with no claims — and the verifier rejects a claimless
+    finding, and a rejected run serves *nothing*. A refusal needs evidence too; it now
+    cites the grid's own coverage.
+69. **`CREATE TABLE IF NOT EXISTS` is a no-op against an existing table**, and the ops DB
+    is a long-lived file in the system temp directory, not a rebuilt artifact. Every new
+    column would have been missing at runtime on any machine that had started the server
+    once. `_ensure_columns` now does an additive PRAGMA-then-ALTER pass — and the index
+    over those columns had to move after it, because the first version died at startup
+    with `no such column: thread_id`.
+70. **Two `test_qa_regressions.py` tests passed exactly once per machine.** They inserted
+    fixed `model_id` values into that same long-lived ops file and never deleted them, so
+    every rerun failed on `UNIQUE constraint failed`. A test that only passes on a clean
+    machine is a test that fails on the demo machine.
+71. **A capability-cache leak between tests.** `remember()` writes a file under
+    `PULSETWIN_JOBS_DIR`; clearing only the in-process memo let one test's degradation
+    change the next test's starting rung, and wrote a degraded profile into the
+    developer's real temp directory as a side effect of running the suite.
+
+72. **The test suite tripped a production rate limit, and only when run whole.**
+    `serve/middleware/rate_limit.py` keeps a sliding window per `role:ip`. Under
+    TestClient every test is the same client IP and the whole suite runs in one process,
+    so counters accumulate across FILES. Adding ~60 API-hitting tests pushed the suite
+    past the 180/min leadership limit, and every test that happened to run after that
+    point got a 429 whose body was then indexed as the success payload
+    (`KeyError: 'current_model'`). Nine failures, all of them passing in isolation —
+    the worst failure mode a test can have, because it looks like a regression in
+    whichever file was unlucky. Fixed by resetting the window per test
+    (`tests/conftest.py`, the repo's first) rather than by raising or disabling the
+    limit: the limiter is real production behaviour and stays exactly as strict.
+    Its counters moved to module scope to expose the reset hook — identical behaviour
+    at `--workers 1`, and it avoids a test reaching into Starlette's middleware stack
+    to find our own state.
+### Measured against the live provider (2026-09-21)
+
+The agent path talked to a real provider for the first time. Four facts came out of it
+that no amount of stub testing would have produced, and all four changed code.
+
+73. **Groq forbids `response_format` alongside `tools`, at every strictness.**
+    `openai/gpt-oss-120b` answers L0, L1, L2 AND L3 with one identical 400 --
+    `json mode cannot be combined with tool/function calling`, `param:
+    response_format`. Only L4 works. The ladder converged correctly, but spent four
+    rejected round trips learning one fact, and on a free tier those four count against
+    the provider's own limit. `degrade()` now reads the error text and jumps straight to
+    the first rung that omits the parameter. The rung ORDER still earns its place on an
+    endpoint whose objection is the strictness rather than the parameter.
+
+74. **The structured-output contract is carried entirely by the prompt on this
+    provider**, because the schema cannot be sent at all. The system prompt had been
+    written assuming `response_format` would pin the shape.
+
+75. **A 400 can be the MODEL's fault, not the request's.** Groq validates tool syntax
+    server-side and returns `code: tool_use_failed` with the text it could not parse.
+    Ours read, verbatim:
+    `{"name": "citaton", "arguments": The current bottleneck in **plant_a** is...` --
+    the model invented a tool called `citaton` and wrote prose where the arguments JSON
+    belongs, trying to emit its CITATION as a tool call. Degrading the request cannot fix
+    that, so it was burning a ladder rung per occurrence and recording a misleading
+    `capability_profile`. Now classified as `model_tool_call_invalid`, retried a bounded
+    number of times without touching the ladder, and the prompt says in as many words
+    that the final answer is an ordinary message and that no tool named `citation`
+    exists.
+
+76. **The free tier's binding limit is tokens, not requests.** 8,000 TPM against 1,000
+    requests/day: one round trip of this agent costs ~3,200 tokens before any tool result
+    (a 2,853-char system prompt plus ~10,000 chars of tool schemas, both re-sent every
+    turn), so two or three iterations exhaust the minute. The loop retried once and slept
+    a flat 5 seconds while the response header said the budget resets in 17.1s. It now
+    reads `retry-after`, else `x-ratelimit-reset-tokens`, parses Groq's `17.145s` /
+    `8m38.4s` duration format, waits that long up to a cap, and gives up early if the
+    wait would exceed the run's wallclock budget rather than parking a detached worker.
+
+### Bugs found in the two sessions before this one
+
 
 **Frontend — found by code review plus a Chromium audit:**
 
@@ -577,7 +719,7 @@ committed. What is left is **verification, not construction** — in priority or
 4. ~~**Drive the four views in a browser.**~~ **Done 2026-09-16**, and again after the
    2026-09-19 redesign — six routes, 0 console errors, 0 failed requests.
 
-6. **Run one live `genai.triage` against a real provider.** Set `XAI_API_KEY` and run
+6. **Run one live `genai.triage` against a real provider.** Set `GROQ_API_KEY` and run
    `python -m genai.triage --plant plant_a --question "..."`. Everything except one API
    call's wire format is already proven keyless — loop, tools, verifier, persistence,
    RBAC, degradation — but the agent path itself has never talked to a provider. Given
@@ -783,4 +925,39 @@ knowing whether we are ahead or behind.
                      keyless. Added Start/Stop/Restart replay transport, which surfaced
                      that ?from_ts= had never worked (bugs 58-59). Found 4 real bugs
                      (56-59), reported 2 more (60-61) without fixing. 339 tests pass.
+2026-09-21  GenAI    Provider moved to OpenRouter nvidia/nemotron-3-ultra-550b-a55b:free
+                     (ADR-040) and the agent path ran against a LIVE provider for the
+                     first time. Every defect below was invisible to the suite because
+                     each lives in the seam between this repo and a real endpoint.
+                     Bug 73: credential precedence -- KEY_ENVS takes the first name SET
+                     and GROQ_API_KEY precedes OPENROUTER_API_KEY, so an env holding
+                     both sent the Groq key to OpenRouter -> bare provider_status_401.
+                     Bug 74: the capability ladder degrades on 400/422 and OpenRouter
+                     rejects response_format+tools with HTTP 200 instead -- zero tool
+                     calls, unparseable finding, on L0, which is where every new model
+                     starts. Added capabilities.suppresses_tool_calls (soft probe, first
+                     round trip only, needs BOTH no-tool-call AND non-JSON output; the
+                     broader rule was wrong and two existing tests caught it).
+                     Bug 75: the output schema only ever reached the model via
+                     response_format, so at L4 -- the rung the ladder lands on for BOTH
+                     providers -- the model invented a `citations` key and a correct
+                     6-tool investigation was discarded by the parser. Schema is now
+                     written into prompts.SYSTEM as well.
+                     Bug 76: store.py billed every run at Groq's gpt-oss-120b rate card,
+                     so a FREE model cost $0.015/run with a cost_source naming a provider
+                     never called -- contract #2 broken by the tier that enforces it.
+                     _cost() now prefers the provider's own usage.cost.
+                     Bug 77: finding_raw was NULLed on a parse failure, so "invented a
+                     schema" and "cut off mid-sentence" were indistinguishable from the
+                     database. Raw text now kept (capped, never served).
+                     After the fixes, cold-cache live runs: ask 4/5 claims verified (the
+                     5th correctly redacted, claim 85.9 vs result 0.8586 -- a
+                     ratio-vs-percent slip the verifier caught), incident 10/10, 6 and 11
+                     tool calls, L4, $0.00, ~70s. Deterministic path 26/26 across all
+                     five intents. All four decision-intelligence endpoints 200. Five
+                     routes rendered in Chromium with 0 console errors (one expected
+                     403 on the leadership-gated model health). 518 tests pass.
+                     NOT a defect: `:free` caps the account at 50 requests/day and one
+                     run spends 7-12, so the last three intents could only be exercised
+                     via the deterministic path once the quota went.
 ```

@@ -50,23 +50,27 @@
      migration lived here. Every view now uses the tokens above, so they are
      gone -- keeping them would have left two names for one colour. */
 
-  /* ---- type scale: replaces 142 ad-hoc text-[Npx] values ---------------- */
-  --text-2xs: 0.625rem; /* 10px — dense table meta, badges           */
-  --text-2xs--line-height: 0.875rem;
-  --text-xs: 0.6875rem; /* 11px — the workhorse label size           */
-  --text-xs--line-height: 1rem;
-  --text-sm: 0.8125rem; /* 13px — body copy in panels                */
-  --text-sm--line-height: 1.125rem;
-  --text-base: 0.875rem; /* 14px — default                           */
-  --text-base--line-height: 1.25rem;
-  --text-lg: 1rem; /* 16px — sub-headings, emphasised facts          */
-  --text-lg--line-height: 1.375rem;
-  --text-xl: 1.25rem; /* 20px — panel stat                           */
-  --text-xl--line-height: 1.625rem;
-  --text-2xl: 1.625rem; /* 26px — KPI value                          */
-  --text-2xl--line-height: 1.875rem;
-  --text-3xl: 2.125rem; /* 34px — landing headline                   */
-  --text-3xl--line-height: 2.5rem;
+  /* ---- type scale: replaces 142 ad-hoc text-[Npx] values ----------------
+         Bumped one notch up across the board (2026-09-21) -- the original scale
+         bottomed out at 10px for table meta and 14px for default body copy, which
+         read as too small even for a dense control-room UI. Every step moved, so
+         relative hierarchy is unchanged; only the floor moved up. */
+  --text-2xs: 0.6875rem; /* 11px — dense table meta, badges           */
+  --text-2xs--line-height: 0.9375rem;
+  --text-xs: 0.75rem; /* 12px — the workhorse label size           */
+  --text-xs--line-height: 1.0625rem;
+  --text-sm: 0.875rem; /* 14px — body copy in panels                */
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.9375rem; /* 15px — default                           */
+  --text-base--line-height: 1.375rem;
+  --text-lg: 1.125rem; /* 18px — sub-headings, emphasised facts     */
+  --text-lg--line-height: 1.5rem;
+  --text-xl: 1.375rem; /* 22px — panel stat                         */
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.8125rem; /* 29px — KPI value                          */
+  --text-2xl--line-height: 2.125rem;
+  --text-3xl: 2.375rem; /* 38px — landing headline                   */
+  --text-3xl--line-height: 2.75rem;
 
   /* ---- fonts: injected by next/font in layout.tsx. Before this existed the
          config named JetBrains Mono but nothing ever fetched it, so every

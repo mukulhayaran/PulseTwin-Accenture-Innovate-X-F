@@ -31,6 +31,11 @@ from serve.main import app  # noqa: E402
 PLANTS = ["plant_a", "plant_b"]
 
 # The egress allowlist, written out longhand. If a tool is added, this fails first.
+#
+# Widened from 10 paths to 18 by ADR-038. The eight additions are listed second, with
+# the argument in genai/tools.py's module docstring. The friction is the feature: this
+# list is the only place the egress surface is stated in full, and growing it is a
+# deliberate edit to a test rather than a side effect of adding a tool.
 APPROVED = {
     ("GET", "/api/bottleneck/current"),
     ("GET", "/api/bottleneck/history"),
@@ -42,11 +47,30 @@ APPROVED = {
     ("GET", "/api/system/health"),
     ("GET", "/api/model/health"),
     ("GET", "/api/economics/roi"),
+    # --- ADR-038
+    ("GET", "/api/units"),
+    ("GET", "/api/alerts/triage"),
+    ("GET", "/api/trace/containment/{unit_id}"),
+    ("GET", "/api/trace/evidence-graph/{unit_id}"),
+    ("GET", "/api/shift/summary"),
+    ("GET", "/api/system/data-quality"),
+    ("GET", "/api/system/sensor-dropouts"),
+    ("GET", "/api/economics/instrumentation-plan"),
 }
 
-# Unit-level and operator-bearing surfaces that must NEVER become tools.
-FORBIDDEN_SUBSTRINGS = ("/api/units", "/api/trace/", "/api/audit", "/api/admin",
-                        "/api/stream", "/api/feedback", "/api/alerts")
+# Surfaces that must NEVER become tools, whatever else is admitted.
+#
+# ADR-038 admitted unit-level RISK and CONTAINMENT, so "/api/units" and "/api/trace/"
+# are no longer blanket-forbidden -- the specific paths are pinned in APPROVED above
+# instead, which is strictly tighter than a prefix ban. What remains here is what no
+# argument should reopen: the full per-unit journey, the audit record of who did what,
+# anything mutating, and the unbounded stream.
+FORBIDDEN_SUBSTRINGS = ("/api/units/{", "/api/audit", "/api/admin",
+                        "/api/stream", "/api/feedback")
+
+# Checklists carry `operator_group` (CLAUDE.md §3). No tool may reach a surface that
+# reads them -- the strongest privacy defence is that the data never leaves at all.
+FORBIDDEN_TABLES = ("checklist",)
 
 
 @pytest.fixture(scope="module")
@@ -65,6 +89,12 @@ def _api(client, role="leadership"):
                         transport=_tc_transport(client))
 
 
+def _an_alerting_unit(client, plant: str) -> str:
+    rows = client.get(f"/api/units?plant_id={plant}&alerts_only=true&limit=1").json()
+    assert rows, f"{plant} has no alerting units in the committed artifact"
+    return rows[0]["unit_id"]
+
+
 # ------------------------------------------------------------------ egress allowlist
 def test_registry_paths_equal_the_approved_allowlist(registry) -> None:
     assert T.approved_paths(registry) == APPROVED
@@ -74,6 +104,33 @@ def test_no_tool_touches_a_forbidden_surface(registry) -> None:
     for spec in registry.values():
         for bad in FORBIDDEN_SUBSTRINGS:
             assert bad not in spec.path, f"{spec.name} reaches {spec.path}"
+
+
+def test_no_tool_reads_an_operator_bearing_surface(registry) -> None:
+    """CLAUDE.md §3. The verifier's C4 check is the second line of defence, not the first."""
+    for spec in registry.values():
+        blob = f"{spec.name} {spec.path} {spec.description}".lower()
+        for bad in FORBIDDEN_TABLES:
+            assert bad not in blob, f"{spec.name} may reach operator-bearing data"
+
+
+def test_every_spec_declares_a_known_phase(registry) -> None:
+    """The progress trail is driven by ToolSpec.phase; an unlabelled tool would render a
+    blank step in the UI while the run appears to stall."""
+    for spec in registry.values():
+        assert spec.phase in T.PHASE_ORDER, f"{spec.name} has phase {spec.phase!r}"
+
+
+def test_path_param_tools_declare_their_placeholders(registry) -> None:
+    """A `{placeholder}` with no matching path_params entry would be sent to the API
+    literally, and the 404 would look like a missing unit rather than a broken tool."""
+    for spec in registry.values():
+        placeholders = {
+            part.split("}")[0] for part in spec.path.split("{")[1:]
+        }
+        assert placeholders == set(spec.path_params), (
+            f"{spec.name}: path has {placeholders}, declares {spec.path_params}"
+        )
 
 
 def test_only_one_non_get_tool_exists(registry) -> None:
@@ -101,6 +158,15 @@ def test_every_read_tool_returns_data(registry, client, plant) -> None:
             args["limit"] = 50
         if name == "get_economics_roi":
             args["scenario"] = "base"
+        if name == "get_alert_triage":
+            args["limit"] = 10
+        if name == "get_recent_alerts":
+            args.update({"alerts_only": True, "limit": 5})
+        if spec.path_params:
+            # Path-param tools need a real id, so take one from the plant's own alerts
+            # rather than inventing one -- a made-up unit id would make this assert a
+            # 404 handler instead of the tool.
+            args["unit_id"] = _an_alerting_unit(client, plant)
         out = T.dispatch(registry, api, name, __import__("json").dumps(args))
         assert out.get("ok") is True, f"{name} -> {out}"
 

@@ -25,6 +25,7 @@ from fastapi.responses import ORJSONResponse, StreamingResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from serve import db
+from serve.shift import shift_window
 from serve import metrics as prom_metrics  # "metrics" collides with this module's own
 # GET /api/metrics endpoint function further below -- both would bind the name `metrics`
 # at module scope, and the LAST definition wins, silently shadowing the earlier import.
@@ -44,7 +45,9 @@ from serve.fallback_scorer import FallbackScorer
 from serve.middleware.audit import log_action
 from serve.middleware.auth import get_role, require_role
 from serve.middleware.rate_limit import RateLimitMiddleware
-from serve.routers import admin, alerts_mgmt, audit, model_health, system, triage
+from serve.routers import (
+    admin, alerts_mgmt, audit, intelligence, model_health, system, triage,
+)
 from serve.scorer import Scorer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -144,6 +147,7 @@ app.include_router(audit.router)
 app.include_router(alerts_mgmt.router)
 app.include_router(admin.router)
 app.include_router(triage.router)
+app.include_router(intelligence.router)
 
 
 def _plant(plant_id: str) -> dict:
@@ -196,13 +200,10 @@ def stations(plant_id: str = "plant_a") -> StationConfigResponse:
 # ---------------------------------------------------------------------------- stream
 
 
-def _shift_window(ts: str) -> tuple[str, str]:
-    """8-hour shift boundaries containing ts. Used for the server-side alert budget."""
-    dt = datetime.fromisoformat(ts)
-    start_h = (dt.hour // 8) * 8
-    start = dt.replace(hour=start_h, minute=0, second=0, microsecond=0)
-    end = start.replace(hour=start_h + 7, minute=59, second=59)
-    return start.isoformat(), end.isoformat()
+# Re-exported from serve/shift.py so the SSE alert budget and the shift-report endpoint
+# cannot drift apart. Kept as a module-level name because the stream code below and the
+# tests both reach for `_shift_window`.
+_shift_window = shift_window
 
 
 @app.get("/api/stream")

@@ -22,6 +22,7 @@ const VIEWS = [
   { href: "/manager", label: "Manager" },
   { href: "/leadership", label: "Leadership" },
   { href: "/ops", label: "Operations" },
+  { href: "/copilot", label: "Copilot" },
 ] as const;
 
 const ROLE_TONE: Record<Role, string> = {

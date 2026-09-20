@@ -33,10 +33,48 @@ ROOT = Path(__file__).resolve().parents[2]
 ROLE_ORDER = ("supervisor", "manager", "leadership", "system")
 MAX_QUESTION_CHARS = 500
 
-# Mirrors genai/client.py::credential_present(). Duplicated rather than imported for the
+# Mirrors genai/intents.py. Only the KEYS and the short user-facing LABELS live here --
+# the instructions, the model guidance and the deterministic plan for each intent stay in
+# genai/, which serve/ cannot import (the import wall). Same precedent as API_KEY_ENV
+# above; `tests/test_triage_api.py` asserts these keys equal set(genai.intents.INTENTS),
+# so a new intent added on one side fails a test rather than silently 422-ing.
+INTENT_LABELS = {
+    "ask": "Ask",
+    "incident": "Investigate this incident",
+    "handover": "Generate shift handover",
+    "shift_intel": "Generate shift intelligence",
+    "whatif": "Run a what-if",
+}
+INTENT_KEYS = frozenset(INTENT_LABELS)
+INTENT_PATTERN = "^(ask|incident|handover|shift_intel|whatif)$"
+
+# The phase trail the UI renders. Mirrors genai/tools.py::PHASE_ORDER, for the same
+# import-wall reason. The first entry is written by THIS module before the worker exists.
+PHASE_ORDER = (
+    "Starting investigation",
+    "Checking production state",
+    "Reading station performance",
+    "Examining risk signals",
+    "Tracing affected units",
+    "Running simulation",
+    "Costing the options",
+    "Composing the finding",
+    "Verifying every number",
+)
+
+HEARTBEAT_VERSION = 2
+
+# Mirrors genai/config.py's credential names. Duplicated rather than imported for the
 # same import-wall reason admin.py duplicates model_registry's SQL -- keep the two in
-# sync; a change to one without the other is a bug.
-API_KEY_ENV = "XAI_API_KEY"
+# sync; a change to one without the other is a bug. `tests/test_triage_api.py` reads
+# these symbolically and asserts they equal genai's, so drift is a test failure.
+#
+# The canonical name is provider-neutral: a provider is a base_url plus a model id, and
+# swapping between OpenAI-compatible endpoints should not require a code change. The
+# legacy names are read as a fallback so an existing deployment keeps working.
+API_KEY_ENV = "PULSETWIN_GENAI_API_KEY"
+LEGACY_KEY_ENVS = ("GROQ_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY")
+KEY_ENVS = (API_KEY_ENV, *LEGACY_KEY_ENVS)
 
 
 def _jobs_dir() -> Path:
@@ -45,7 +83,7 @@ def _jobs_dir() -> Path:
 
 
 def _credential_present() -> bool:
-    return bool(os.environ.get(API_KEY_ENV, "").strip())
+    return any(os.environ.get(name, "").strip() for name in KEY_ENVS)
 
 
 def _cap_role(requested: str | None, caller: str) -> str:
@@ -72,7 +110,16 @@ def _loads(value: Any) -> Any:
 
 class TriageRequest(BaseModel):
     plant_id: str = "plant_a"
-    question: str = Field(min_length=4, max_length=MAX_QUESTION_CHARS)
+    # Optional now: a named action (handover, shift intelligence) carries its task in
+    # genai/intents.py and needs no operator prose. Only `ask` requires a question, and
+    # that is enforced in the handler where a useful message can be returned.
+    question: str | None = Field(default=None, max_length=MAX_QUESTION_CHARS)
+    intent: str = Field(default="ask", pattern=INTENT_PATTERN)
+    thread_id: str | None = None
+    # ALWAYS structured, never parsed out of the question text. CLAUDE.md §1 bans station
+    # literals, and regexing "S17" out of prose is how a copilot simulates the wrong
+    # station with complete confidence.
+    station_id: int | None = None
     acting_role: str | None = None
     mode: str = Field(default="auto", pattern="^(auto|agent|deterministic)$")
 
@@ -84,8 +131,21 @@ def availability() -> dict[str, Any]:
     Reports credential PRESENCE only -- never the value, a prefix, or its length.
     """
     if _credential_present():
-        return {"enabled": True, "reason": "ok", "mode": "agent"}
-    return {"enabled": True, "reason": "no_provider_credential", "mode": "deterministic"}
+        return {"enabled": True, "reason": "ok", "mode": "agent",
+                "intents": INTENT_LABELS, "phase_order": list(PHASE_ORDER)}
+    return {"enabled": True, "reason": "no_provider_credential",
+            "mode": "deterministic",
+            "intents": INTENT_LABELS, "phase_order": list(PHASE_ORDER)}
+
+
+def _thread_title(question: str) -> str:
+    """A short, stable name for a conversation, taken from its first turn.
+
+    Derived from the operator's own words, never model-written: a title the model chose
+    would be one more unverified string on screen, and it would change between reloads.
+    """
+    text = " ".join(question.split())
+    return text[:72] + ("..." if len(text) > 72 else "")
 
 
 @router.post("/api/triage/runs")
@@ -94,8 +154,19 @@ def start_run(req: TriageRequest, request: Request,
     config_path = ROOT / "configs" / f"{req.plant_id}.yaml"
     if not config_path.exists():
         raise HTTPException(404, f"unknown plant '{req.plant_id}'")
-    if any(ord(c) < 32 for c in req.question):
+
+    question = (req.question or "").strip()
+    if req.intent == "ask":
+        if len(question) < 4:
+            raise HTTPException(422, "question is required for intent 'ask'")
+    elif not question:
+        # A named action still needs a `question` on the row: it is what the thread
+        # renders as the operator's turn, immediately, before the worker has started.
+        question = INTENT_LABELS[req.intent]
+    if any(ord(c) < 32 for c in question):
         raise HTTPException(422, "question must contain no control characters")
+    if req.intent == "whatif" and req.station_id is None:
+        raise HTTPException(422, "station_id is required for intent 'whatif'")
 
     acting = _cap_role(req.acting_role, role)
     mode = req.mode
@@ -107,13 +178,54 @@ def start_run(req: TriageRequest, request: Request,
     run_id = secrets.token_hex(8)
     ops = request.app.state.ops
 
+    # ---- resolve the thread and allocate this turn's index
+    thread_id = req.thread_id
+    turn_index = 0
+    if thread_id:
+        thread = db.query_one(
+            ops, "SELECT * FROM triage_threads WHERE thread_id = ?", (thread_id,))
+        if thread is None:
+            raise HTTPException(404, f"unknown thread '{thread_id}'")
+        # A thread is plant-scoped because the values it carries forward are plant facts.
+        # Letting a turn switch plants would carry plant_a's throughput into a plant_b
+        # answer as a verifier exemption.
+        if thread["plant_id"] != req.plant_id:
+            raise HTTPException(
+                409, f"thread '{thread_id}' belongs to plant '{thread['plant_id']}'")
+        busy = db.query_one(
+            ops,
+            "SELECT run_id FROM triage_runs WHERE thread_id = ? "
+            "AND status IN ('queued','running') LIMIT 1",
+            (thread_id,),
+        )
+        if busy:
+            # Per-turn spawn means two concurrent turns would interleave heartbeats in
+            # one file and race for the same turn index. One turn at a time per thread.
+            raise HTTPException(
+                409, f"thread '{thread_id}' already has run '{busy['run_id']}' in flight")
+        row = db.query_one(
+            ops, "SELECT MAX(turn_index) AS n FROM triage_runs WHERE thread_id = ?",
+            (thread_id,))
+        turn_index = int((row or {}).get("n") or 0) + 1
+    else:
+        thread_id = secrets.token_hex(8)
+        db.execute(
+            ops,
+            """INSERT INTO triage_threads
+               (thread_id, plant_id, title, opened_by, turn_count)
+               VALUES (?, ?, ?, ?, 0)""",
+            (thread_id, req.plant_id, _thread_title(question), role),
+        )
+
     # Insert BEFORE spawning so a run is never invisible, even if the worker dies.
     db.execute(
         ops,
         """INSERT INTO triage_runs
-           (run_id, plant_id, question, requested_by, acting_role, mode, status)
-           VALUES (?, ?, ?, ?, ?, ?, 'queued')""",
-        (run_id, req.plant_id, req.question, role, acting, mode),
+           (run_id, plant_id, question, requested_by, acting_role, mode, status,
+            thread_id, turn_index, intent, station_id)
+           VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)""",
+        (run_id, req.plant_id, question, role, acting, mode,
+         thread_id, turn_index, req.intent, req.station_id),
     )
 
     port = request.url.port or 7860
@@ -127,6 +239,24 @@ def start_run(req: TriageRequest, request: Request,
     # row staying `queued` forever, with nothing to read.
     jobs = _jobs_dir()
     jobs.mkdir(parents=True, exist_ok=True)
+
+    # Write the FIRST heartbeat before spawning anything.
+    #
+    # The longest single wait in a run is the interpreter starting, importing the
+    # provider SDK, and making the first model round trip -- all of it BEFORE the worker
+    # can write its own first heartbeat. Without this the panel shows a bare spinner for
+    # one to three seconds at the exact moment a demo audience is deciding whether the
+    # thing works. Six lines buy a truthful label in about 200ms.
+    try:
+        (jobs / f"{run_id}.json").write_text(json.dumps({
+            "v": HEARTBEAT_VERSION, "run_id": run_id, "thread_id": thread_id,
+            "turn_index": turn_index, "status": "queued", "mode": mode,
+            "intent": req.intent, "phase": PHASE_ORDER[0], "phase_index": 0,
+            "iteration": 0, "elapsed_s": 0.0, "tools": [], "done": False,
+        }), encoding="utf-8")
+    except OSError:
+        pass  # a heartbeat failure must never stop a run from starting
+
     log_path = jobs / f"{run_id}.log"
     try:
         log = open(log_path, "w", encoding="utf-8")  # noqa: SIM115 - owned by the child
@@ -135,9 +265,12 @@ def start_run(req: TriageRequest, request: Request,
 
     subprocess.Popen(
         [sys.executable, "-m", "genai.triage",
-         "--plant", req.plant_id, "--question", req.question,
+         "--plant", req.plant_id, "--question", question,
          "--run-id", run_id, "--api-base", api_base,
-         "--role", acting, "--requested-by", role, "--mode", mode],
+         "--role", acting, "--requested-by", role, "--mode", mode,
+         "--intent", req.intent,
+         "--thread-id", thread_id, "--turn-index", str(turn_index)]
+        + (["--station-id", str(req.station_id)] if req.station_id is not None else []),
         cwd=str(ROOT),
         env={**os.environ, "OMP_NUM_THREADS": "1", "PYTHONPATH": str(ROOT)},
         stdout=log or subprocess.DEVNULL,
@@ -145,8 +278,10 @@ def start_run(req: TriageRequest, request: Request,
     )
 
     log_action(request, ops, role, "triage_run_started", "triage", run_id,
-               {"plant_id": req.plant_id, "acting_role": acting, "mode": mode})
-    return {"run_id": run_id, "status": "queued", "mode": mode, "acting_role": acting}
+               {"plant_id": req.plant_id, "acting_role": acting, "mode": mode,
+                "intent": req.intent, "thread_id": thread_id, "turn_index": turn_index})
+    return {"run_id": run_id, "status": "queued", "mode": mode, "acting_role": acting,
+            "thread_id": thread_id, "turn_index": turn_index, "intent": req.intent}
 
 
 @router.get("/api/triage/runs")
@@ -156,7 +291,8 @@ def list_runs(request: Request, plant_id: str = "plant_a", limit: int = 10,
     rows = db.query_all(
         request.app.state.ops,
         """SELECT run_id, created_at, plant_id, question, status, mode, acting_role,
-                  claims_total, claims_verified, tool_calls, latency_s, cost_usd
+                  claims_total, claims_verified, tool_calls, latency_s, cost_usd,
+                  thread_id, turn_index, intent, capability_profile
            FROM triage_runs WHERE plant_id = ?
            ORDER BY created_at DESC LIMIT ?""",
         (plant_id, limit),
@@ -196,11 +332,106 @@ def get_run(run_id: str, request: Request, include_evidence: bool = False,
     ]
 
     # While the worker is still going the DB row has no ledger yet -- merge the
-    # heartbeat so the panel shows tool calls filling in rather than 30s of spinner.
-    if row.get("status") in ("queued", "running") and not calls:
-        try:
-            hb = json.loads((_jobs_dir() / f"{run_id}.json").read_text(encoding="utf-8"))
-            out["tool_ledger"] = hb.get("tools", [])
-        except (OSError, ValueError):
-            pass
+    # heartbeat so the panel shows the phase trail and tool calls filling in rather than
+    # 30s of spinner.
+    #
+    # `progress` is merged whenever the run is still in flight, but the TOOL LEDGER only
+    # when the database has none: once the worker has persisted its calls, the DB is
+    # authoritative and re-reading the file would make the trail flicker backwards at the
+    # handover. A flicker at exactly that moment looks like a bug on a projector.
+    if row.get("status") in ("queued", "running"):
+        hb = _read_heartbeat(run_id)
+        if hb:
+            out["progress"] = {
+                "phase": hb.get("phase"),
+                "phase_index": hb.get("phase_index"),
+                "iteration": hb.get("iteration"),
+                "max_iterations": hb.get("max_iterations"),
+                "elapsed_s": hb.get("elapsed_s"),
+            }
+            if not calls:
+                out["tool_ledger"] = hb.get("tools", [])
+    out["phase_order"] = list(PHASE_ORDER)
     return out
+
+
+def _read_heartbeat(run_id: str) -> dict[str, Any] | None:
+    """The live progress file, or None.
+
+    A document whose version this build does not recognise is DROPPED rather than
+    partially read: a v1 file left in the jobs directory by a previous session has no
+    `phase`, and rendering it would show an empty trail on a run that is working fine.
+    """
+    try:
+        hb = json.loads((_jobs_dir() / f"{run_id}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(hb, dict) or hb.get("v") != HEARTBEAT_VERSION:
+        return None
+    return hb
+
+
+# ----------------------------------------------------------------------------- threads
+
+
+@router.get("/api/triage/threads")
+def list_threads(request: Request, plant_id: str = "plant_a", limit: int = 20,
+                 role: str = Depends(require_role("manager"))) -> dict[str, Any]:
+    limit = max(1, min(int(limit), 50))
+    rows = db.query_all(
+        request.app.state.ops,
+        """SELECT thread_id, created_at, plant_id, title, opened_by, turn_count,
+                  last_run_at
+             FROM triage_threads WHERE plant_id = ?
+            ORDER BY COALESCE(last_run_at, created_at) DESC LIMIT ?""",
+        (plant_id, limit),
+    )
+    return {"threads": rows, "count": len(rows)}
+
+
+@router.get("/api/triage/threads/{thread_id}")
+def get_thread(thread_id: str, request: Request,
+               role: str = Depends(require_role("manager"))) -> dict[str, Any]:
+    """A conversation: the thread row plus every turn, oldest first.
+
+    Turn rows carry the served finding and the verdict but NOT `finding_raw` -- the same
+    rule get_run enforces. A redacted claim that reaches a screen has not been redacted,
+    and a thread view is still a screen.
+    """
+    ops = request.app.state.ops
+    thread = db.query_one(
+        ops, "SELECT * FROM triage_threads WHERE thread_id = ?", (thread_id,))
+    if thread is None:
+        raise HTTPException(404, f"unknown thread '{thread_id}'")
+
+    rows = db.query_all(
+        ops,
+        """SELECT run_id, created_at, turn_index, intent, station_id, question, status,
+                  mode, acting_role, claims_total, claims_verified, tool_calls,
+                  latency_s, cost_usd, cost_source, capability_profile, error,
+                  finding, verification
+             FROM triage_runs WHERE thread_id = ? ORDER BY turn_index""",
+        (thread_id,),
+    )
+    turns = []
+    for r in rows:
+        turn = dict(r)
+        turn["finding"] = _loads(r.get("finding"))
+        turn["verification"] = _loads(r.get("verification"))
+        turns.append(turn)
+
+    return {"thread": dict(thread), "turns": turns, "count": len(turns),
+            "phase_order": list(PHASE_ORDER)}
+
+
+@router.get("/api/triage/intents")
+def list_intents(role: str = Depends(require_role("manager"))) -> dict[str, Any]:
+    """The named actions the copilot offers, so the UI does not hardcode them."""
+    return {
+        "intents": [
+            {"key": k, "label": v,
+             "requires_station": k == "whatif",
+             "requires_question": k == "ask"}
+            for k, v in INTENT_LABELS.items()
+        ]
+    }

@@ -10,6 +10,7 @@ import {
   AnimatedNumber, AppShell, Badge, ChartFrame, ChartTooltip, DataTable, Fact, Kpi, Panel,
   SegmentedControl, SkeletonChart, SkeletonStats, SkeletonTable, type Column,
 } from "@/components/ui";
+import CopilotDock from "@/components/copilot/CopilotDock";
 
 type Scenario = "pessimistic" | "base" | "optimistic";
 
@@ -427,6 +428,7 @@ export default function LeadershipPage() {
           </>
         )}
       </div>
+      <CopilotDock plant={plant} />
     </AppShell>
   );
 }
