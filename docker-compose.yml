@@ -9,9 +9,12 @@ services:
     environment:
       # Feedback is deliberately NOT written into the committed artifact database
       # (ADR-011): that DB is opened read-only so an accidental write raises loudly.
-      PULSETWIN_FEEDBACK_DB: /tmp/pulsetwin_feedback.db
+      PULSETWIN_FEEDBACK_DB: /data/pulsetwin_feedback.db
+      PULSETWIN_OPS_DB: /data/pulsetwin_ops.db
+    volumes:
+      - demo_state:/data
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:7860/api/health')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:7860/api/ready')\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -26,3 +29,6 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+volumes:
+  demo_state:

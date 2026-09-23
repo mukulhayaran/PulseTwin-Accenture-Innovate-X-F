@@ -1,13 +1,9 @@
 # PulseTwin — Alert escalation policy
 #
 # Documents the escalation state machine that serve/routers/alerts_mgmt.py implements.
-# serve/ does NOT parse this file at runtime (yaml is outside the import wall, CLAUDE.md
-# SS2) -- the thresholds below are hardcoded as constants in that router, and this file is
-# the reviewable, editable source an ops team would actually change. Keeping the numbers
-# in both places in sync is covered by tests/test_configs.py -- which reads THIS file and
-# compares it to the router's constants. It previously named a test in test_auth.py that
-# did not exist, and no test read this file at all: an ops team editing it would have
-# believed they had changed the system's behaviour when nothing had changed.
+# serve/ reads the small containment_actions scalar block with a dependency-free parser;
+# PyYAML remains outside the API import wall. These values are therefore the executable
+# source of truth, not documentation that must be manually mirrored in Python.
 #
 # Operator privacy (CLAUDE.md SS3): every notification target below is a ROLE or a shift,
 # never a named individual. No roster of real people is stored anywhere in this repo.
@@ -36,6 +32,11 @@ escalation:
     # level 2 -- waiting 5 minutes on a possible multi-unit lot issue is the wrong default.
     at_risk_threshold: 3
     skip_to_level: 2
+
+  # Human action recommendations for related units, loaded at API startup.
+  containment_actions:
+    hold_risk: 0.50
+    inspect_risk: 0.25
 
 triage:
   # The autonomous triage rules GET /api/alerts/triage implements. Same arrangement as

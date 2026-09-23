@@ -7,10 +7,12 @@ import {
 import {
   Bottleneck, Metrics, StationCfg,
   getBottleneck, getHealth, getMetrics, getRole, getStationStats, getStations, getWhatIf,
-  getWhatIfStations, setRole,
+  getWhatIfStations,
 } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { axisProps, gridProps, theme } from "@/lib/theme";
+import { usePersonaAccess } from "@/lib/usePersonaAccess";
+import AccessRestricted from "@/components/shared/AccessRestricted";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import { useAuditToast } from "@/components/shared/AuditToast";
 import {
@@ -39,9 +41,11 @@ export default function ManagerPage() {
   const [retryNonce, setRetryNonce] = useState(0);
   const { show, ToastElement } = useAuditToast();
 
-  // Identifies this view to the backend RBAC (serve/middleware/auth.py) instead of
-  // relying on lib/api.ts's global "leadership" default.
-  useEffect(() => { setRole("manager"); }, []);
+  // Gates entry on whatever role /login left in place, THEN locks this page to its own
+  // fixed persona once granted -- see lib/usePersonaAccess.ts. Identifies this view to
+  // the backend RBAC (serve/middleware/auth.py) instead of relying on lib/api.ts's
+  // global "leadership" default.
+  const access = usePersonaAccess("manager");
 
   // Connectivity poll -- independent of the plant-scoped data fetches below, so a
   // dropped connection is visible (OfflineBanner) even between plant switches.
@@ -58,6 +62,10 @@ export default function ManagerPage() {
   }, [retryNonce]);
 
   useEffect(() => {
+    // Access not yet resolved, or this role was refused entry -- these all 403 at
+    // "supervisor" and below (require_role("manager")), and an uncaught rejection from
+    // any of them is an unhandled-promise crash in dev, not just a wasted call.
+    if (access !== true) return;
     getStations(plant).then((r) => setStations(r.stations));
     getStationStats(plant).then(setStats);
     getBottleneck(plant).then(setBn).catch(() => setBn(null));
@@ -67,7 +75,7 @@ export default function ManagerPage() {
       setWfStations(s);
       setWfStation(s[0]?.station_id ?? null);
     });
-  }, [plant]);
+  }, [plant, access]);
 
   async function fetchHistory(p: string) {
     const { apiBase } = await import("@/lib/api");
@@ -78,14 +86,15 @@ export default function ManagerPage() {
 
   // Debounced: sliders fire on every drag, and each call is a grid interpolation.
   useEffect(() => {
-    if (wfStation === null) return;
+    if (wfStation === null || access !== true) return;
     const t = setTimeout(async () => {
       setWfBusy(true);
       try { setWf(await getWhatIf(plant, wfStation, buffer, cycle)); show("Action logged"); }
+      catch { /* refused (role) or transient -- the panel just keeps its last value */ }
       finally { setWfBusy(false); }
     }, 220);
     return () => clearTimeout(t);
-  }, [plant, wfStation, buffer, cycle]);
+  }, [plant, wfStation, buffer, cycle, access]);
 
   const nameOf = useMemo(() => {
     const m = new Map(stations.map((s) => [s.station_id, s]));
@@ -157,6 +166,9 @@ export default function ManagerPage() {
     },
     { key: "lost", header: "Lost UPH", align: "right", cell: (s) => <Num>{s.lost_uph.toFixed(1)}</Num> },
   ];
+
+  if (access === null) return null;
+  if (access === false) return <AccessRestricted minRole="manager" />;
 
   return (
     <AppShell
@@ -262,9 +274,9 @@ export default function ManagerPage() {
             )}
           </Panel>
 
-          {/* ------------------------------------------ root cause pareto */}
+          {/* ------------------------------------------ risk-driver pareto */}
           <Panel
-            title="Root cause Pareto"
+            title="Risk driver Pareto"
             note="Permutation importance on the held-out test split — measured, not assumed."
           >
             {pareto.length === 0 ? (
@@ -293,7 +305,15 @@ export default function ManagerPage() {
                       />
                     }
                   />
-                  <Bar dataKey="delta" fill={theme.info} radius={[0, 3, 3, 0]} isAnimationActive={false} />
+                  <Bar dataKey="delta" radius={[0, 3, 3, 0]} isAnimationActive={false} minPointSize={2}>
+                    {pareto.map((_, i) => (
+                      // Sequential intensity by rank, one hue -- this is a ranked
+                      // magnitude list, not categorical series, so a flat fill was
+                      // throwing away the "most important driver" story the order
+                      // already tells. Darkest/most saturated at the top.
+                      <Cell key={i} fillOpacity={1 - i * (0.55 / Math.max(1, pareto.length - 1))} fill={theme.info} />
+                    ))}
+                  </Bar>
                 </ComposedChart>
               </ChartFrame>
             )}

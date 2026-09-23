@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from genai import client as provider
-from genai import config, intents, loop as L, offline_triage, prompts, store, tools as T
+from genai import config, intents, loop as L, offline_triage, orchestrator as O
+from genai import prompts, store, tools as T
 from genai import verifier as V
 from genai.api_client import PulseTwinAPI
 from genai.finding import ParseError, parse_finding
@@ -51,9 +52,12 @@ _HEARTBEAT_KEYS = frozenset({
     "phase", "phase_index", "iteration", "max_iterations", "elapsed_s",
     "tools", "done", "claims_verified", "claims_total", "reject_reason",
     "tool_calls", "capability_profile", "error",
+    # ADR-045: which specialist is currently active, and the roster snapshot. Structured
+    # fields only, same as everything else in this allowlist -- never model prose.
+    "agent", "agent_label", "agents",
 })
 
-_TOOL_KEYS = frozenset({"call_id", "tool_name", "phase", "status", "duration_ms"})
+_TOOL_KEYS = frozenset({"call_id", "tool_name", "phase", "agent", "status", "duration_ms"})
 
 
 def _heartbeat(run_id: str, payload: dict[str, Any]) -> None:
@@ -84,6 +88,7 @@ def _tool_row(record: Any, status: str = "ok") -> dict[str, Any]:
         "call_id": getattr(record, "call_id", ""),
         "tool_name": getattr(record, "name", ""),
         "phase": getattr(record, "phase", "") or "",
+        "agent": getattr(record, "agent", "") or "",
         "status": status,
         "duration_ms": getattr(record, "duration_ms", None),
     }
@@ -155,6 +160,13 @@ def run(
     beat(phase=T.PHASE_START, phase_index=T.phase_index(T.PHASE_START),
          iteration=0, elapsed_s=0.0, tools=[])
 
+    # ADR-045: `incident` runs Coordinator -> Specialists -> Synthesizer instead of one
+    # broad loop, unless the kill switch is set. Every other intent is unaffected -- this
+    # is the only new branch condition in this function.
+    orchestrate = (
+        use_agent and intent == intents.INCIDENT and config.ORCHESTRATION_ENABLED
+    )
+
     raw_finding = None
     if use_agent:
         def on_progress(event: Any) -> None:
@@ -167,15 +179,39 @@ def run(
                  iteration=event.iteration, elapsed_s=time.monotonic() - started,
                  tools=rows)
 
-        result = L.run_loop(
-            provider.build_client(), api, registry,
-            plant_id=plant_id, question=task, acting_role=acting_role,
-            thread_context=prompts.render_thread_context(context.turns),
-            intent_guidance=intents.guidance(intent),
-            classify_error=provider.classify_error,
-            retry_after=provider.retry_after_s,
-            on_progress=on_progress,
-        )
+        def on_agent_progress(aevent: Any) -> None:
+            rows = [_tool_row(r) for r in aevent.records]
+            if (aevent.event and aevent.event.kind == "tool_started"
+                    and aevent.event.pending_tool):
+                rows.append({"call_id": "", "tool_name": aevent.event.pending_tool,
+                             "phase": aevent.event.phase, "agent": aevent.agent,
+                             "status": "running", "duration_ms": None})
+            phase = aevent.event.phase if aevent.event else T.PHASE_START
+            iteration = aevent.event.iteration if aevent.event else 0
+            beat(phase=phase, phase_index=T.phase_index(phase), iteration=iteration,
+                 elapsed_s=time.monotonic() - started, tools=rows,
+                 agent=aevent.agent, agent_label=aevent.agent_label,
+                 agents=aevent.agents)
+
+        if orchestrate:
+            result = O.run_orchestrated_incident(
+                provider.build_client(), api, registry,
+                plant_id=plant_id, question=task, acting_role=acting_role,
+                thread_context=prompts.render_thread_context(context.turns),
+                classify_error=provider.classify_error,
+                retry_after=provider.retry_after_s,
+                on_progress=on_agent_progress,
+            )
+        else:
+            result = L.run_loop(
+                provider.build_client(), api, registry,
+                plant_id=plant_id, question=task, acting_role=acting_role,
+                thread_context=prompts.render_thread_context(context.turns),
+                intent_guidance=intents.guidance(intent),
+                classify_error=provider.classify_error,
+                retry_after=provider.retry_after_s,
+                on_progress=on_progress,
+            )
         if result.status == "finished":
             try:
                 raw_finding = parse_finding(result.content, question=question)
@@ -226,6 +262,8 @@ def _persist(con, run_id, result, ver, served, raw_finding, started, *,
     store.record_carried_values(con, run_id, sorted(carried or ()))
     if getattr(result, "capability_profile", ""):
         store.record_capability_profile(con, run_id, result.capability_profile)
+    if getattr(result, "agents_used", None):
+        store.record_agents_used(con, run_id, result.agents_used)
     store.finish_run(
         con, run_id,
         status=ver.status if result.status in ("finished",) else "failed",

@@ -54,6 +54,18 @@ services:
       postgres:
         condition: service_healthy
 
+  load-data:
+    build:
+      context: .
+      dockerfile: offline/Dockerfile.loader
+    environment:
+      DATABASE_URL: postgresql://pulsetwin:pulsetwin_dev@postgres:5432/pulsetwin
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   backend:
     build:
       context: .
@@ -63,7 +75,8 @@ services:
       REDIS_URL: redis://redis:6379
       MQTT_BROKER: mqtt
       MQTT_PORT: "1883"
-      PULSETWIN_FEEDBACK_DB: /tmp/pulsetwin_feedback.db
+      FRONTEND_HEALTH_URL: http://frontend:3000
+      PULSETWIN_FEEDBACK_DB: /data/pulsetwin_feedback.db
     ports:
       - "7860:7860"
     depends_on:
@@ -75,8 +88,16 @@ services:
         condition: service_started
       migrate:
         condition: service_completed_successfully
+      load-data:
+        condition: service_completed_successfully
+    volumes:
+      - backend_state:/data
+      # Retraining reads synthetic source data and atomically writes a candidate model;
+      # triage reads the same committed artifact snapshot as the API.
+      - ./data:/app/data:ro
+      - ./artifacts:/app/artifacts
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:7860/api/health')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:7860/api/ready')\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -98,6 +119,36 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      load-data:
+        condition: service_completed_successfully
+
+  # Optional deterministic edge feed. It uses the exact MQTT path a future OPC-UA/MES
+  # gateway uses, while remaining honestly labelled as synthetic data in every payload.
+  publisher:
+    profiles: ["mqtt-demo"]
+    build:
+      context: .
+      dockerfile: ingestion/Dockerfile
+    command: ["python", "-m", "ingestion.mqtt_publisher", "--plant-id", "plant_a", "--speed", "10"]
+    environment:
+      MQTT_BROKER: mqtt
+      MQTT_PORT: "1883"
+    depends_on:
+      mqtt:
+        condition: service_started
+      ingestion:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
 
 volumes:
   pgdata:
+  backend_state:

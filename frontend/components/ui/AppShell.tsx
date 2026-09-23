@@ -17,12 +17,15 @@ import { TooltipProvider } from "./Tooltip";
 // close panels (CLAUDE.md §7) -- so `status` takes arbitrary controls rather than the
 // shell assuming one role model for everybody.
 
+// Copilot is deliberately NOT a nav tab: every persona page already mounts
+// CopilotDock (frontend/components/copilot/CopilotDock.tsx), and that dock's own "Open
+// full page" link is how /copilot gets reached. A nav tab would suggest it is a fifth
+// persona view rather than the assistant available on all four.
 const VIEWS = [
   { href: "/supervisor", label: "Supervisor" },
   { href: "/manager", label: "Manager" },
   { href: "/leadership", label: "Leadership" },
   { href: "/ops", label: "Operations" },
-  { href: "/copilot", label: "Copilot" },
 ] as const;
 
 const ROLE_TONE: Record<Role, string> = {

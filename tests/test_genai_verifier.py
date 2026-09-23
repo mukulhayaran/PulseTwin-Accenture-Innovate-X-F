@@ -15,7 +15,9 @@ import json
 import pytest
 
 from genai import verifier as V
-from genai.finding import Citation, Claim, Finding, ParseError, parse_finding
+from genai.finding import (
+    Citation, Claim, Finding, KnowledgeCitation, ParseError, parse_finding,
+)
 
 # A transcript shaped like the real thing: station_stats rows carry their own
 # `provenance` column, which is what makes the C4 cross-check possible.
@@ -39,6 +41,21 @@ TRANSCRIPT = {
         ],
         "net_value": 10270000.0,
     },
+    # search_engineering_knowledge's dispatched shape (ADR-046): {"ok": True, "data":
+    # {"results": [...]}}, matching T.dispatch()'s wrapping of every tool response.
+    "call_0004": {
+        "ok": True,
+        "data": {
+            "query": "torque drift",
+            "results": [
+                {"doc_id": "SOP-01", "section_id": "SOP-01-2",
+                 "heading": "Nominal range and drift",
+                 "text": "Nominal torque for a standard M8 body fastener is 80-92 Nm. "
+                         "A reading trending upward across consecutive cycles indicates "
+                         "tool wear or a calibration drift."},
+            ],
+        },
+    },
 }
 
 STATIONS = {12, 15, 19, 30}
@@ -54,9 +71,20 @@ def _claim(**kw) -> Claim:
     return Claim(**base)
 
 
-def _finding(claims, summary="The constraint moved.", reco="Add feed buffer.") -> Finding:
+def _kc(**kw) -> KnowledgeCitation:
+    base = dict(
+        id="k1", quoted_text="tool wear or a calibration drift",
+        doc_id="SOP-01", section="SOP-01-2",
+        citation=Citation(call_id="call_0004", pointer="/data/results/0/text"),
+    )
+    base.update(kw)
+    return KnowledgeCitation(**base)
+
+
+def _finding(claims, summary="The constraint moved.", reco="Add feed buffer.",
+            knowledge_citations=()) -> Finding:
     return Finding(question="q", summary=summary, claims=list(claims),
-                   recommendation=reco)
+                   recommendation=reco, knowledge_citations=list(knowledge_citations))
 
 
 def _verify(finding):
@@ -206,6 +234,81 @@ def test_operator_group_bucket_is_legal() -> None:
     f = _finding([_claim()], summary="Shared factor was operator_group_B.")
     ver, _ = _verify(f)
     assert ver.status == V.VERIFIED, ver.reject_reason
+
+
+# ------------------------------------------------------------- ADR-046: knowledge citations
+def test_a_real_quote_verifies() -> None:
+    f = _finding([_claim()], summary="Torque drift can indicate tool wear.",
+                 knowledge_citations=[_kc()])
+    ver, served = _verify(f)
+    assert ver.status == V.VERIFIED, (ver.reject_reason, ver.claim_verdicts)
+    assert ver.knowledge_citations_total == ver.knowledge_citations_verified == 1
+    assert served.knowledge_citations == [_kc()]
+
+
+def test_a_fabricated_quote_is_rejected() -> None:
+    """The model claims the chunk says something it does not -- the whole point of the
+    substring check, and the case that would matter most in a real incident."""
+    bad = _kc(quoted_text="replace the fastener immediately without further checks")
+    ver, served = _verify(_finding([_claim()], knowledge_citations=[bad]))
+    assert ver.status == V.REJECTED
+    assert ver.reject_reason.startswith(V.KNOWLEDGE_TEXT_MISMATCH)
+    assert served.claims == [] and served.knowledge_citations == []
+
+
+def test_an_empty_quote_is_rejected() -> None:
+    """`"" in anything` is True in Python -- a naive substring check would let an empty
+    quote pass trivially. Guarded explicitly rather than relying on that never happening."""
+    ver, _ = _verify(_finding([_claim()], knowledge_citations=[_kc(quoted_text="")]))
+    assert ver.status == V.REJECTED
+    assert ver.reject_reason.startswith(V.KNOWLEDGE_TEXT_MISMATCH)
+
+
+def test_an_unresolvable_knowledge_pointer_is_rejected() -> None:
+    bad = _kc(citation=Citation(call_id="call_0004", pointer="/data/results/0/nope"))
+    ver, _ = _verify(_finding([_claim()], knowledge_citations=[bad]))
+    assert ver.status == V.REJECTED
+    assert ver.reject_reason.startswith(V.UNRESOLVABLE_KNOWLEDGE_POINTER)
+
+
+def test_an_unknown_knowledge_call_id_is_rejected() -> None:
+    bad = _kc(citation=Citation(call_id="call_9999", pointer="/data/results/0/text"))
+    ver, _ = _verify(_finding([_claim()], knowledge_citations=[bad]))
+    assert ver.status == V.REJECTED
+    assert ver.reject_reason.startswith(V.UNKNOWN_KNOWLEDGE_CALL)
+
+
+def test_a_pointer_to_a_non_text_field_is_rejected() -> None:
+    """A model that cites the wrong pointer -- e.g. a numeric field -- inside an
+    otherwise-real search_engineering_knowledge result."""
+    bad = _kc(citation=Citation(call_id="call_0004", pointer="/ok"))  # a bool, not text
+    ver, _ = _verify(_finding([_claim()], knowledge_citations=[bad]))
+    assert ver.status == V.REJECTED
+    assert ver.reject_reason.startswith(V.NON_TEXT_KNOWLEDGE_TARGET)
+
+
+def test_a_rewrapped_quote_with_different_whitespace_still_verifies() -> None:
+    """A model may re-flow a quote across its own output without changing its meaning --
+    the check should not fail over that, only over an actually different sentence."""
+    kc = _kc(quoted_text="tool  wear\nor a calibration   drift")
+    ver, _ = _verify(_finding([_claim()], knowledge_citations=[kc]))
+    assert ver.status == V.VERIFIED, ver.reject_reason
+
+
+def test_a_knowledge_citation_never_inflates_claims_verified() -> None:
+    """The bug this design specifically avoids: a knowledge verdict must not be able to
+    push claims_verified past claims_total via a shared id/verdict pool."""
+    ver, _ = _verify(_finding([_claim()], knowledge_citations=[_kc()]))
+    assert ver.claims_total == ver.claims_verified == 1
+    assert ver.claims_verified <= ver.claims_total
+
+
+def test_absent_knowledge_citations_is_unaffected() -> None:
+    """Every Finding produced before ADR-046 has none -- must verify exactly as before."""
+    ver, served = _verify(_finding([_claim()]))
+    assert ver.status == V.VERIFIED
+    assert ver.knowledge_citations_total == 0
+    assert served.knowledge_citations == []
 
 
 # ---------------------------------------------------------------------- outcomes

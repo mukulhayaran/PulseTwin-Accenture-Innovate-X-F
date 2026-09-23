@@ -7,6 +7,7 @@ COPY ingestion/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ingestion/ ./ingestion/
+COPY feature_contract.py ./feature_contract.py
 COPY configs/ ./configs/
 COPY artifacts/ ./artifacts/
 

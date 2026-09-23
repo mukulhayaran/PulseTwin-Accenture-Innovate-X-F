@@ -28,6 +28,7 @@ class StationConfigResponse(BaseModel):
 class PredictRequest(BaseModel):
     plant_id: str = "plant_a"
     features: dict[str, float | None] = Field(default_factory=dict)
+    source: Literal["replay", "live_synthetic", "real", "manual"] = "manual"
 
 
 class Factor(BaseModel):
@@ -49,6 +50,14 @@ class PredictResponse(BaseModel):
     provenance: dict[str, list[str]]
     top_factors: list[Factor]
     recommended_action: str
+    model_id: str
+    model_version: int
+    feature_set_version: str
+    prediction_ts: str
+    features_available: int
+    features_missing: int
+    data_completeness_pct: float
+    source: Literal["replay", "live_synthetic", "real", "manual"]
 
 
 class AtRiskUnit(BaseModel):
@@ -56,7 +65,14 @@ class AtRiskUnit(BaseModel):
     current_station: int | None = None
     risk: float
     shared_factors: list[str]
+    explanation: str
     action: Literal["HOLD", "INSPECT", "MONITOR"]
+    manual_action: Literal["HOLD", "INSPECT", "MONITOR"] | None = None
+    decision_recorded_at: str | None = None
+    decision_status: str | None = None
+    actual_outcome: int | None = None
+    outcome_at: str | None = None
+    validation_result: str | None = None
 
 
 class ContainmentResponse(BaseModel):
@@ -66,6 +82,22 @@ class ContainmentResponse(BaseModel):
     at_risk_units: list[AtRiskUnit]
     containment_window_min: int
     total_at_risk: int
+
+
+class ContainmentDecisionRequest(BaseModel):
+    """A supervisor's decision, kept separate from the model recommendation."""
+
+    plant_id: str = "plant_a"
+    flagged_unit_id: str
+    target_unit_id: str
+    selected_action: Literal["HOLD", "INSPECT", "MONITOR"]
+    message: str = Field(min_length=4, max_length=500)
+    run_id: str | None = None
+    alert_id: str | None = None
+    owner: str | None = Field(default=None, max_length=100)
+    due_station: int | None = Field(default=None, ge=1)
+    due_at: str | None = None
+    at_ts: str | None = None
 
 
 class BottleneckResponse(BaseModel):

@@ -33,7 +33,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from genai import config
-from genai.finding import Claim, Finding
+from genai.finding import Claim, Finding, KnowledgeCitation
+from serve.privacy import contains_operator_identity
 
 # ----------------------------------------------------------------------- verdict codes
 OK = "ok"
@@ -47,10 +48,25 @@ PROVENANCE_MISMATCH = "provenance_mismatch"
 OPERATOR_IDENTITY = "operator_identity"
 UNCITED_NUMBER = "uncited_number"
 
+# ADR-046: the text-shaped counterpart to C1/C2, for search_engineering_knowledge
+# citations. Unlike numeric claims, these are not graded against
+# MAX_REDACTED_CLAIM_RATIO -- there is no partial credit for a fabricated procedure
+# quote, so every one of these codes is fatal (see FATAL_CODES below).
+UNKNOWN_KNOWLEDGE_CALL = "unknown_knowledge_call"
+UNRESOLVABLE_KNOWLEDGE_POINTER = "unresolvable_knowledge_pointer"
+NON_TEXT_KNOWLEDGE_TARGET = "non_text_knowledge_target"
+KNOWLEDGE_TEXT_MISMATCH = "knowledge_text_mismatch"
+
 # C4 failures are categorical: one is fatal regardless of how small a share of claims
-# it represents. C1/C2 failures are graded against MAX_REDACTED_CLAIM_RATIO.
-FATAL_CODES = frozenset({UNSOURCED_CURRENCY, MISSING_INTERVAL,
-                         PROVENANCE_MISMATCH, OPERATOR_IDENTITY})
+# it represents. C1/C2 failures are graded against MAX_REDACTED_CLAIM_RATIO. Every
+# knowledge-citation code is fatal for the same reason C4 is: inventing what a
+# maintenance procedure says is a comparable trust violation to inventing a dollar
+# figure, and there is no meaningful "70% of this quote was real" partial credit.
+FATAL_CODES = frozenset({
+    UNSOURCED_CURRENCY, MISSING_INTERVAL, PROVENANCE_MISMATCH, OPERATOR_IDENTITY,
+    UNKNOWN_KNOWLEDGE_CALL, UNRESOLVABLE_KNOWLEDGE_POINTER, NON_TEXT_KNOWLEDGE_TARGET,
+    KNOWLEDGE_TEXT_MISMATCH,
+})
 
 VERIFIED = "verified"
 VERIFIED_WITH_REDACTIONS = "verified_with_redactions"
@@ -58,16 +74,6 @@ REJECTED = "rejected"
 
 REDACTION_MARKER = "[claim removed: {reason}]"
 SENTENCE_MARKER = "[sentence removed: uncited figure]"
-
-# An operator id is never legal in output. The ONLY legal operator token is a group
-# bucket (CLAUDE.md §3). Matches `operator_id`, `operator 4471`, `OP-1183`, etc., while
-# deliberately NOT matching `operator_group_B`.
-_OPERATOR_PATTERNS = (
-    re.compile(r"operator[_\s-]*(?:id|#)?[_\s-]*\d+", re.I),
-    re.compile(r"\bop[-_]\d{2,}\b", re.I),
-    re.compile(r"operator[_\s-]*id", re.I),
-)
-_LEGAL_OPERATOR = re.compile(r"^operator_group_[A-Z0-9]+$")
 
 # Numbers in prose, including $1,234.56 / 12.5% / -3.2
 _NUMBER_RE = re.compile(r"-?\$?\d[\d,]*\.?\d*%?")
@@ -98,6 +104,11 @@ class Verification:
     # sweep (ADR-039). Surfaced rather than silent: a verdict that leaned on evidence
     # from outside this run should not look identical to one that did not.
     carried_values_used: int = 0
+    # ADR-046. Kept SEPARATE from claims_total/claims_verified rather than folded in --
+    # every knowledge-citation code is fatal, so a knowledge verdict must never be able to
+    # inflate `claims_verified` past `claims_total` and corrupt the C1/C2 redaction ratio.
+    knowledge_citations_total: int = 0
+    knowledge_citations_verified: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +119,8 @@ class Verification:
             "prose_issues": list(self.prose_issues),
             "reject_reason": self.reject_reason,
             "carried_values_used": self.carried_values_used,
+            "knowledge_citations_total": self.knowledge_citations_total,
+            "knowledge_citations_verified": self.knowledge_citations_verified,
         }
 
 
@@ -208,9 +221,16 @@ def _flatten_numbers(node: Any, acc: set[float]) -> None:
 
 
 def _contains_operator_identity(text: str) -> bool:
-    if _LEGAL_OPERATOR.match(text.strip()):
-        return False
-    return any(p.search(text) for p in _OPERATOR_PATTERNS)
+    # Kept as the verifier's public contract hook; the runtime uses the same predicate
+    # for human-entered notes so the two tiers cannot drift to different definitions.
+    return contains_operator_identity(text)
+
+
+def _normalize_text(text: str) -> str:
+    """Lowercase, whitespace-collapsed -- a model may re-wrap or re-space a quote without
+    changing its meaning, and this check should not fail over that. It should still fail
+    over a genuinely different sentence, which whitespace normalization cannot hide."""
+    return " ".join(text.lower().split())
 
 
 # ------------------------------------------------------------------------------ verify
@@ -256,6 +276,14 @@ def verify(
     for claim in finding.claims:
         verdicts.append(_verify_claim(claim, transcript))
 
+    # ADR-046. SEPARATE from `verdicts`: every one of these codes is fatal (see
+    # FATAL_CODES), so a knowledge verdict must never be counted into `ok_ids`/`verified`
+    # below -- that number is claims_total/claims_verified's contract with C1/C2's
+    # graded ratio, and a knowledge citation is not part of that population.
+    knowledge_verdicts: list[ClaimVerdict] = [
+        _verify_knowledge_citation(kc, transcript) for kc in finding.knowledge_citations
+    ]
+
     # ---- C4 on prose as well as claims: operator identity may not appear anywhere
     for label, text in (("summary", finding.summary),
                         ("recommendation", finding.recommendation)):
@@ -276,18 +304,25 @@ def verify(
     # ---- outcome
     total = len(finding.claims)
     verified = len(ok_ids)
-    fatal = [v for v in verdicts if v.code in FATAL_CODES]
+    kc_total = len(finding.knowledge_citations)
+    kc_verified = sum(1 for v in knowledge_verdicts if v.ok)
+    fatal = [v for v in verdicts if v.code in FATAL_CODES] + [
+        v for v in knowledge_verdicts if v.code in FATAL_CODES
+    ]
 
     if not finding.claims:
-        return _reject(verdicts, prose_issues, "no_claims", total, verified)
+        return _reject(verdicts, prose_issues, "no_claims", total, verified,
+                       kc_total, kc_verified)
     if fatal:
         return _reject(verdicts, prose_issues,
-                       f"{fatal[0].code}:{fatal[0].claim_id}", total, verified)
+                       f"{fatal[0].code}:{fatal[0].claim_id}", total, verified,
+                       kc_total, kc_verified)
 
     failed = total - verified
     if failed / total > config.MAX_REDACTED_CLAIM_RATIO:
         return _reject(verdicts, prose_issues,
-                       f"too_many_unverified:{failed}/{total}", total, verified)
+                       f"too_many_unverified:{failed}/{total}", total, verified,
+                       kc_total, kc_verified)
 
     status = VERIFIED if (failed == 0 and not prose_issues) else VERIFIED_WITH_REDACTIONS
 
@@ -318,11 +353,18 @@ def verify(
         alternatives_considered=finding.alternatives_considered,
         confidence=finding.confidence,
         unanswered=finding.unanswered,
+        # Reaching here means `fatal` was empty, and every knowledge-citation code is
+        # fatal -- so every citation in finding.knowledge_citations already verified OK.
+        # Nothing to redact, unlike claims: there is no "REDACTED knowledge citation"
+        # marker because a run with even one bad one never reaches this line.
+        knowledge_citations=finding.knowledge_citations,
     )
     return (
         Verification(status=status, claims_total=total, claims_verified=verified,
                      claim_verdicts=verdicts, prose_issues=prose_issues,
-                     carried_values_used=len(carried_used)),
+                     carried_values_used=len(carried_used),
+                     knowledge_citations_total=kc_total,
+                     knowledge_citations_verified=kc_verified),
         served,
     )
 
@@ -379,6 +421,38 @@ def _verify_claim(claim: Claim, transcript: dict[str, Any]) -> ClaimVerdict:
     return ClaimVerdict(claim.id, OK, resolved_value=float(target))
 
 
+def _verify_knowledge_citation(
+    kc: KnowledgeCitation, transcript: dict[str, Any]
+) -> ClaimVerdict:
+    """The text-shaped counterpart to `_verify_claim` (ADR-046): C1/C2 resolvability and
+    faithfulness, applied to a quoted excerpt instead of a number. Re-derives the ACTUAL
+    chunk text from the recorded transcript and checks `quoted_text` is really in it --
+    the model is never trusted to have recalled a procedure correctly on its own."""
+    if not kc.quoted_text.strip():
+        return ClaimVerdict(kc.id, KNOWLEDGE_TEXT_MISMATCH, "quoted_text is empty")
+
+    call_id = kc.citation.call_id
+    if call_id not in transcript:
+        return ClaimVerdict(kc.id, UNKNOWN_KNOWLEDGE_CALL, f"no such call_id: {call_id}")
+
+    doc = transcript[call_id]
+    try:
+        target = resolve_pointer(doc, kc.citation.pointer)
+    except KeyError as exc:
+        return ClaimVerdict(kc.id, UNRESOLVABLE_KNOWLEDGE_POINTER,
+                            f"{kc.citation.pointer}: {exc}")
+
+    if not isinstance(target, str):
+        return ClaimVerdict(kc.id, NON_TEXT_KNOWLEDGE_TARGET,
+                            f"{kc.citation.pointer} -> {type(target).__name__}")
+
+    if _normalize_text(kc.quoted_text) not in _normalize_text(target):
+        return ClaimVerdict(kc.id, KNOWLEDGE_TEXT_MISMATCH,
+                            "quoted_text is not a substring of the cited chunk")
+
+    return ClaimVerdict(kc.id, OK)
+
+
 def _sweep_prose(
     text: str,
     cited: set[float],
@@ -432,6 +506,8 @@ def _reject(
     reason: str,
     total: int,
     verified: int,
+    kc_total: int = 0,
+    kc_verified: int = 0,
 ) -> tuple[Verification, Finding]:
     """A rejected run serves NO finding -- only the evidence and the reason.
 
@@ -441,7 +517,8 @@ def _reject(
     return (
         Verification(status=REJECTED, claims_total=total, claims_verified=verified,
                      claim_verdicts=verdicts, prose_issues=prose_issues,
-                     reject_reason=reason),
+                     reject_reason=reason, knowledge_citations_total=kc_total,
+                     knowledge_citations_verified=kc_verified),
         Finding(question="", summary="", claims=[], recommendation=""),
     )
 

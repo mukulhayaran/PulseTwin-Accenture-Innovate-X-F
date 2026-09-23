@@ -74,6 +74,62 @@ CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log (timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log (action);
 CREATE INDEX IF NOT EXISTS idx_audit_role ON audit_log (user_role);
 
+CREATE TABLE IF NOT EXISTS containment_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    plant_id TEXT NOT NULL,
+    flagged_unit_id TEXT NOT NULL,
+    target_unit_id TEXT NOT NULL,
+    recommended_action TEXT NOT NULL CHECK (recommended_action IN ('HOLD','INSPECT','MONITOR')),
+    selected_action TEXT NOT NULL CHECK (selected_action IN ('HOLD','INSPECT','MONITOR')),
+    message TEXT NOT NULL CHECK (length(message) BETWEEN 4 AND 500),
+    decided_by_role TEXT NOT NULL,
+    decided_by_user TEXT,
+    risk_at_decision REAL NOT NULL CHECK (risk_at_decision BETWEEN 0 AND 1),
+    shared_factors TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_containment_decisions_lookup
+    ON containment_decisions (plant_id, flagged_unit_id, target_unit_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS simulation_runs (
+    run_id TEXT PRIMARY KEY, plant_id TEXT NOT NULL, seed INTEGER NOT NULL,
+    scenario TEXT NOT NULL, status TEXT NOT NULL, speed REAL NOT NULL,
+    severity REAL NOT NULL, affected_station INTEGER, affected_lot TEXT,
+    incident_start_s REAL NOT NULL DEFAULT 0,
+    simulation_time TEXT, event_count INTEGER NOT NULL DEFAULT 0,
+    alerts_count INTEGER NOT NULL DEFAULT 0, units_in_progress INTEGER NOT NULL DEFAULT 0,
+    max_events INTEGER NOT NULL DEFAULT 5000, source TEXT NOT NULL DEFAULT 'live_synthetic',
+    producer TEXT NOT NULL DEFAULT 'backend',
+    started_at TEXT NOT NULL, ended_at TEXT, error TEXT);
+CREATE INDEX IF NOT EXISTS idx_simulation_runs_plant
+    ON simulation_runs (plant_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS simulation_events (
+    run_id TEXT NOT NULL, seq INTEGER NOT NULL, ts TEXT NOT NULL,
+    event_type TEXT NOT NULL, unit_id TEXT, station_id INTEGER, payload TEXT NOT NULL,
+    PRIMARY KEY (run_id, seq));
+CREATE INDEX IF NOT EXISTS idx_simulation_events_time
+    ON simulation_events (run_id, ts, seq);
+
+CREATE TABLE IF NOT EXISTS unit_current_state (
+    run_id TEXT NOT NULL, plant_id TEXT NOT NULL, unit_id TEXT NOT NULL,
+    current_station INTEGER, status TEXT NOT NULL, risk REAL, variant TEXT, lot_id TEXT,
+    updated_at TEXT NOT NULL, inspected INTEGER NOT NULL DEFAULT 0, actual_defect INTEGER,
+    PRIMARY KEY (run_id, unit_id));
+
+CREATE TABLE IF NOT EXISTS station_current_state (
+    run_id TEXT NOT NULL, plant_id TEXT NOT NULL, station_id INTEGER NOT NULL,
+    state TEXT NOT NULL, unit_id TEXT, cycle_time_s REAL, risk REAL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, station_id));
+
+CREATE TABLE IF NOT EXISTS active_alerts (
+    alert_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, plant_id TEXT NOT NULL,
+    unit_id TEXT NOT NULL, station_id INTEGER, risk REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN', opened_at TEXT NOT NULL,
+    acknowledged_at TEXT, actioned_at TEXT, validated_at TEXT, closed_at TEXT,
+    outcome INTEGER, outcome_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_active_alerts_run
+    ON active_alerts (run_id, opened_at DESC);
+
 CREATE TABLE IF NOT EXISTS model_registry (
     model_id TEXT PRIMARY KEY, model_type TEXT NOT NULL, version INTEGER NOT NULL,
     status TEXT NOT NULL, plant_id TEXT NOT NULL, trained_at TEXT NOT NULL,
@@ -85,7 +141,9 @@ CREATE TABLE IF NOT EXISTS model_predictions_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     model_id TEXT, unit_id TEXT, prediction REAL, actual_outcome INTEGER,
-    lead_time_min REAL);
+    lead_time_min REAL, run_id TEXT, model_version INTEGER,
+    feature_set_version TEXT, prediction_ts TEXT, features_available INTEGER,
+    features_missing INTEGER, data_completeness_pct REAL, source TEXT);
 CREATE INDEX IF NOT EXISTS idx_pred_log_model ON model_predictions_log (model_id, timestamp DESC);
 
 CREATE TABLE IF NOT EXISTS drift_metrics (
@@ -118,7 +176,8 @@ CREATE TABLE IF NOT EXISTS triage_runs (
     prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0,
     cost_usd REAL, cost_source TEXT, latency_s REAL, error TEXT,
     thread_id TEXT, turn_index INTEGER DEFAULT 0, intent TEXT DEFAULT 'ask',
-    station_id INTEGER, carried_values TEXT, capability_profile TEXT);
+    station_id INTEGER, carried_values TEXT, capability_profile TEXT,
+    orchestrated INTEGER DEFAULT 0, agents_used TEXT);
 CREATE INDEX IF NOT EXISTS idx_triage_runs_plant
     ON triage_runs (plant_id, created_at DESC);
 
@@ -134,13 +193,41 @@ CREATE TABLE IF NOT EXISTS triage_tool_calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT, call_id TEXT NOT NULL, seq INTEGER NOT NULL,
     tool_name TEXT NOT NULL, arguments TEXT, result TEXT, duration_ms REAL,
-    phase TEXT);
+    phase TEXT, agent TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_triage_calls_run
     ON triage_tool_calls (run_id, call_id);
 """
 
 # Columns added to tables that already exist on disk. See _ensure_columns.
 _OPS_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "simulation_runs": {
+        "producer": "TEXT NOT NULL DEFAULT 'backend'",
+        "incident_start_s": "REAL NOT NULL DEFAULT 0",
+    },
+    "active_alerts": {
+        # Set once, the moment the first alert event for a unit triggers an unattended
+        # "incident" investigation (serve/live_simulation.py::_trigger_auto_investigation).
+        # NULL means either no auto-investigation ran yet, or PULSETWIN_JOBS_ENABLED=0.
+        "triage_run_id": "TEXT",
+        "actioned_at": "TEXT", "validated_at": "TEXT", "closed_at": "TEXT",
+    },
+    "model_predictions_log": {
+        "run_id": "TEXT", "model_version": "INTEGER", "feature_set_version": "TEXT",
+        "prediction_ts": "TEXT", "features_available": "INTEGER",
+        "features_missing": "INTEGER", "data_completeness_pct": "REAL", "source": "TEXT",
+    },
+    "containment_decisions": {
+        "run_id": "TEXT",
+        "alert_id": "TEXT",
+        "owner": "TEXT",
+        "decided_by_user": "TEXT",
+        "due_station": "INTEGER",
+        "status": "TEXT DEFAULT 'ACTIONED'",
+        "due_at": "TEXT",
+        "actual_outcome": "INTEGER",
+        "outcome_at": "TEXT",
+        "validation_result": "TEXT",
+    },
     "triage_runs": {
         "thread_id": "TEXT",
         "turn_index": "INTEGER DEFAULT 0",
@@ -148,8 +235,10 @@ _OPS_ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "station_id": "INTEGER",
         "carried_values": "TEXT",
         "capability_profile": "TEXT",
+        "orchestrated": "INTEGER DEFAULT 0",
+        "agents_used": "TEXT",
     },
-    "triage_tool_calls": {"phase": "TEXT"},
+    "triage_tool_calls": {"phase": "TEXT", "agent": "TEXT"},
 }
 
 # Indexes over columns that _ensure_columns may have just added. They CANNOT live in
@@ -159,6 +248,8 @@ _OPS_ADDED_COLUMNS: dict[str, dict[str, str]] = {
 _OPS_POST_MIGRATION_INDEXES = (
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_triage_runs_thread_turn"
     " ON triage_runs (thread_id, turn_index)",
+    "CREATE INDEX IF NOT EXISTS idx_containment_decisions_run"
+    " ON containment_decisions (run_id, target_unit_id, created_at DESC)",
 )
 
 

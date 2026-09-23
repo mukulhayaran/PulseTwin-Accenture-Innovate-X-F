@@ -257,3 +257,78 @@ def test_wallclock_cap_ends_the_run(registry, api) -> None:
     ticks = iter([0.0] + [config.RUN_WALLCLOCK_CAP_S + 1] * 50)
     out = _run(StubClient([_final("{}")]), api, registry, now=lambda: next(ticks))
     assert out.status == "failed" and out.error == "wallclock_cap"
+
+
+# ---------------------------------------------------------- orchestration seam (ADR-045)
+# genai/orchestrator.py runs several run_loop invocations against one shared transcript.
+# These four params are what make that safe: call_ids never collide, and each invocation
+# can be given a smaller budget than the single-agent path's module-wide constants.
+def test_initial_seq_offsets_call_ids_and_final_seq(registry, api) -> None:
+    client = StubClient([
+        _tool_turn(("get_bottleneck_current", {"plant_id": "plant_a"}),
+                   ("get_station_stats", {"plant_id": "plant_a"})),
+        _final("{}"),
+    ])
+    out = _run(client, api, registry, initial_seq=250)
+    assert [r.call_id for r in out.records] == ["call_0251", "call_0252"]
+    assert [r.seq for r in out.records] == [251, 252]
+    assert out.final_seq == 252
+
+
+def test_initial_seq_defaults_to_zero_and_matches_todays_behaviour(registry, api) -> None:
+    client = StubClient([
+        _tool_turn(("get_bottleneck_current", {"plant_id": "plant_a"})),
+        _final("{}"),
+    ])
+    out = _run(client, api, registry)
+    assert out.records[0].call_id == "call_0001"
+    assert out.final_seq == 1
+
+
+def test_max_tool_calls_override_is_independent_of_the_module_constant(registry, api) -> None:
+    """A specialist loop's own cap must not be silently coupled to config.MAX_TOOL_CALLS,
+    and must not be coupled to a nonzero initial_seq either -- calls_made and final_seq
+    are separate counters on purpose."""
+    script = [_tool_turn(("get_metrics", {"plant_id": "plant_a"}))] * 5 + [_final("{}")]
+    out = _run(StubClient(script), api, registry, initial_seq=20, max_tool_calls=2)
+    exhausted = [r for r in out.records
+                 if isinstance(r.result, dict)
+                 and r.result.get("error") == "tool_call_budget_exhausted"]
+    assert exhausted, "specialist-scoped budget cap never engaged"
+    # The third call (calls_made=3 > max_tool_calls=2) is the first to be exhausted,
+    # and it still gets a call_id continuing from initial_seq, not from 1.
+    assert exhausted[0].call_id == "call_0023"
+
+
+def test_max_iterations_override_is_independent_of_the_module_constant(registry, api) -> None:
+    script = [_tool_turn(("get_metrics", {"plant_id": "plant_a"}))] * 10
+    out = _run(StubClient(script), api, registry, max_iterations=3)
+    assert out.status == "iteration_cap"
+    assert out.iterations == 3
+    assert out.iterations < config.MAX_ITERATIONS
+
+
+def test_wallclock_cap_override_is_independent_of_the_module_constant(registry, api) -> None:
+    ticks = iter([0.0, 10.0, 20.0])
+    out = _run(StubClient([_final("{}")]), api, registry,
+              now=lambda: next(ticks), wallclock_cap_s=5.0)
+    assert out.status == "failed" and out.error == "wallclock_cap"
+
+
+def test_agents_used_is_empty_by_default(registry, api) -> None:
+    """Only genai/orchestrator.py populates this -- a single-agent LoopResult must never
+    carry it, so genai/triage.py::_persist() can tell the two apart with a plain
+    truthiness check."""
+    out = _run(StubClient([_final("{}")]), api, registry)
+    assert out.agents_used == []
+
+
+def test_a_records_agent_field_defaults_to_empty(registry, api) -> None:
+    """run_loop itself never stamps ToolRecord.agent -- only the orchestrator does, after
+    a specialist's run_loop call returns. This keeps loop.py fully agent-agnostic."""
+    client = StubClient([
+        _tool_turn(("get_bottleneck_current", {"plant_id": "plant_a"})),
+        _final("{}"),
+    ])
+    out = _run(client, api, registry)
+    assert out.records[0].agent == ""

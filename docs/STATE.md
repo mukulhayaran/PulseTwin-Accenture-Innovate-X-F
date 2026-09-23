@@ -276,6 +276,21 @@ That was the only end-to-end acceptance criterion in the finals brief that neede
 > — that the current answer does not survive. Fixing it is a design decision (should
 > `build_artifact` register?), not a bug fix, so it is reported rather than patched.
 
+**Resolved 2026-09-21 (production-readiness pass), and it was worse than the paragraph
+above states.** Tracing the seam end to end found that a *promoted* model didn't survive a
+restart either — `admin.py::_activate_scorer` correctly hot-swaps the live scorer AND
+writes a real registry row on promotion, but `serve/main.py::lifespan` never read the
+registry at startup, so a restart silently reverted to the committed artifact while
+`model_registry` kept reporting the promoted challenger as champion. Fixed: startup now
+asks `model_registry` for the current champion's `artifact_path` per plant and loads that,
+falling back to the committed file only if no champion row exists or it is missing; the
+committed artifact is also bootstrap-registered (real metrics, not placeholders) the first
+time a plant is served with no prior row. ADR-041; `tests/test_model_registry_runtime.py`
+(4 new tests, all against the real committed artifact, no mocks). **Named, not fixed:** a
+promotion's in-memory hot-swap still reaches only the one pod that received the API call —
+the documented 2-6 pod production topology needs either a post-promotion rolling restart
+or a live cross-pod reconciliation signal, neither built. See ADR-041 alternative 2.
+
 **Not verified this session:** `docker compose -f docker-compose.prod.yml up --build`
 end-to-end. The Docker CLI is present in this sandbox but has no daemon behind it (no
 `Docker Desktop.exe` process, no `com.docker.service`) — `docker compose up` fails
@@ -960,4 +975,89 @@ knowing whether we are ahead or behind.
                      NOT a defect: `:free` caps the account at 50 requests/day and one
                      run spends 7-12, so the last three intents could only be exercised
                      via the deterministic path once the quota went.
+2026-09-22  Live     Added an explicitly labelled Live Synthetic Simulation alongside
+                     recorded replay (ADR-042): server-owned run/clock, deterministic
+                     seed and eight scenarios, shared event/current-state/alert tables,
+                     start-pause-resume-stop APIs, SSE join by run ID, time-scoped unit
+                     and containment reads, durable acknowledgement/actions, synthetic
+                     inspection outcomes and validation metrics. Frontend API port is
+                     consistently 7860; Compose now persists local ops state and the
+                     Postgres stack loads artifacts before backend/ingestion and includes
+                     the frontend. TypeScript and Python compilation pass; direct SQLite
+                     runs produced 20/20 events with an injected alert and 200/200 events
+                     with six inspection outcomes. Docker verification was completed once
+                     the daemon became available; MQTT now writes the shared run store.
+2026-09-22  Finals   Added offline/live feature parity and prediction metadata;
+                     production-context containment explanations; the complete alert
+                     lifecycle; response, containment, validation, and sourced economics
+                     metrics; decision history; and Scenario Lab controls. The full
+                     Postgres/Redis/MQTT/API/frontend path passed its smoke check.
+2026-09-22  Closeout Completed the remaining live-demo seams: full-vector parity for both
+                     plants, time-scoped operator-group containment, config-loaded action
+                     thresholds, registered fallback scorer, user/owner/due assignment,
+                     refresh-safe alert status and UI close action, active/correctness
+                     metrics, and full-stack readiness. 551 backend tests passed with the
+                     two blocking TestClient SSE cases excluded; frontend production build
+                     and rebuilt Docker MQTT smoke passed. No in-app browser was connected,
+                     so browser interaction could not be re-run in this environment.
 ```
+2026-09-22  Orchestr Multi-agent orchestration for the `incident` intent (ADR-045),
+                     prompted by mentor feedback asking for genuine multi-agent
+                     orchestration rather than one broadly-scoped agent. `incident` now
+                     runs Coordinator (deterministic) -> three bounded specialist loops
+                     (reliability, production, risk), each `run_loop` against a disjoint
+                     tool subset with its own iteration/tool-call/wallclock cap -> one
+                     synthesis call (no tools) that reconciles their evidence into the
+                     existing Finding shape. genai/verifier.py needed ZERO changes --
+                     proven, not just asserted, by a test that runs the real verifier
+                     against a merged three-specialist transcript. The one new mechanism:
+                     run_loop takes initial_seq/max_iterations/max_tool_calls/
+                     wallclock_cap_s, all defaulting to today's constants, so the
+                     single-agent path and its whole test suite are byte-identical with no
+                     call-site edits (all 14 pre-existing loop tests pass unmodified).
+                     New: genai/orchestrator.py, migrations/014_genai_orchestration.sql +
+                     serve/db.py mirror (triage_tool_calls.agent, triage_runs.orchestrated/
+                     agents_used), frontend AgentTrail.tsx wired into CopilotThread.tsx.
+                     24 new tests across loop, orchestrator, and persistence
+                     layers, all passing; tsc clean. Kill switch
+                     (PULSETWIN_GENAI_DISABLE_ORCHESTRATION) and a specialist-count lever
+                     (PULSETWIN_GENAI_MAX_SPECIALISTS) guard the OpenRouter :free-tier
+                     50/day request budget (ADR-040) -- worst case 19 requests per
+                     orchestrated run, typical ~9. NOT YET DONE: a live-provider smoke run
+                     (budget-aware, manual, deferred to avoid burning the day's free-tier
+                     quota) and the docs/FINALS_DEMO_SCRIPT.md Act 2B addition.
+2026-09-22  Knowledge Added engineering-knowledge retrieval (ADR-046), the one genuine
+                     gap surfaced when comparing this build against a competing
+                     Qdrant/sentence-transformers RAG prompt for the same hackathon.
+                     Deterministic lexical TF-IDF over a 10-doc/26-chunk synthetic SOP
+                     and fault-code corpus, precomputed offline
+                     (offline/build_knowledge_index.py) into artifacts/knowledge_index.npz
+                     + knowledge_corpus.json, served by pure numpy/stdlib
+                     (serve/knowledge_index.py, GET /api/knowledge/search) -- no
+                     embedding model, no vector DB service, no new dependency, works with
+                     no LLM credential. A real precision bug was caught by hand-checking
+                     retrieval before writing tests: "weld current anomaly" first ranked
+                     the wrong document because the corpus wrote the signal as the single
+                     compound token weld_current_a while the query used separate English
+                     words; fixed by indexing both the compound identifier and its
+                     underscore-split parts, plus the doc title/section heading alongside
+                     each chunk's body. New tool search_engineering_knowledge joins the
+                     18-tool registry, available to the single-agent path and all three
+                     `incident` specialists; each specialist's max_tool_calls bumped by 1
+                     so the optional lookup never displaces domain evidence. New
+                     genai/verifier.py check: a KnowledgeCitation's quoted_text must be a
+                     real substring of the transcript's recorded chunk text, and every
+                     failure code is fatal (rejects the run), same posture as unsourced
+                     currency or operator identity -- tracked in a verdict pool kept
+                     strictly separate from numeric claims so it can never inflate
+                     claims_verified past claims_total. 28 new tests total: 9 in
+                     tests/test_genai_verifier.py (40 total in that file), 13 in
+                     tests/test_knowledge_index.py, 5 in tests/test_knowledge_api.py, 1 in
+                     tests/test_genai_orchestrator.py, all passing; full
+                     genai+triage+serve-imports+intelligence sweep (344 tests) green.
+                     Deterministic (no-LLM) incident path re-run end to end
+                     to confirm the schema addition doesn't affect offline parity.
+                     NOT YET DONE: a live-provider run exercising the model actually
+                     calling search_engineering_knowledge and citing a result (deferred,
+                     same budget-conscious reasoning as the ADR-045 entry above); the
+                     ACT 2B demo-script beat does not yet mention it.

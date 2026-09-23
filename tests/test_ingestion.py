@@ -17,6 +17,7 @@ from ingestion.unified_namespace import (  # noqa: E402
     control_dropout_topic,
     inspection_topic,
     parse_topic,
+    simulation_topic,
     state_topic,
     telemetry_topic,
     unit_entered_topic,
@@ -51,6 +52,12 @@ def test_control_dropout_topic_parses():
     parsed = parse_topic(control_dropout_topic("plant_b"))
     assert parsed.kind == "dropout"
     assert parsed.plant_id == "plant_b"
+
+
+def test_simulation_lifecycle_topic_parses():
+    parsed = parse_topic(simulation_topic("plant_a"))
+    assert parsed.kind == "simulation"
+    assert parsed.plant_id == "plant_a"
 
 
 def test_unparseable_topic_returns_none():

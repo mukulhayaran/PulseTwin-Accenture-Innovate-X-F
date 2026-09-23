@@ -7,8 +7,10 @@ without saying so.
 
 ## Authentication
 
-**Built:** a header, `X-PulseTwin-Role: supervisor | manager | leadership | system`, read
-by `serve/middleware/auth.py::get_role`. No password, no token, no session. This is
+**Built:** headers `X-PulseTwin-Role: supervisor | manager | leadership | system` and
+`X-PulseTwin-User`, read by `serve/middleware/auth.py`. The latter attributes manual
+decisions and defaults to `demo-<role>` when omitted. No password, token, or session is
+validated. This is
 authorization infrastructure without authentication in front of it — deliberately, per
 the finals brief's anti-pattern guidance ("do not implement full OAuth/SSO — a role
 header is sufficient for the demo").
@@ -26,6 +28,7 @@ def get_role(request: Request) -> str:
     if role not in ROLES:
         raise HTTPException(403, "no valid role claim")
     request.state.role = role
+    request.state.user = claims.get("sub")
     return role
 ```
 
@@ -88,12 +91,13 @@ since the demo never runs more than one backend replica.
 
 Every mutating action is logged to `audit_log` (`migrations/002_audit_log.sql`,
 `serve/middleware/audit.py::log_action`): timestamp, role, action, resource type/id, a
-JSON payload, IP address. The six covered actions, and the only six — verify with
+JSON payload, IP address. The eight covered actions — verify with
 `grep -rn "log_action(" serve/`:
 
 | Action | Written by |
 |---|---|
 | `feedback_submitted` | `POST /api/feedback` |
+| `containment_decision_recorded` | `POST /api/trace/containment/decisions` — records the model suggestion and human decision, but excludes the free-text validation note from the general audit payload |
 | `whatif_simulation_run` | `POST /api/whatif` |
 | `alert_acknowledged` | `POST /api/alerts/{id}/acknowledge` |
 | `retrain_triggered` | `POST /api/admin/trigger-retrain` |

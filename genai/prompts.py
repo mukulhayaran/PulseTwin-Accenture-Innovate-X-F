@@ -31,6 +31,15 @@ Your `summary` and `recommendation` are scanned for numbers too. Do NOT put a fi
 prose unless it is also a claim, or appears verbatim in a tool result. Station \
 identifiers are fine. When you want to say something is large or small, say so in words.
 
+THE KNOWLEDGE CITATION CONTRACT
+If search_engineering_knowledge returns something you quote or paraphrase, you must cite \
+it in `knowledge_citations`, never assert it as unsourced prose. Each entry carries:
+  - quoted_text: text that must actually appear in the cited chunk's `text` field
+  - doc_id and section: copied from the result you are citing
+  - citation: {call_id, pointer} into that same tool result, exactly like a numeric claim
+Never state what a procedure or fault code means from memory. If you did not call \
+search_engineering_knowledge, do not describe SOP or fault-code content at all.
+
 THE THREE CONTRACTS -- violating any of these rejects the run outright
 1. PROVENANCE. Rows from get_station_stats carry a `provenance` field of "measured" or \
 "inferred". Your claim's provenance must MATCH the row you cite. An inferred value must \
@@ -93,10 +102,19 @@ There is NO top-level `citations` key. Every number lives in `claims`, and its c
       "ci_high": null,
       "source": null
     }
+  ],
+  "knowledge_citations": [
+    {
+      "id": "k1",
+      "quoted_text": "<verbatim excerpt of the cited chunk's text>",
+      "doc_id": "SOP-01",
+      "section": "SOP-01-2",
+      "citation": {"call_id": "call_0005", "pointer": "/data/0/text"}
+    }
   ]
 }
 
-Every one of those keys must be present on every claim. `ci_low`/`ci_high` are null for a measured value and REQUIRED numbers for an inferred one. `source` is null unless `unit` is "usd", where it is required and must be the `source` string the tool returned beside the figure. Emit `[]` for an empty list and `null` for an absent number -- never omit a key."""
+Every one of those keys must be present on every claim. `ci_low`/`ci_high` are null for a measured value and REQUIRED numbers for an inferred one. `source` is null unless `unit` is "usd", where it is required and must be the `source` string the tool returned beside the figure. `knowledge_citations` is `[]` if you never called search_engineering_knowledge or cited nothing from it. Emit `[]` for an empty list and `null` for an absent number -- never omit a key."""
 
 
 USER_TEMPLATE = """Plant: {plant_id}
@@ -176,7 +194,7 @@ RESPONSE_FORMAT: dict[str, Any] = {
             "type": "object",
             "additionalProperties": False,
             "required": ["summary", "claims", "recommendation", "confidence",
-                         "alternatives_considered", "unanswered"],
+                         "alternatives_considered", "unanswered", "knowledge_citations"],
             "properties": {
                 "summary": {"type": "string"},
                 "recommendation": {"type": "string"},
@@ -204,6 +222,29 @@ RESPONSE_FORMAT: dict[str, Any] = {
                             "ci_low": {"type": ["number", "null"]},
                             "ci_high": {"type": ["number", "null"]},
                             "source": {"type": ["string", "null"]},
+                            "citation": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["call_id", "pointer"],
+                                "properties": {
+                                    "call_id": {"type": "string"},
+                                    "pointer": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+                "knowledge_citations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["id", "quoted_text", "doc_id", "section", "citation"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "quoted_text": {"type": "string"},
+                            "doc_id": {"type": "string"},
+                            "section": {"type": "string"},
                             "citation": {
                                 "type": "object",
                                 "additionalProperties": False,

@@ -49,6 +49,40 @@ def test_feedback_creates_an_audit_entry(client):
     assert "operator" not in str(entry["payload"]).lower()
 
 
+def test_containment_decision_creates_a_privacy_safe_audit_entry(client):
+    top = client.get("/api/units?plant_id=plant_a&alerts_only=true&limit=1").json()[0]
+    containment = client.get(
+        f"/api/trace/containment/{top['unit_id']}?plant_id=plant_a"
+    ).json()
+    target = containment["at_risk_units"][0]
+    private_note = "validation-note-that-must-not-enter-the-general-audit-log"
+    r = client.post(
+        "/api/trace/containment/decisions",
+        json={
+            "plant_id": "plant_a",
+            "flagged_unit_id": top["unit_id"],
+            "target_unit_id": target["unit_id"],
+            "selected_action": "INSPECT",
+            "message": private_note,
+        },
+        headers=SUPERVISOR,
+    )
+    assert r.status_code == 200
+
+    body = client.get(
+        "/api/audit/log?action=containment_decision_recorded&limit=20"
+    ).json()
+    entry = next(
+        e for e in body["entries"]
+        if e["resource_id"] == target["unit_id"]
+        and e["payload"]["flagged_unit_id"] == top["unit_id"]
+    )
+    assert entry["user_role"] == "supervisor"
+    assert entry["payload"]["recommended_action"] == target["action"]
+    assert entry["payload"]["selected_action"] == "INSPECT"
+    assert private_note not in str(entry)
+
+
 def test_whatif_creates_an_audit_entry(client):
     sid = client.get("/api/whatif/stations?plant_id=plant_a").json()[0]["station_id"]
     r = client.post("/api/whatif", json={"plant_id": "plant_a", "station_id": sid},

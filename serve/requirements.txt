@@ -1,6 +1,16 @@
-fastapi==0.115.0
-uvicorn==0.30.0
-pydantic==2.9.0
+# fastapi/uvicorn/pydantic bumped 2026-09-21: the OLD pins (0.115.0/0.30.0/2.9.0) and
+# prometheus-fastapi-instrumentator==8.1.0 below want mutually exclusive starlette ranges
+# (fastapi 0.115.0 -> starlette <0.39,>=0.37.2; instrumentator 8.1.0 -> starlette
+# <2.0,>=1.0) -- `pip install -r serve/requirements.txt` was ResolutionImpossible from a
+# clean environment. Invisible locally because nobody ever did a clean install: every test
+# run and `make dev-backend` used whatever newer fastapi/pydantic/uvicorn was already
+# sitting in the ambient interpreter, and Docker -- the one thing that DOES install from
+# this file verbatim -- had never been run end to end (no daemon, docs/STATE.md). Caught by
+# actually running `docker compose -f docker-compose.prod.yml build`. Pinned to the exact
+# versions this whole project has in fact been tested against throughout its history.
+fastapi==0.139.0
+uvicorn==0.51.0
+pydantic==2.13.4
 numpy>=2.1
 orjson==3.10.0
 # ADR-033: production I/O drivers, not compute -- see docs/DECISIONS.md

@@ -5,8 +5,8 @@ export OMP_NUM_THREADS = 1
 
 PY = python
 
-.PHONY: generate train build-artifact test demo dev-backend dev-frontend clean \
-        migrate load-data demo-prod demo-prod-down test-all drift-check retrain
+.PHONY: generate train build-artifact build-knowledge-index test demo dev-backend dev-frontend clean \
+        migrate load-data demo-prod demo-mqtt demo-prod-down test-all drift-check retrain smoke-demo smoke-demo-full
 
 generate:
 	$(PY) -m offline.simulator.generate --config configs/plant_a.yaml
@@ -20,6 +20,11 @@ build-artifact:
 	rm -f artifacts/pulsetwin.db
 	$(PY) -m offline.build_artifact --config configs/plant_a.yaml
 	$(PY) -m offline.build_artifact --config configs/plant_b.yaml
+
+# ADR-046: the engineering-knowledge TF-IDF index (search_engineering_knowledge). Not
+# plant-scoped, so it is built once, not per plant.
+build-knowledge-index:
+	$(PY) -m offline.build_knowledge_index
 
 test:
 	$(PY) -m pytest tests/ -q
@@ -36,6 +41,12 @@ clean:
 demo:
 	docker compose up --build
 
+smoke-demo:
+	$(PY) scripts/smoke_demo.py
+
+smoke-demo-full:
+	PULSETWIN_REQUIRE_FULL_DEMO=1 $(PY) scripts/smoke_demo.py
+
 # ---- finals upgrade: production stack (docs/PRODUCTION_ARCHITECTURE.md) --------------
 
 migrate:
@@ -46,6 +57,9 @@ load-data:
 
 demo-prod:
 	docker compose -f docker-compose.prod.yml up --build
+
+demo-mqtt:
+	docker compose -f docker-compose.prod.yml --profile mqtt-demo up --build
 
 demo-prod-down:
 	docker compose -f docker-compose.prod.yml down -v

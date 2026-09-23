@@ -126,15 +126,27 @@ only code path that changes what `/api/predict/defect` actually serves. **Reject
 backend mutation — an un-promoted challenger already has zero effect on serving, so
 "rejecting" it is a client-side dismissal of the review, not an undo of anything.
 
-**What "changes what is served" means concretely, and its one limit.** Promotion loads the
-promoted row's `artifact_path` into the live scorer map
+**What "changes what is served" means concretely, and its one remaining limit.** Promotion
+loads the promoted row's `artifact_path` into the live scorer map
 (`serve/routers/admin.py::_activate_scorer`), so the next request is scored by the new
 model; the response's `serving` block reports whether that swap succeeded and names the
-artifact. The swap is **runtime-only** — it deliberately does not rewrite the committed
-`artifacts/model_<plant>.npz` (a version-controlled build output, ADR-027), so a process
-restart reverts to the committed champion. A production deployment promotes by publishing
-the artifact to object storage and restarting the pods against it; the registry row, not
-the container's local filesystem, is the source of truth in both cases.
+artifact. The swap deliberately does not rewrite the committed `artifacts/model_<plant>.npz`
+(a version-controlled build output, ADR-027) — but a process restart no longer reverts to
+it silently. `serve/main.py::lifespan` asks `model_registry` for the current champion's
+`artifact_path` at startup (ADR-041) and loads that, falling back to the committed file
+only if no champion row exists yet or its artifact is missing. The registry row is the
+source of truth for both a live process and its next restart, on the single-replica
+topology this demo and `docker-compose.prod.yml` both run (ADR-009).
+
+**The one remaining limit is multi-replica, not restart.** In the documented production
+topology (2-6 backend pods behind a Service, `docs/PRODUCTION_ARCHITECTURE.md`), a
+promotion's in-memory hot-swap only reaches the ONE pod that happened to receive that
+`POST /api/admin/promote-model` request — the others keep serving the old model, with no
+error, until each is individually restarted (at which point ADR-041's startup lookup picks
+up the new champion). A real multi-replica rollout needs either a rolling restart step
+after promotion (documented as the operational runbook step, cheapest) or a live
+reconciliation signal across pods (Redis pub/sub or a short poll — not built; ADR-041
+names it as the deferred alternative).
 
 *Corrected 2026-09-16.* Until then this paragraph's claim was false in the strongest
 possible way: promote/rollback rewrote `model_registry` rows and nothing else, so

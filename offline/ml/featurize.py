@@ -22,13 +22,14 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from feature_contract import (
+    LOT_TRAILING_UNITS,
+    RATE_OF_CHANGE_LAG,
+    ROLLING_STD_UNITS,
+    TRAILING_MEDIAN_UNITS,
+    TRAILING_Z_UNITS,
+)
 from offline.config_schema import PlantConfig
-
-TRAILING_MEDIAN_UNITS = 50     # same-variant window for deviation features
-TRAILING_Z_UNITS = 200         # station distribution window for z-scores
-ROLLING_STD_UNITS = 10         # short-window signal stability
-RATE_OF_CHANGE_LAG = 3
-LOT_TRAILING_UNITS = 100
 
 
 @dataclass

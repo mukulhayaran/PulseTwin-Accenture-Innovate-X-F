@@ -128,6 +128,24 @@ SEED = 42
 # failure rejects the whole run no matter how small a share of claims it is.
 MAX_REDACTED_CLAIM_RATIO = 0.30
 
+# ------------------------------------------------------------------------ orchestration
+#
+# ADR-045: the `incident` intent runs three bounded specialist loops (reliability,
+# production, risk) plus a reconciling synthesis call, instead of one broad loop. A full
+# kill switch and a specialist-count lever exist because the extra guaranteed requests are
+# a real cost against the `:free`-tier 50/day ceiling documented above -- an operator on a
+# constrained day can fall back to the untouched single-agent incident path, or shrink the
+# specialist roster, without a redeploy.
+ORCHESTRATION_ENABLED = not os.environ.get(
+    "PULSETWIN_GENAI_DISABLE_ORCHESTRATION", "").strip()
+
+_max_spec = os.environ.get("PULSETWIN_GENAI_MAX_SPECIALISTS", "").strip()
+MAX_ORCHESTRATION_SPECIALISTS = int(_max_spec) if _max_spec.isdigit() else None
+
+# The synthesizer's prompt carries no tool schemas (it has no tools), which more than
+# offsets a budget roughly double a single tool result's own MAX_TOOL_RESULT_BYTES cap.
+SYNTHESIS_EVIDENCE_BUDGET = 48_000
+
 __all__ = [
     "BASE_URL", "MODEL_ID", "PROVIDER", "API_KEY_ENV",
     "LEGACY_KEY_ENVS", "KEY_ENVS",
@@ -136,4 +154,5 @@ __all__ = [
     "REQUEST_TIMEOUT_S", "RUN_WALLCLOCK_CAP_S", "TEMPERATURE", "SEED",
     "MAX_TOOL_CALL_RETRIES", "MAX_RATE_LIMIT_RETRIES", "RATE_LIMIT_BACKOFF_S", "MAX_RATE_LIMIT_WAIT_S",
     "MAX_REDACTED_CLAIM_RATIO",
+    "ORCHESTRATION_ENABLED", "MAX_ORCHESTRATION_SPECIALISTS", "SYNTHESIS_EVIDENCE_BUDGET",
 ]

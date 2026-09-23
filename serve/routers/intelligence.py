@@ -70,7 +70,7 @@ SEVERITY_MONITOR = 0.75
 # measured. Those are what LOW_CONFIDENCE keys on.
 CI_IS_DERIVED_FROM_POINT_ESTIMATE = True
 
-# Peers sharing a causal fingerprint inside the containment window. Mirrors the
+# Peers sharing a related-unit fingerprint inside the containment window. Mirrors the
 # `at_risk_threshold` in configs/alert_policies.yaml that escalates straight to level 2.
 CONTAINMENT_ESCALATION_PEERS = 3
 
@@ -279,17 +279,29 @@ def alert_triage(
     request: Request,
     plant_id: str = "plant_a",
     limit: int = 25,
+    at_ts: str | None = None,
     role: str = Depends(require_role("supervisor")),
 ) -> dict[str, Any]:
     """Rank the open alerts and say why each landed where it did.
 
     Deterministic by construction. The GenAI tier reads this as a tool and narrates it;
     it does not get to decide what is critical.
+
+    `at_ts` scopes the candidate set to `prediction_ts <= at_ts`, so a caller riding the
+    replay clock (the supervisor view) sees the backlog grow as the tape advances instead
+    of the whole artifact up front. Omitted, it defaults to `replay_end_ts` -- the whole
+    dataset -- which is the GenAI tool's calling convention and every existing caller's
+    expectation, same default pattern as `shift_summary`.
     """
     meta = _plant(request, plant_id)
     limit = _clamp(limit, 1, 500)
     con = request.app.state.main_con
     budget_threshold = float(meta["budget_threshold"])
+    anchor = at_ts or str(meta["replay_end_ts"])
+    try:
+        datetime.fromisoformat(anchor)
+    except ValueError:
+        raise HTTPException(422, f"at_ts is not an ISO-8601 timestamp: {at_ts!r}")
 
     # THE CANDIDATE SET IS NOT "alerts that already fired", and this is the whole reason
     # the endpoint earns its place.
@@ -314,9 +326,10 @@ def alert_triage(
                   AS current_station
              FROM units u
             WHERE u.plant_id = ?
-              AND (u.alert_fired = 1 OR u.above_cost_threshold = 1)
+              AND (u.alert_fired IS TRUE OR u.above_cost_threshold IS TRUE)
+              AND u.prediction_ts <= ?
             ORDER BY u.calibrated_risk DESC, u.prediction_ts DESC LIMIT ?""",
-        (plant_id, limit),
+        (plant_id, anchor, limit),
     )
 
     # The station whose signal the model actually leaned on, per unit.
@@ -439,10 +452,11 @@ def alert_triage(
     if results and not severity_discriminates:
         notes.append(
             f"Severity does not discriminate here: all {len(results)} alerts share one "
-            f"calibrated risk value ({results[0]['risk']}), the top plateau of the "
-            f"isotonic calibration. Ranking within a class therefore falls back to lead "
-            f"time and containment peer count, which do vary. This is a property of the "
-            f"calibrated model, not of the units."
+            f"calibrated risk value ({results[0]['risk']}) because they land in the same "
+            f"leaf across every tree; Platt's monotonic scaling passes that shared raw "
+            f"score through unchanged. Ranking within a class therefore falls back to "
+            f"lead time and containment peer count, which do vary. This is a property of "
+            f"the calibrated model, not of the units."
         )
     if results and max(counts.values()) == len(results):
         dominant = max(counts, key=lambda k: counts[k])
@@ -454,9 +468,12 @@ def alert_triage(
         "plant_id": plant_id,
         "alerts": results,
         "count": len(results),
+        "anchor_ts": anchor,
+        "anchor_source": "caller" if at_ts else "replay_end_ts",
         "candidate_set": (
-            "units above the cost-optimal inspection threshold, whether or not the "
-            "attention budget actually fired an alert for them"
+            "units above the cost-optimal inspection threshold and at or before "
+            "anchor_ts, whether or not the attention budget actually fired an alert "
+            "for them"
         ),
         "already_fired": sum(1 for r in results if r["alert_fired"]),
         "counts_by_class": counts,
@@ -648,8 +665,8 @@ def shift_summary(
     produced = db.query_one(
         con,
         """SELECT COUNT(*) AS units,
-                  SUM(CASE WHEN alert_fired = 1 THEN 1 ELSE 0 END) AS alerts,
-                  SUM(CASE WHEN actual_defect = 1 THEN 1 ELSE 0 END) AS defects,
+                  SUM(CASE WHEN alert_fired IS TRUE THEN 1 ELSE 0 END) AS alerts,
+                  SUM(CASE WHEN actual_defect IS TRUE THEN 1 ELSE 0 END) AS defects,
                   AVG(calibrated_risk) AS mean_risk
              FROM units
             WHERE plant_id = ? AND prediction_ts >= ? AND prediction_ts <= ?""",
@@ -934,7 +951,7 @@ def evidence_graph(
     })
     nodes.append({
         "id": fingerprint_node, "kind": "fingerprint",
-        "label": "shared causal fingerprint",
+        "label": "shared production context",
         "shared_factors": shared_kinds,
     })
     edges.append(_edge(

@@ -1,0 +1,21 @@
+# Render Blueprint for the trimmed backend (serve/Dockerfile.render). Frontend deploys
+# separately as a Vercel static export, per docker-compose.yml's own note that production
+# targets HF Spaces + Vercel -- this is a free-tier alternative to HF Spaces for the
+# backend only, not a replacement for the frontend's home.
+#
+# No PULSETWIN_FEEDBACK_DB / PULSETWIN_OPS_DB set on purpose: Render's free plan has no
+# attached persistent disk, so both fall back to the container's local tempdir
+# (serve/db.py) exactly as they do with no volume in local dev. Feedback, audit-log, and
+# triage-thread rows reset on every redeploy/restart -- acceptable for a demo instance,
+# not for anything meant to retain state.
+services:
+  - type: web
+    name: pulsetwin-backend
+    runtime: docker
+    dockerfilePath: ./serve/Dockerfile.render
+    dockerContext: .
+    plan: free
+    healthCheckPath: /api/ready
+    envVars:
+      - key: PULSETWIN_JOBS_ENABLED
+        value: "0"

@@ -56,6 +56,8 @@ APPROVED = {
     ("GET", "/api/system/data-quality"),
     ("GET", "/api/system/sensor-dropouts"),
     ("GET", "/api/economics/instrumentation-plan"),
+    # --- ADR-046
+    ("GET", "/api/knowledge/search"),
 }
 
 # Surfaces that must NEVER become tools, whatever else is admitted.
@@ -154,6 +156,11 @@ def test_every_read_tool_returns_data(registry, client, plant) -> None:
         if spec.method != "GET":
             continue
         args = {"plant_id": plant}
+        if name == "search_engineering_knowledge":
+            # The one tool that is NOT plant-scoped (ADR-046) -- its schema has no
+            # plant_id property at all, so the baseline args above would fail
+            # `validate_args` as an unexpected argument.
+            args = {"query": "torque calibration procedure"}
         if name == "get_bottleneck_history":
             args["limit"] = 50
         if name == "get_economics_roi":

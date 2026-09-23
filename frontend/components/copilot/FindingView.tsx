@@ -180,7 +180,7 @@ export default function FindingView({ run }: { run: TriageRun }) {
 
       {run.finding.alternatives_considered.length > 0 && (
         <details className="group">
-          <summary className="cursor-pointer list-none text-2xs uppercase tracking-[0.14em] text-ink-faint hover:text-ink-dim">
+          <summary className="cursor-pointer list-none text-2xs uppercase tracking-[0.14em] text-ink-faint">
             Why not something else?
           </summary>
           <ul className="mt-1.5 space-y-1">

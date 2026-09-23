@@ -28,6 +28,7 @@ retention policy that could later be loosened.
 | Raw telemetry | 2 years | IATF 16949 traceability minimum for process records |
 | `station_readings` (replay window) | 48 hours | ADR-008 — only the demo replay window ships in the artifact; full history would live in hourly rollup tables, not raw readings, in a production deployment |
 | Audit log | 7 years | Sarbanes-Oxley-aligned retention commonly applied to manufacturing quality audit trails |
+| Containment decisions | 7 years | Keeps the recommendation, human intervention, reason, and decision-time evidence long enough for quality-outcome validation and audit review |
 | Model artifacts (`.npz`, `model_registry` rows) | Indefinite | Needed for regulatory reproducibility of any historical prediction — if a 2027 audit asks "what did the model say about unit U04412 in 2026," the artifact that produced that number must still exist |
 | Drift metrics | 2 years | Matches raw telemetry — a drift measurement is meaningless without the telemetry window it was measured against |
 
@@ -42,6 +43,7 @@ of sync with it:
 | `units` | supervisor, manager, leadership, system | system (offline pipeline only — no live write path in `serve/`) |
 | `economics` | leadership, system | system |
 | `audit_log` | leadership, system | system (only `serve/middleware/audit.py` writes here) |
+| `containment_decisions` | system/offline validation; the latest action (not the message) is projected into containment results for supervisor and above | supervisor, manager, leadership, system through the decision endpoint |
 | `model_registry` | leadership, system | system |
 
 ## Anonymisation

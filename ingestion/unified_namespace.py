@@ -7,6 +7,7 @@ line/... collapsed here to plant/zone/station).
     pulsetwin/{plant_id}/inspection/{unit_id}             inspection results
     pulsetwin/{plant_id}/unit/{unit_id}/entered           unit entered a station
     pulsetwin/{plant_id}/unit/{unit_id}/exited            unit exited a station
+    pulsetwin/{plant_id}/simulation                       publisher run lifecycle
     pulsetwin/{plant_id}/control/dropout                  demo control: force a sensor dark
 
 Every publisher and subscriber in ingestion/ builds and parses topics through this module
@@ -26,6 +27,7 @@ _CHECKLIST_RE = re.compile(rf"^{ROOT}/([^/]+)/([^/]+)/(\d+)/checklist$")
 _INSPECTION_RE = re.compile(rf"^{ROOT}/([^/]+)/inspection/([^/]+)$")
 _UNIT_ENTERED_RE = re.compile(rf"^{ROOT}/([^/]+)/unit/([^/]+)/entered$")
 _UNIT_EXITED_RE = re.compile(rf"^{ROOT}/([^/]+)/unit/([^/]+)/exited$")
+_SIMULATION_RE = re.compile(rf"^{ROOT}/([^/]+)/simulation$")
 _CONTROL_DROPOUT_RE = re.compile(rf"^{ROOT}/([^/]+)/control/dropout$")
 
 
@@ -53,6 +55,10 @@ def unit_exited_topic(plant_id: str, unit_id: str) -> str:
     return f"{ROOT}/{plant_id}/unit/{unit_id}/exited"
 
 
+def simulation_topic(plant_id: str) -> str:
+    return f"{ROOT}/{plant_id}/simulation"
+
+
 def control_dropout_topic(plant_id: str) -> str:
     return f"{ROOT}/{plant_id}/control/dropout"
 
@@ -64,7 +70,7 @@ def plant_wildcard(plant_id: str) -> str:
 
 @dataclass(frozen=True)
 class ParsedTopic:
-    kind: str                  # telemetry, state, checklist, inspection, entered, exited, dropout
+    kind: str  # telemetry, state, checklist, inspection, entered, exited, simulation, dropout
     plant_id: str
     zone: str | None = None
     station_id: int | None = None
@@ -84,6 +90,8 @@ def parse_topic(topic: str) -> ParsedTopic | None:
         return ParsedTopic("entered", m.group(1), unit_id=m.group(2))
     if m := _UNIT_EXITED_RE.match(topic):
         return ParsedTopic("exited", m.group(1), unit_id=m.group(2))
+    if m := _SIMULATION_RE.match(topic):
+        return ParsedTopic("simulation", m.group(1))
     if m := _CONTROL_DROPOUT_RE.match(topic):
         return ParsedTopic("dropout", m.group(1))
     return None

@@ -41,6 +41,11 @@ class ToolRecord:
     result: Any                 # the truncated payload the model received
     duration_ms: float
     phase: str = ""             # human-readable activity label, from ToolSpec.phase
+    # Which specialist produced this call, for an orchestrated run (genai/orchestrator.py,
+    # ADR-045). Never set by run_loop itself -- stamped by the orchestrator after a
+    # specialist's run_loop call returns, so this module stays fully agent-agnostic and a
+    # single-agent run's records are indistinguishable from before this field existed.
+    agent: str = ""
 
 
 @dataclass(frozen=True)
@@ -69,6 +74,16 @@ class LoopResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     error: str = ""
+    # The call_id counter this invocation reached, for a caller that runs several loops
+    # against one shared transcript (genai/orchestrator.py). The NEXT invocation's
+    # initial_seq should be this value, so call_ids stay globally unique across the whole
+    # orchestrated run without genai/verifier.py needing any concept of "agent" at all.
+    final_seq: int = 0
+    # Per-specialist status snapshots, set ONLY by genai/orchestrator.py on the LoopResult
+    # it returns for an orchestrated run. Empty for every single-agent run -- this is what
+    # lets genai/triage.py::_persist() detect "was this orchestrated" with a plain
+    # truthiness check instead of a new result type or isinstance check.
+    agents_used: list[dict[str, Any]] = field(default_factory=list)
     # The capability rung the run settled on, and how it got there. Persisted and shown:
     # a degraded run must be visibly degraded (genai/capabilities.py).
     capability_profile: str = ""
@@ -171,7 +186,21 @@ def run_loop(
     classify_error: Callable[[BaseException], str | None] | None = None,
     retry_after: Callable[[BaseException], float | None] | None = None,
     now: Callable[[], float] = time.monotonic,
+    initial_seq: int = 0,
+    max_iterations: int = config.MAX_ITERATIONS,
+    max_tool_calls: int = config.MAX_TOOL_CALLS,
+    wallclock_cap_s: float = config.RUN_WALLCLOCK_CAP_S,
 ) -> LoopResult:
+    """Run one tool-calling loop.
+
+    The last four parameters all default to today's module constants, so the original
+    single-agent call site (and every test written against it) is byte-identical whether
+    or not this signature exists. They exist so genai/orchestrator.py (ADR-045) can run
+    SEVERAL bounded loops against one shared transcript: `initial_seq` is where THIS
+    invocation's call_id numbering starts (threaded from a previous invocation's
+    `LoopResult.final_seq`), and the three caps let a specialist loop be given a smaller
+    budget than the single-agent path's, independent of the module-wide constants.
+    """
     wire_tools = T.to_wire(registry)
     messages = build_messages(
         plant_id=plant_id, question=question, acting_role=acting_role,
@@ -179,10 +208,11 @@ def run_loop(
     )
 
     result = LoopResult(status="failed", content="")
+    result.final_seq = initial_seq
     caps = capabilities.initial(config.MODEL_ID)
     result.capability_profile = caps.name
     started = now()
-    seq = 0
+    calls_made = 0
     rate_limit_retries = 0
     tool_call_retries = 0
 
@@ -191,9 +221,9 @@ def run_loop(
             on_progress(ProgressEvent(kind=kind, iteration=iteration, phase=phase,
                                       records=list(result.records), pending_tool=pending))
 
-    for iteration in range(config.MAX_ITERATIONS):
+    for iteration in range(max_iterations):
         result.iterations = iteration + 1
-        if now() - started > config.RUN_WALLCLOCK_CAP_S:
+        if now() - started > wallclock_cap_s:
             result.status, result.error = "failed", "wallclock_cap"
             return result
 
@@ -234,7 +264,7 @@ def run_loop(
                         hint if hint and hint > 0 else config.RATE_LIMIT_BACKOFF_S,
                         config.MAX_RATE_LIMIT_WAIT_S,
                     )
-                    remaining = config.RUN_WALLCLOCK_CAP_S - (now() - started)
+                    remaining = wallclock_cap_s - (now() - started)
                     if wait >= remaining:
                         result.status, result.error = "failed", "rate_limited_wallclock"
                         return result
@@ -317,13 +347,14 @@ def run_loop(
             return result
 
         for call in calls:
-            seq += 1
-            call_id = f"call_{seq:04d}"
+            result.final_seq += 1
+            calls_made += 1
+            call_id = f"call_{result.final_seq:04d}"
             phase = T.phase_for(registry, call.function.name)
             emit("tool_started", iteration + 1, phase, pending=call.function.name)
             t0 = now()
 
-            if seq > config.MAX_TOOL_CALLS:
+            if calls_made > max_tool_calls:
                 # Budget exhausted is reported TO THE MODEL so it can still write a
                 # finding from evidence it already has. Only the iteration cap is fatal.
                 payload: Any = {
@@ -343,7 +374,7 @@ def run_loop(
             result.records.append(ToolRecord(
                 call_id=call_id,
                 provider_call_id=getattr(call, "id", "") or "",
-                seq=seq,
+                seq=result.final_seq,
                 name=call.function.name,
                 arguments=args if isinstance(args, dict) else {},
                 result=payload,

@@ -18,7 +18,6 @@ import AuditLogViewer from "@/components/ops/AuditLogViewer";
 import RetrainingConsole from "@/components/ops/RetrainingConsole";
 import TriageConsole from "@/components/ops/TriageConsole";
 import { AppShell, Select, Tooltip } from "@/components/ui";
-import CopilotDock from "@/components/copilot/CopilotDock";
 
 const ROLES: Role[] = ["supervisor", "manager", "leadership", "system"];
 const POLL_MS = 10_000;
@@ -151,7 +150,6 @@ export default function OpsPage() {
       </div>
 
       {ToastElement}
-      <CopilotDock plant={plant} />
     </AppShell>
   );
 }

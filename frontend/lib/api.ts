@@ -16,6 +16,12 @@ export interface StationCfg {
 export interface Zone { id: string; name: string; stations: number[] }
 
 export interface StreamEvent {
+  seq?: number;
+  run_id?: string;
+  plant_id?: string;
+  source?: "replay" | "live_synthetic" | "real";
+  event_type?: string;
+  scenario?: string;
   ts: string;
   unit_id: string;
   station_id: number;
@@ -38,6 +44,7 @@ export interface StreamEvent {
   humidity_pct?: number;
   film_thickness_um?: number;
   weld_current_a?: number;
+  actual_defect?: number;
 }
 
 export interface UnitFactor {
@@ -49,16 +56,112 @@ export interface UnitDetail {
   unit_id: string; variant: string; lot_id: string; shift_id: string;
   calibrated_risk: number; ci_low: number; ci_high: number;
   alert_fired: number; above_cost_threshold: number;
-  actual_defect: number; defect_mode: string; lead_time_min: number;
+  actual_defect: number | null; defect_mode: string | null; lead_time_min: number;
+  current_station?: number | null;
   factors: UnitFactor[];
-  journey: { station_id: number; entry_ts: string; exit_ts: string; cycle_s: number; station_state: string }[];
+  journey: { station_id: number; entry_ts: string; exit_ts: string | null; cycle_s: number; station_state: string }[];
   readings: { station_id: number; signal: string; value: number; provenance: string; ci_low: number | null; ci_high: number | null }[];
+}
+
+export type ContainmentAction = "HOLD" | "INSPECT" | "MONITOR";
+
+export interface ContainmentUnit {
+  unit_id: string;
+  current_station: number | null;
+  risk: number;
+  shared_factors: string[];
+  explanation: string;
+  action: ContainmentAction;
+  manual_action: ContainmentAction | null;
+  decision_recorded_at: string | null;
+  decision_status?: string | null;
+  actual_outcome?: number | null;
+  outcome_at?: string | null;
+  validation_result?: string | null;
 }
 
 export interface Containment {
   flagged_unit: string; flagged_risk: number; flagged_factors: string[];
-  at_risk_units: { unit_id: string; current_station: number | null; risk: number; shared_factors: string[]; action: string }[];
+  at_risk_units: ContainmentUnit[];
   containment_window_min: number; total_at_risk: number;
+}
+
+export interface ContainmentDecision {
+  stored: boolean;
+  plant_id: string;
+  flagged_unit_id: string;
+  target_unit_id: string;
+  recommended_action: ContainmentAction;
+  selected_action: ContainmentAction;
+  decided_by_role: string;
+  decided_by_user: string;
+  created_at: string;
+  status: string;
+  run_id: string | null;
+}
+
+export interface ContainmentDecisionHistory extends ContainmentDecision {
+  id: number;
+  message: string;
+  owner: string | null;
+  due_station: number | null;
+  due_at: string | null;
+  risk_at_decision: number;
+  validation_result: string | null;
+  actual_outcome: number | null;
+  shared_factors: string[];
+}
+
+export type SimulationScenario =
+  | "normal"
+  | "torque_degradation"
+  | "bad_material_lot"
+  | "high_humidity"
+  | "rushed_checklist"
+  | "sensor_dropout"
+  | "station_breakdown"
+  | "buffer_congestion";
+
+export interface SimulationRun {
+  run_id: string;
+  plant_id: string;
+  seed: number;
+  scenario: SimulationScenario;
+  status: "running" | "paused" | "stopped" | "completed" | "failed";
+  speed: number;
+  severity: number;
+  affected_station: number | null;
+  affected_lot: string | null;
+  incident_start_s: number;
+  simulation_time: string | null;
+  event_count: number;
+  alerts_count: number;
+  units_in_progress: number;
+  source: "live_synthetic" | "real";
+  producer: "backend" | "mqtt";
+  started_at: string;
+  ended_at: string | null;
+  error: string | null;
+}
+
+export interface SimulationMetrics {
+  run_id: string;
+  events: number;
+  alerts: number;
+  active_alerts: number;
+  correct_alerts: number;
+  false_alerts: number;
+  alert_correctness_rate: number | null;
+  acknowledged: number;
+  mean_time_to_acknowledge_s: number | null;
+  mean_time_to_contain_s: number | null;
+  decisions: number;
+  validated_decisions: number;
+  confirmed_defects: number;
+  unnecessary_inspections: number;
+  estimated_escaped_defects_avoided: number;
+  estimated_cost_avoided: { value: number; currency: string; source: string };
+  validation: Record<string, number>;
 }
 
 export interface Bottleneck {
@@ -95,8 +198,30 @@ let currentRole: Role = "leadership";
 export function setRole(role: Role): void { currentRole = role; }
 export function getRole(): Role { return currentRole; }
 
+// Mirrors serve/middleware/auth.py's ROLE_ORDER hierarchy -- each role can do everything
+// the one before it can. Used to gate client-side NAVIGATION (a /login choice of
+// "supervisor" cannot reach /manager or /leadership), which is a different question from
+// what a fixed page DISPLAYS once entry is granted -- that still always locks to the
+// page's own persona (CLAUDE.md SS7: "the four views are not symmetric"). Like the rest
+// of this role system, this is a demo convenience, not enforcement: the API rejects a
+// disallowed request regardless of what this lets the UI navigate to.
+export const ROLE_ORDER: Role[] = ["supervisor", "manager", "leadership", "system"];
+export function roleAtLeast(role: Role, min: Role): boolean {
+  return ROLE_ORDER.indexOf(role) >= ROLE_ORDER.indexOf(min);
+}
+
+// serve/routers/auth_demo.py -- checked server-side (not a client-JS credential check
+// anyone could read out of the bundle), but still no session/token: a correct login just
+// tells the caller which role to setRole() into, same mechanism as before this existed.
+export interface LoginResult { ok: true; role: Role }
+export const login = (username: string, password: string) =>
+  post<LoginResult>("/api/auth/login", { username, password });
+
 function authHeaders(): Record<string, string> {
-  return { "X-PulseTwin-Role": currentRole };
+  return {
+    "X-PulseTwin-Role": currentRole,
+    "X-PulseTwin-User": `demo-${currentRole}`,
+  };
 }
 
 // Runtime config, not build-time (ADR-028). Repointing the UI at a different backend
@@ -125,10 +250,46 @@ export const getStations = (plant: string) =>
   get<{ stations: StationCfg[]; zones: Zone[] }>(`/api/config/stations?plant_id=${plant}`);
 export const getPlants = () => get<any[]>("/api/config/plants");
 export const getHealth = () => get<any>("/api/health");
-export const getUnit = (id: string, plant: string) =>
-  get<UnitDetail>(`/api/units/${id}?plant_id=${plant}`);
-export const getContainment = (id: string, plant: string) =>
-  get<Containment>(`/api/trace/containment/${id}?plant_id=${plant}`);
+function temporalQuery(plant: string, atTs?: string | null, runId?: string | null): string {
+  const q = new URLSearchParams({ plant_id: plant });
+  if (atTs) q.set("at_ts", atTs);
+  if (runId) q.set("run_id", runId);
+  return q.toString();
+}
+
+export const getUnit = (id: string, plant: string, atTs?: string | null, runId?: string | null) =>
+  get<UnitDetail>(`/api/units/${id}?${temporalQuery(plant, atTs, runId)}`);
+export const getContainment = (id: string, plant: string, atTs?: string | null, runId?: string | null) =>
+  get<Containment>(`/api/trace/containment/${id}?${temporalQuery(plant, atTs, runId)}`);
+export const recordContainmentDecision = (
+  plant: string,
+  flaggedUnitId: string,
+  targetUnitId: string,
+  selectedAction: ContainmentAction,
+  message: string,
+  runId?: string | null,
+  atTs?: string | null,
+  owner?: string | null,
+  dueStation?: number | null,
+  dueAt?: string | null,
+) => post<ContainmentDecision>("/api/trace/containment/decisions", {
+  plant_id: plant,
+  flagged_unit_id: flaggedUnitId,
+  target_unit_id: targetUnitId,
+  selected_action: selectedAction,
+  message,
+  run_id: runId,
+  alert_id: runId ? `${runId}:${targetUnitId}` : null,
+  at_ts: atTs,
+  owner: owner?.trim() || null,
+  due_station: dueStation ?? null,
+  due_at: dueAt || null,
+});
+export const getContainmentDecisions = (plant: string, runId?: string | null) => {
+  const q = new URLSearchParams({ plant_id: plant, limit: "50" });
+  if (runId) q.set("run_id", runId);
+  return get<ContainmentDecisionHistory[]>(`/api/trace/containment-decisions?${q.toString()}`);
+};
 export const getBottleneck = (plant: string) =>
   get<Bottleneck>(`/api/bottleneck/current?plant_id=${plant}`);
 export const getMetrics = (plant: string) => get<Metrics>(`/api/metrics?plant_id=${plant}`);
@@ -138,11 +299,12 @@ export const getRoi = (plant: string, scenario = "base") =>
 
 export async function postFeedback(plant: string, unitId: string, verdict: string) {
   const base = await apiBase();
-  await fetch(`${base}/api/feedback`, {
+  const r = await fetch(`${base}/api/feedback`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ plant_id: plant, unit_id: unitId, verdict }),
   });
+  if (!r.ok) throw new Error(`/api/feedback -> ${r.status}`);
 }
 
 export async function streamUrl(
@@ -156,6 +318,59 @@ export async function streamUrl(
   // an empty from_ts would seek to offset 0 and silently replay from the beginning.
   const seek = fromTs ? `&from_ts=${encodeURIComponent(fromTs)}` : "";
   return `${base}/api/stream?plant_id=${plant}&speed=${speed}${seek}`;
+}
+
+export const getActiveSimulation = (plant: string) =>
+  get<SimulationRun | null>(`/api/simulations/active?plant_id=${encodeURIComponent(plant)}`);
+export const getSimulation = (runId: string) =>
+  get<SimulationRun>(`/api/simulations/${encodeURIComponent(runId)}`);
+export const getSimulationMetrics = (runId: string) =>
+  get<SimulationMetrics>(`/api/simulations/${encodeURIComponent(runId)}/metrics`);
+
+export const startSimulation = (
+  plant: string,
+  scenario: SimulationScenario,
+  seed: number,
+  speed: number,
+  severity = 0.7,
+  affectedStation?: number | null,
+  affectedLot?: string | null,
+  incidentStartS = 0,
+) => post<SimulationRun>("/api/simulations", {
+  plant_id: plant,
+  scenario,
+  seed,
+  speed,
+  severity,
+  affected_station: affectedStation ?? null,
+  affected_lot: affectedLot?.trim() || null,
+  incident_start_s: incidentStartS,
+  max_events: 5000,
+});
+
+export const injectSimulationIncident = (
+  runId: string,
+  scenario: SimulationScenario,
+  severity: number,
+  affectedStation?: number | null,
+  affectedLot?: string | null,
+) => post<SimulationRun>(`/api/simulations/${encodeURIComponent(runId)}/incidents`, {
+  scenario,
+  severity,
+  affected_station: affectedStation ?? null,
+  affected_lot: affectedLot?.trim() || null,
+});
+
+export const pauseSimulation = (runId: string) =>
+  post<SimulationRun>(`/api/simulations/${runId}/pause`, {});
+export const resumeSimulation = (runId: string) =>
+  post<SimulationRun>(`/api/simulations/${runId}/resume`, {});
+export const stopSimulation = (runId: string) =>
+  post<SimulationRun>(`/api/simulations/${runId}/stop`, {});
+
+export async function liveSimulationStreamUrl(runId: string, afterSeq = 0): Promise<string> {
+  const base = await apiBase();
+  return `${base}/api/simulations/${encodeURIComponent(runId)}/stream?after_seq=${afterSeq}`;
 }
 
 // ---------------------------------------------------------------- manager / leadership
@@ -232,9 +447,37 @@ export const getEscalationPolicy = () => get<{
   containment_escalation: { at_risk_threshold: number; skip_to_level: number };
 }>("/api/alerts/escalation-policy");
 
-export const acknowledgeAlert = (unitId: string, plant: string) =>
+export const acknowledgeAlert = (unitId: string, plant: string, runId?: string | null) =>
   post<{ acknowledged: boolean; unit_id: string; by_role: string; acknowledged_at: string }>(
-    `/api/alerts/${unitId}/acknowledge`, { plant_id: plant }
+    `/api/alerts/${unitId}/acknowledge`, { plant_id: plant, run_id: runId }
+  );
+
+export interface AlertStatus {
+  alert_id: string;
+  status: "OPEN" | "ACKNOWLEDGED" | "ACTIONED" | "VALIDATED" | "CLOSED";
+  opened_at: string;
+  acknowledged_at: string | null;
+  actioned_at: string | null;
+  validated_at: string | null;
+  closed_at: string | null;
+  outcome: number | null;
+  outcome_at: string | null;
+  /** Set the moment this alert auto-triggered an unattended "incident" investigation
+   *  (serve/live_simulation.py::_trigger_auto_investigation). Feed it to getTriageRun()
+   *  to render the same FindingView a manually-started run uses. Null on the static
+   *  replay path (/api/stream), which has no live-simulation run_id to key off. */
+  triage_run_id: string | null;
+}
+
+export const getAlertStatus = (unitId: string, plant: string, runId?: string | null) => {
+  const q = new URLSearchParams({ plant_id: plant });
+  if (runId) q.set("run_id", runId);
+  return get<AlertStatus>(`/api/alerts/${encodeURIComponent(unitId)}/status?${q.toString()}`);
+};
+
+export const closeAlert = (unitId: string, plant: string, runId: string) =>
+  post<{ closed: boolean; unit_id: string; status: "CLOSED"; closed_at: string }>(
+    `/api/alerts/${encodeURIComponent(unitId)}/close`, { plant_id: plant, run_id: runId }
   );
 
 // Champion/challenger/retired history for a plant+model type -- backs RetrainingConsole.tsx.
@@ -299,8 +542,18 @@ export interface TriageToolEvent {
   call_id: string;
   tool_name: string;
   phase?: string;
+  agent?: string;
   status?: "ok" | "running";
   duration_ms: number | null;
+}
+
+// The specialist roster for an orchestrated `incident` run (ADR-045). Absent/empty for
+// every other intent and for the deterministic path.
+export interface TriageAgentStatus {
+  key: string;
+  label: string;
+  status: "pending" | "running" | "ok" | "partial" | "error";
+  tool_calls: number;
 }
 
 export interface TriageProgress {
@@ -309,6 +562,8 @@ export interface TriageProgress {
   iteration: number | null;
   max_iterations: number | null;
   elapsed_s: number | null;
+  agent?: string | null;
+  agents?: TriageAgentStatus[] | null;
 }
 
 export interface TriageRun {
@@ -344,6 +599,9 @@ export interface TriageRun {
   cost_source?: string;
   created_at?: string;
   error?: string;
+  // ADR-045: set only for an orchestrated `incident` run.
+  orchestrated?: boolean;
+  agents_used?: TriageAgentStatus[] | null;
 }
 
 export interface TriageThread {
@@ -452,6 +710,8 @@ export interface AlertTriage {
   plant_id: string;
   alerts: AlertTriageRow[];
   count: number;
+  anchor_ts: string;
+  anchor_source: "caller" | "replay_end_ts";
   already_fired: number;
   candidate_set: string;
   counts_by_class: Record<string, number>;
@@ -543,8 +803,11 @@ export interface EvidenceGraph {
   method: string;
 }
 
-export const getAlertTriage = (plant: string, limit = 50) =>
-  get<AlertTriage>(`/api/alerts/triage?plant_id=${plant}&limit=${limit}`);
+export const getAlertTriage = (plant: string, limit = 50, atTs?: string) =>
+  get<AlertTriage>(
+    `/api/alerts/triage?plant_id=${plant}&limit=${limit}` +
+      (atTs ? `&at_ts=${encodeURIComponent(atTs)}` : "")
+  );
 
 export const getShiftSummary = (plant: string) =>
   get<ShiftSummary>(`/api/shift/summary?plant_id=${plant}`);

@@ -35,6 +35,8 @@ ALLOWED = {
     "datetime", "contextlib", "dataclasses", "logging", "re", "collections", "functools",
     "itertools", "hashlib", "enum", "csv", "io", "tempfile", "threading", "secrets",
     "decimal", "__future__",
+    # Complete-demo readiness performs dependency TCP/HTTP probes with stdlib only.
+    "socket", "urllib",
     # first-party
     "serve",
 }

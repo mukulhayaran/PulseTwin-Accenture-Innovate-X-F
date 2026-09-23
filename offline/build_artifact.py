@@ -343,9 +343,10 @@ def build(config_path: str) -> dict:
 
     # ------------------------------------------------------------------ checklists
     ckw = ck[(ck["ts"] >= replay_start) & (ck["ts"] <= replay_end)].copy()
-    ckw["operator_group"] = "group_" + (
+    ckw["operator_bucket"] = (
         pd.util.hash_pandas_object(ckw["operator_id"], index=False) % nb
-    ).astype(str)
+    ).astype(int)
+    ckw["operator_group"] = "group_" + ckw["operator_bucket"].astype(str)
     con.executemany(
         f"INSERT OR REPLACE INTO checklists VALUES ({','.join('?'*8)})",
         [(str(r.unit_id), pid, int(r.station_id), _ts(r.ts), str(r.operator_group),
@@ -501,9 +502,16 @@ def build(config_path: str) -> dict:
                     prov[s] = "measured"
             rec = {
                 "ts": _ts(r.entry_ts), "unit_id": str(r.unit_id), "station_id": int(r.station_id),
+                "exit_ts": _ts(r.exit_ts), "elapsed_s": round(float(r.entry_ts), 6),
+                "exit_elapsed_s": round(float(r.exit_ts), 6),
                 "variant": str(r.variant), "lot_id": str(r.lot_id),
+                "shift_id": str(r.shift_id),
                 "cycle_time_s": round(float(r.cycle_s), 2),
+                "blocked_before_s": round(float(r.blocked_before_s), 3),
+                "buffer_wait_s": round(float(r.buffer_wait_s), 3),
                 "station_state": str(r.prior_state),
+                "ambient_temperature_c": round(float(r.ambient_temperature_c), 3),
+                "ambient_humidity_pct": round(float(r.ambient_humidity_pct), 3),
                 "sensor_tier": st.sensor_tier,
                 "calibrated_risk": round(float(risk_by_unit.get(r.unit_seq, 0.0)), 4),
                 "alert": int(alert_by_unit.get(r.unit_seq, 0)),
@@ -515,6 +523,11 @@ def build(config_path: str) -> dict:
                 rec["checklist_time_s"] = round(float(hit.checklist_time_s), 1)
                 rec["checklist_pass"] = int(hit.checklist_pass)
                 rec["notes_code"] = str(hit.notes_code)
+                # A replay event may be after the model's causal feature cutoff, so its
+                # station column intentionally does not exist in features.parquet. The
+                # privacy-preserving bucket belongs to the checklist row itself and is
+                # therefore safe and correct for every manual station.
+                rec["operator_bucket"] = int(hit.operator_bucket)
             line = json.dumps(rec, separators=(",", ":")) + "\n"
             key = rec["ts"][:16]
             if key != last_key:

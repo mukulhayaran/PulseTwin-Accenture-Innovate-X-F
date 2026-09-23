@@ -13,7 +13,7 @@
 //   * present a ranking built on a constant. When the backend reports that a dimension
 //     could not discriminate, that notice is rendered above the table, not swallowed.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriage, AlertTriageRow, getAlertTriage } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { Badge, DataTable, Panel, Skeleton, Tooltip } from "@/components/ui";
@@ -27,36 +27,59 @@ const CLASS_VARIANT: Record<string, "danger" | "warn" | "info" | "neutral"> = {
 
 const CLASS_ORDER = ["CRITICAL", "INVESTIGATE", "MONITOR", "LOW_CONFIDENCE"];
 
+// Re-poll cadence once the replay is producing an anchor. Far coarser than the SSE flush
+// (up to 60/s) -- the underlying ranking only needs to catch up with the clock, not track
+// every event -- so this stays a fixed interval read against a ref rather than an effect
+// dependency on `atTs` itself.
+const POLL_MS = 8000;
+
 export default function AlertTriageTable({
   plant,
   limit = 40,
   onSelect,
   refreshKey,
+  atTs,
 }: {
   plant: string;
   limit?: number;
   onSelect?: (unitId: string) => void;
   // Bump this (e.g. the same nonce a replay restart or an offline-recovery retry already
-  // increments) to force a refetch. The ranking itself is plant-wide and time-independent
-  // (serve/routers/intelligence.py::alert_triage has no `at_ts` -- it ranks the whole
-  // cost-model backlog, not "this shift"), so a restart is expected to bring back the
-  // same rows; what was missing was ever asking again at all.
+  // increments) to force the effect below to tear down and restart.
   refreshKey?: number | string;
+  // Replay-clock anchor. Empty/undefined means the replay has not produced an event yet
+  // this session, so the panel shows a waiting state rather than falling back to the
+  // backend's whole-artifact default (serve/routers/intelligence.py::alert_triage scopes
+  // to `prediction_ts <= at_ts` when given one) -- Stop/Restart are expected to change
+  // what this panel shows, which a permanently whole-backlog query never could.
+  atTs?: string;
 }) {
   const [data, setData] = useState<AlertTriage | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const atTsRef = useRef(atTs);
+  atTsRef.current = atTs;
 
   useEffect(() => {
-    let cancelled = false;
     setData(null);
     setErr(null);
-    getAlertTriage(plant, limit)
-      .then((d) => !cancelled && setData(d))
-      .catch((e) => !cancelled && setErr(String(e)));
+    if (!atTs) return; // nothing has happened in this replay session yet
+
+    let cancelled = false;
+    const load = () => {
+      getAlertTriage(plant, limit, atTsRef.current)
+        .then((d) => !cancelled && setData(d))
+        .catch((e) => !cancelled && setErr(String(e)));
+    };
+    load();
+    const id = setInterval(load, POLL_MS);
     return () => {
       cancelled = true;
+      clearInterval(id);
     };
-  }, [plant, limit, refreshKey]);
+    // Only plant/limit/refreshKey, and the has-an-anchor-at-all transition, restart the
+    // effect -- every subsequent clock tick is picked up by the poll via atTsRef, not by
+    // re-running this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plant, limit, refreshKey, Boolean(atTs)]);
 
   return (
     <Panel
@@ -78,7 +101,13 @@ export default function AlertTriageTable({
     >
       {err && <p className="text-2xs text-danger-fg">{err}</p>}
 
-      {!data && !err && (
+      {!atTs && !err && (
+        <p className="py-6 text-center text-2xs text-ink-faint">
+          Waiting for the replay to start — triage scopes to what has happened so far.
+        </p>
+      )}
+
+      {atTs && !data && !err && (
         <div className="space-y-2">
           <Skeleton className="h-3 w-1/2" />
           <Skeleton className="h-3 w-full" />

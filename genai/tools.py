@@ -77,6 +77,7 @@ PHASE_ORDER: tuple[str, ...] = (
     "Tracing affected units",
     "Running simulation",
     "Costing the options",
+    "Searching engineering knowledge",
     "Composing the finding",
     "Verifying every number",
 )
@@ -376,6 +377,26 @@ def build_registry(plant_ids: list[str]) -> dict[str, ToolSpec]:
             "Costing the options",
             "GET", "/api/economics/instrumentation-plan", "leadership",
             _obj(["plant_id"], {"plant_id": plant}), _q(plant_id="plant_id"),
+        ),
+        # ------------------------------------------------------------------- ADR-046
+        ToolSpec(
+            "search_engineering_knowledge",
+            "Search a synthetic engineering knowledge base -- SOPs, fault-code "
+            "reference, maintenance and calibration procedures -- for text relevant to "
+            "your question. NOT plant-scoped: this is reference documentation, not live "
+            "data, so it takes no plant_id. Each result carries doc_id, section_id and "
+            "the exact chunk text. If you quote or paraphrase a result in your finding, "
+            "you MUST cite it in `knowledge_citations`, not `claims` -- `quoted_text` "
+            "must be a real, verbatim excerpt of the cited chunk's `text`, or the whole "
+            "run is rejected. Do not state a procedure or fault-code meaning as fact "
+            "without a citation to a result this tool actually returned.",
+            "Searching engineering knowledge",
+            "GET", "/api/knowledge/search", None,
+            _obj(["query"], {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 8},
+            }),
+            _q(query="query", limit="limit"),
         ),
     ]
     return {s.name: s for s in specs}

@@ -2,15 +2,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
-import { Metrics, getHealth, getInstrumentationPlan, getMetrics, getRole, getRoi, setRole } from "@/lib/api";
+import { Metrics, getHealth, getInstrumentationPlan, getMetrics, getRole, getRoi } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { axisProps, gridProps, theme } from "@/lib/theme";
+import { usePersonaAccess } from "@/lib/usePersonaAccess";
+import AccessRestricted from "@/components/shared/AccessRestricted";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import {
   AnimatedNumber, AppShell, Badge, ChartFrame, ChartTooltip, DataTable, Fact, Kpi, Panel,
   SegmentedControl, SkeletonChart, SkeletonStats, SkeletonTable, type Column,
 } from "@/components/ui";
-import CopilotDock from "@/components/copilot/CopilotDock";
 
 type Scenario = "pessimistic" | "base" | "optimistic";
 
@@ -25,9 +26,11 @@ export default function LeadershipPage() {
   const [lastKnownAt, setLastKnownAt] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
 
-  // Identifies this view to the backend RBAC (serve/middleware/auth.py) instead of
-  // relying on lib/api.ts's global "leadership" default.
-  useEffect(() => { setRole("leadership"); }, []);
+  // Gates entry on whatever role /login left in place, THEN locks this page to its own
+  // fixed persona once granted -- see lib/usePersonaAccess.ts. Identifies this view to
+  // the backend RBAC (serve/middleware/auth.py) instead of relying on lib/api.ts's
+  // global "leadership" default.
+  const access = usePersonaAccess("leadership");
 
   useEffect(() => {
     let cancelled = false;
@@ -42,10 +45,11 @@ export default function LeadershipPage() {
   }, [retryNonce]);
 
   useEffect(() => {
+    if (access !== true) return;
     getRoi(plant, scenario).then(setRoi).catch(() => setRoi(null));
     getInstrumentationPlan(plant).then(setPlan).catch(() => setPlan(null));
     getMetrics(plant).then(setMetrics).catch(() => setMetrics(null));
-  }, [plant, scenario]);
+  }, [plant, scenario, access]);
 
   // Waterfall from a stacked bar with a transparent base — Recharts has no native one.
   const bridge = useMemo(() => {
@@ -111,6 +115,9 @@ export default function LeadershipPage() {
       ),
     },
   ];
+
+  if (access === null) return null;
+  if (access === false) return <AccessRestricted minRole="leadership" />;
 
   return (
     <AppShell
@@ -261,7 +268,7 @@ export default function LeadershipPage() {
                     }
                   />
                   <Bar dataKey="base" stackId="a" fill="transparent" isAnimationActive={false} />
-                  <Bar dataKey="delta" stackId="a" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+                  <Bar dataKey="delta" stackId="a" radius={[3, 3, 0, 0]} isAnimationActive={false} minPointSize={3}>
                     {bridge.map((b: any, i: number) => (
                       <Cell
                         key={i}
@@ -380,7 +387,7 @@ export default function LeadershipPage() {
               title={
                 <button
                   onClick={() => setShowMetrics((s) => !s)}
-                  className="flex items-center gap-1.5 rounded text-2xs font-semibold uppercase tracking-[0.14em] text-ink-faint transition-colors hover:text-ink"
+                  className="flex items-center gap-1.5 rounded text-2xs font-semibold uppercase tracking-[0.14em] text-ink-faint"
                   aria-expanded={showMetrics}
                 >
                   <span className={cn("transition-transform duration-200", showMetrics && "rotate-90")}>
@@ -428,7 +435,6 @@ export default function LeadershipPage() {
           </>
         )}
       </div>
-      <CopilotDock plant={plant} />
     </AppShell>
   );
 }

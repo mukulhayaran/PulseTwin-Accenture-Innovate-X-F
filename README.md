@@ -21,10 +21,11 @@ pip install -r serve/requirements.txt      # runtime only
 make generate        # simulate both plants        (~2 min)
 make train           # train per-plant models      (~2 min)
 make build-artifact  # bake SQLite + numpy models  (~1 min)
-make test            # full suite (339 tests, ~18 min — it runs real models)
+make test            # full suite (it runs real models, so allow several minutes)
 
 make dev-backend     # API on :7860
 make dev-frontend    # UI on :3000
+make smoke-demo      # health + readiness + 10-event live-synthetic run
 ```
 
 The committed artifacts already contain everything, so `make dev-backend` works without
@@ -32,20 +33,33 @@ running the pipeline at all.
 
 ### Production stack (finals upgrade)
 
-The demo above runs on SQLite and a JSONL replay. The production-shaped stack adds
-PostgreSQL, Redis, an MQTT broker and the real-time ingestion bridge:
+The Supervisor now exposes two honest data-source modes: **Recorded Replay** and a
+server-owned **Live Synthetic Simulation**. Live synthetic runs have a run ID, seed,
+scenario, shared clock/state, persistent alerts, and inspection outcomes; the screen is
+always labelled to say that no real factory data is connected.
+
+The production-shaped stack adds PostgreSQL, Redis, an MQTT broker, automatic artifact
+loading, backend, ingestion, and the frontend:
 
 ```bash
-make demo-prod       # docker compose: postgres + redis + mqtt + migrate + backend + ingestion
+make demo-prod       # complete production-shaped stack; UI on :3000, API on :7860
+make demo-mqtt       # same stack plus the deterministic MQTT edge publisher
+make smoke-demo-full # verify DB, Redis, MQTT, publisher, ingestion, scoring, API + UI
 make migrate         # apply migrations/*.sql to Postgres
 make load-data       # bridge the committed artifact into Postgres
 make drift-check     # PSI / calibration / sensor-coverage drift report
 make retrain         # champion-challenger retraining run
 ```
 
+See `docs/LIVE_SYNTHETIC_DEMO.md` for the event contract, API lifecycle, and a
+three-minute demonstration script.
+
 `docs/PRODUCTION_ARCHITECTURE.md` has the OT/IT diagram this stack implements.
-**Caveat:** `make demo-prod` has not yet been executed end to end — see
-`docs/STATE.md` → NEXT ACTION.
+The stack was executed end to end on 2026-09-22, including migrations, artifact loading,
+MQTT publication/ingestion, online scoring, shared live state, and complete readiness.
+If port 3000 is in use, set `FRONTEND_PORT=3001` before starting it. The API remains on
+7860; `/api/ready` checks the API itself and `/api/demo/readiness` checks the complete
+assembled MQTT demo.
 
 ### Agentic triage (`genai/`)
 
@@ -107,7 +121,7 @@ simulator. It cannot promote a model, change a config, or touch the line.
 | 1 | Mixed legacy / modern instrumentation | Soft sensors with quantile prediction intervals; **masked-station validation** hides real sensors on S9/S17/S21 and measures recovery — publishing both where it works (ambient signals, R² 0.99) and where it cannot (tool wear, R² ≈ 0); every value carries `measured` \| `inferred` provenance end to end | `offline/ml/soft_sensor.py`, `serve/main.py`, LineMap hatch + `INF` badge |
 | 2 | Multi-causal, intermittent defects | Three modes with genuinely different structure — multiplicative co-occurrence, human behaviour, and a required two-station interaction — combined as **competing risks**; exact additive decision-path explanations per unit | `offline/simulator/causal_engine.py`, `serve/scorer.py` |
 | 3 | Cannot modify live systems | Read-only passive tap; the API opens the artifact DB `mode=ro` so a write raises; **instrumentation planner** ranks retrofit by measured value per dollar — and says "you already have this signal" where a sensor would be wasted | `serve/db.py`, `offline/ml/scenarios.py`, `docs/ARCHITECTURE.md` |
-| 4 | Delayed defect surfacing | Containment tracing finds every in-flight unit sharing the causal fingerprint; lead time measured from genealogy, not assumed | `serve/main.py::containment`, ContainmentPanel |
+| 4 | Delayed defect surfacing | Containment tracing finds in-flight units sharing production context; lead time is measured from genealogy, not assumed | `serve/main.py::containment`, ContainmentPanel |
 | 5 | Different stakeholders | Four persona views: **Supervisor** (line map, alerts, containment), **Manager** (constraint migration, league table, Pareto, what-if console), **Leadership** (value bridge, threshold trade-off, instrumentation planner, rollout), and **Ops** (model health, drift, ingestion lag, audit log — the team that runs the twin itself) | `frontend/app/{supervisor,manager,leadership,ops}` |
 | 6 | Multi-site scaling | Same pipeline, different YAML: 30 stations → 42, EV → TRUCK, and the bottleneck-shift mechanism **generalises** (S12→S19, S16→S31). Per-plant models, because the feature spaces genuinely differ | `configs/plant_b.yaml`, ADR-006 |
 | 7 | False alarms erode trust | **Two thresholds that disagree, both published.** Cost-optimal says p ≥ 0.0065; human capacity says p ≥ 0.41. We operate on the budget and price the gap | `offline/ml/thresholds.py`, AlertBudgetCounter |
@@ -228,13 +242,9 @@ banned outright, and the test fails the build if one appears.
   allows all origins. That is a deliberate demo posture, not an oversight:
   `docs/SECURITY.md` states it plainly and gives the OIDC/JWT swap, which touches exactly
   one function body.
-- **The production stack has never been run end to end.** The manifests, Dockerfiles and
-  compose files are reviewed and one real bug was found that way, but no one has executed
-  `docker compose -f docker-compose.prod.yml up` against a live daemon. Listed here rather
-  than left for a judge to discover at the wrong moment.
-- **Real-time ingestion is exercised by tests, not by a running broker.** `ingestion/`
-  has unit coverage for topic parsing, dedup, dropout detection and data-quality scoring;
-  the MQTT wire path itself has only been driven in the demo stack, not in CI.
+- **The live path still uses synthetic events.** The production-shaped stack and real
+  MQTT wire path have been exercised end to end, but no customer PLC, MES, QMS, or
+  historian is connected. The permanent source label makes that boundary visible.
 - **Soft sensors work for some signals and not others, and we publish both.** Ambient-driven
   readings (paint temperature, humidity, film thickness) reconstruct at R² 0.97–1.00.
   Tool-wear-driven readings (torque, vibration) reconstruct at R² ≈ 0 or worse, because

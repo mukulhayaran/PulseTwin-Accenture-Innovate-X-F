@@ -6,6 +6,7 @@ the artifact builder and the serving layer fails here rather than on stage.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -74,6 +75,28 @@ def test_unknown_plant_is_404(client):
     assert client.get("/api/config/stations?plant_id=nope").status_code == 404
 
 
+@pytest.mark.parametrize("plant", PLANTS)
+def test_station_stats_returns_one_row_per_station(client, plant):
+    """/api/stations/stats had NO test calling it over HTTP until this one -- confirmed by
+    grep before writing it. Its GROUP BY selected `provenance` without aggregating it or
+    grouping by it, which SQLite's lenient extension tolerates (silently picking an
+    unspecified row's value) and PostgreSQL rejects outright
+    (`GroupingError: column "station_stats.provenance" must appear in the GROUP BY
+    clause`) -- a crash on EVERY call, found by a security probe against the real
+    docker-compose.prod.yml stack, not by this suite. This test cannot reproduce the
+    Postgres-specific failure (nothing here runs against Postgres -- see
+    reports/scalability-review.md's CI recommendation), but it closes the "never called at
+    all" half of the gap and pins the shape so a future edit cannot silently reintroduce an
+    invalid GROUP BY without at least breaking a passing assertion on SQLite.
+    """
+    body = client.get(f"/api/stations/stats?plant_id={plant}").json()
+    assert body, "no station rows returned"
+    for row in body:
+        assert row["provenance"] in ("measured", "inferred")
+        assert isinstance(row["station_id"], int)
+        assert row["util"] is not None
+
+
 # ---------------------------------------------------------------------------- units
 
 
@@ -110,10 +133,123 @@ def test_containment_never_exposes_operator_identity(client, plant):
     body = client.get(f"/api/trace/containment/{top['unit_id']}?plant_id={plant}").json()
 
     blob = str(body).lower()
-    assert "_op" not in blob, "raw operator id leaked into the containment response"
+    # Group-level overlap is intentionally exposed; individual simulated IDs such
+    # as ``A_OP_004`` / ``B_OP_011`` must never cross the API boundary.
+    assert not re.search(r"\b[ab]_op_\d+\b", blob), (
+        "raw operator id leaked into the containment response"
+    )
     assert "shift_a_op" not in blob
     for u in body["at_risk_units"]:
         assert u["action"] in ("HOLD", "INSPECT", "MONITOR")
+
+
+def test_containment_operator_group_overlap_uses_only_visible_journey(client):
+    from serve import db
+
+    flagged = client.get("/api/units?plant_id=plant_a&alerts_only=true&limit=1").json()[0]
+    at_ts = flagged["prediction_ts"]
+    body = client.get(
+        f"/api/trace/containment/{flagged['unit_id']}?plant_id=plant_a&at_ts={at_ts}"
+    ).json()
+
+    def groups(unit_id: str) -> set[str]:
+        return {
+            row["operator_group"] for row in db.query_all(
+                app.state.main_con,
+                """SELECT DISTINCT operator_group FROM genealogy
+                     WHERE plant_id=? AND unit_id=? AND operator_group IS NOT NULL
+                       AND entry_ts<=?""",
+                ("plant_a", unit_id, at_ts),
+            )
+        }
+
+    flagged_groups = groups(flagged["unit_id"])
+    for peer in body["at_risk_units"]:
+        visible_overlap = bool(flagged_groups & groups(peer["unit_id"]))
+        assert ("same_operator_group" in peer["shared_factors"]) is visible_overlap
+
+
+def test_manual_containment_decision_is_saved_separately_from_recommendation(client):
+    top = client.get("/api/units?plant_id=plant_a&alerts_only=true&limit=1").json()[0]
+    path = f"/api/trace/containment/{top['unit_id']}?plant_id=plant_a"
+    before = client.get(path).json()
+    assert before["at_risk_units"]
+    target = before["at_risk_units"][0]
+    manual = "HOLD" if target["action"] != "HOLD" else "MONITOR"
+
+    r = client.post("/api/trace/containment/decisions", json={
+        "plant_id": "plant_a",
+        "flagged_unit_id": top["unit_id"],
+        "target_unit_id": target["unit_id"],
+        "selected_action": manual,
+        "message": "Inspect at the next quality gate before release.",
+        "owner": "quality-gate-team",
+        "due_station": 29,
+        "due_at": "2026-09-22T12:00:00Z",
+    }, headers={"X-PulseTwin-User": "test-supervisor"})
+    assert r.status_code == 200
+    saved = r.json()
+    assert saved["stored"] is True
+    assert saved["recommended_action"] == target["action"]
+    assert saved["selected_action"] == manual
+    assert saved["decided_by_user"] == "test-supervisor"
+
+    history = client.get("/api/trace/containment-decisions?plant_id=plant_a&limit=1").json()[0]
+    assert history["owner"] == "quality-gate-team"
+    assert history["due_station"] == 29
+    assert history["due_at"] == "2026-09-22T12:00:00Z"
+
+    after_target = next(
+        unit for unit in client.get(path).json()["at_risk_units"]
+        if unit["unit_id"] == target["unit_id"]
+    )
+    assert after_target["action"] == target["action"]
+    assert after_target["manual_action"] == manual
+    assert after_target["decision_recorded_at"]
+
+
+def test_manual_containment_decision_requires_a_useful_message(client):
+    top = client.get("/api/units?plant_id=plant_a&alerts_only=true&limit=1").json()[0]
+    containment_body = client.get(
+        f"/api/trace/containment/{top['unit_id']}?plant_id=plant_a"
+    ).json()
+    target = containment_body["at_risk_units"][0]
+    r = client.post("/api/trace/containment/decisions", json={
+        "plant_id": "plant_a",
+        "flagged_unit_id": top["unit_id"],
+        "target_unit_id": target["unit_id"],
+        "selected_action": "INSPECT",
+        "message": "    ",
+    })
+    assert r.status_code == 422
+
+
+def test_manual_containment_decision_rejects_operator_identifiers(client):
+    top = client.get("/api/units?plant_id=plant_a&alerts_only=true&limit=1").json()[0]
+    containment_body = client.get(
+        f"/api/trace/containment/{top['unit_id']}?plant_id=plant_a"
+    ).json()
+    target = containment_body["at_risk_units"][0]
+    r = client.post("/api/trace/containment/decisions", json={
+        "plant_id": "plant_a",
+        "flagged_unit_id": top["unit_id"],
+        "target_unit_id": target["unit_id"],
+        "selected_action": "INSPECT",
+        "message": "Ask operator ID 123 to repeat the check.",
+    })
+    assert r.status_code == 422
+
+
+def test_manual_containment_decision_rejects_a_unit_outside_the_group(client):
+    top = client.get("/api/units?plant_id=plant_a&alerts_only=true&limit=1").json()[0]
+    r = client.post("/api/trace/containment/decisions", json={
+        "plant_id": "plant_a",
+        "flagged_unit_id": top["unit_id"],
+        "target_unit_id": "NOT-IN-THIS-GROUP",
+        "selected_action": "HOLD",
+        "message": "Hold for inspection.",
+    })
+    assert r.status_code == 404
 
 
 # ------------------------------------------------------------------------ bottleneck
@@ -171,6 +307,11 @@ def test_predict_returns_honest_explanation_mode(client, plant):
     body = r.json()
     assert 0.0 <= body["probability"] <= 1.0
     assert body["explanation_mode"] == "decision_path"
+    assert body["model_id"].startswith(f"{plant}_defect_risk_")
+    assert body["model_version"] >= 1
+    assert body["feature_set_version"]
+    assert body["features_available"] + body["features_missing"] > 0
+    assert 0 <= body["data_completeness_pct"] <= 100
     assert "shap" not in str(body).lower()
     lo, hi = body["confidence_interval"]
     assert lo <= body["probability"] <= hi

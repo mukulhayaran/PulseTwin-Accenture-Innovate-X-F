@@ -1174,3 +1174,301 @@ of them. Four or five conversations exhaust a day, after which every run fails
 `rate_limited` — correctly surfaced in the UI, but a demo that must not run dry should
 drop the `:free` suffix or fund the account. `genai/offline_triage.py` remains the answer
 that needs no provider at all and passes the identical verifier.
+
+---
+
+### ADR-041 — Startup asks the registry which model is champion; it does not assume
+**Audit:** Production-readiness pass, 2026-09-21 · **Status:** ACCEPTED
+
+*Found by tracing the seam the audit was explicitly asked to trace, not by a failing
+test:* `docs/STATE.md`'s own QA section already named "the model that serves traffic is
+not in the registry" as the one open finding a judge could turn into a question the repo
+could not answer. Tracing `serve/main.py::lifespan` end to end showed the actual defect is
+a rung worse than that sentence states.
+
+`lifespan()` loaded `artifacts/model_<plant>.npz` unconditionally on every startup and
+never queried `model_registry`. Meanwhile `admin.py::_activate_scorer` (already correct,
+per the 2026-09-16 fix logged in `docs/MLOPS_LIFECYCLE.md`) hot-swaps `STATE["scorers"]`
+in memory AND writes a real `status='champion'` row with the promoted artifact's path the
+moment `POST /api/admin/promote-model` runs. Those two facts together mean: a promotion
+was real and correctly recorded, right up until the next restart -- at which point
+`lifespan()` threw the registry's answer away and reloaded the pre-promotion committed
+artifact, while `model_registry` kept confidently reporting the promoted challenger as
+champion. `docs/MLOPS_LIFECYCLE.md` even asserted the fix for this ("the registry row...
+is the source of truth in both cases") without any code making it true -- a documentation
+claim the implementation did not back up, not a hidden design gap.
+
+**Alternatives considered:**
+
+1. *Do nothing; document the restart caveat more loudly.* Rejected -- the caveat was
+   already documented (`_activate_scorer`'s own docstring) and it was still wrong,
+   because "the committed artifact" is not what the caveat's audience (a judge, or a
+   production on-call engineer) would infer "reverts to the committed champion" means
+   once a promotion has actually happened. The registry actively disagreeing with the
+   running process is worse than the registry being merely uninformative.
+2. *Redis-backed live reconciliation across replicas* (a pub/sub or short-poll signal so
+   every backend pod picks up a promotion within seconds, not just at its own next
+   restart). This is the right eventual design for the documented 2-6 pod production
+   topology (`docs/PRODUCTION_ARCHITECTURE.md`) -- today, a promotion via one API call
+   only patches the ONE pod that received that request, and the others behind the Service
+   keep serving the old model with no error and no indication. Deferred: it needs Redis
+   wiring, a reconciliation test, and a decision about staleness bounds, which is exactly
+   the kind of ambiguous architectural change CLAUDE.md says not to blindly patch. Flagged
+   here as the known, unresolved multi-replica gap; `docker-compose.prod.yml` and the demo
+   both run a single backend replica (ADR-009), so it does not affect anything currently
+   deployed.
+3. **Chosen:** make `lifespan()` ask `model_registry` for the current champion's
+   `artifact_path` per plant at startup, exactly as `_activate_scorer` already does at
+   promotion time, and load that instead of the hardcoded path. Falls back to the
+   committed artifact if no champion row exists yet, or its file is missing (e.g. a
+   registry copied to a machine without the challenger `.npz` files) -- a plant is never
+   left unscored over a registry lookup. Additionally: bootstrap-register the committed
+   artifact as `status='champion'` the first time a plant is served with no registry row
+   at all, using REAL values pulled from the `metrics` table (`pr_auc`, `oracle_pr_auc`,
+   `precision_at_budget`, `recall_at_budget`, `bottleneck_detection_accuracy`) rather than
+   placeholders, keyed on a deterministic `model_id` so it is idempotent across restarts
+   against the same long-lived ops DB (the exact file STATE.md bugs #69/#70 already found
+   accumulates state indefinitely).
+
+**Consequences:** a promotion now survives a restart on the single-replica demo/production
+topology that actually exists today -- `serve/main.py::_resolve_champion_artifact` and
+`_bootstrap_registry_champion`, tested end to end against the real committed artifact in
+`tests/test_model_registry_runtime.py` (no mocked scorer, no mocked registry). "Which
+exact model is currently serving plant X" is now always answerable from `model_registry`
+alone, including for a plant that has never been retrained. The multi-replica staleness
+gap (alternative 2) is real, unresolved, and now named in one place instead of being
+implied-fixed by a doc sentence the code did not implement.
+
+---
+
+### ADR-042 — A live synthetic run has one server-owned clock and an explicit source label
+**Audit:** Synthetic-live implementation, 2026-09-22 · **Status:** ACCEPTED
+
+The browser-level JSONL replay remains useful for a reproducible recorded shift, but it
+cannot represent a shared plant: every SSE connection owns its own clock, alert counter,
+and position. Calling that transport “live” makes two browser tabs disagree about the
+factory and overstates what is connected.
+
+**Chosen:** preserve replay and add a separate live-synthetic run manager. One background
+producer emits seeded events from the committed simulator stream into durable
+`simulation_runs`, `simulation_events`, `unit_current_state`,
+`station_current_state`, and `active_alerts` tables. All clients join the same run by ID.
+The event envelope always carries `source: live_synthetic`, and the Supervisor renders a
+permanent “no real factory data connected” label. The same envelope is the future MQTT,
+OPC-UA, MES, Kafka, or QMS integration boundary.
+
+The API stays behind the import wall: it does not import the heavy offline simulator or
+training stack. Seeded scenario transformations use the already committed deterministic
+stream, so fixed seeds reproduce and different seeds change synthetic variation without
+tuning model quality upward.
+
+**Consequence:** start/pause/resume/stop, shared state, temporal unit reads, durable alert
+acknowledgement, containment decisions, and inspection validation work without real plant
+data. MQTT remains a separate ingestion deployable and now projects the same event
+envelope into these shared run tables, so both transports drive the same Supervisor APIs.
+
+---
+
+### ADR-043 — One versioned feature contract for offline and live scoring
+**Audit:** Live parity implementation, 2026-09-22 · **Status:** ACCEPTED
+
+Offline training and MQTT scoring previously calculated rolling signals independently,
+making silent training/serving skew likely. A dependency-free `feature_contract.py` now
+owns signal formulas, window sizes, and checklist codes. The artifact builder and the
+Redis-backed live buffer both consume it. Prediction logs record model and feature-set
+versions, prediction time, available/missing counts, completeness, run ID, and source.
+Golden parity tests drive the actual Redis feature assembler for both plants and compare
+every registered model feature (including missing-value positions) plus the final score.
+
+---
+
+### ADR-044 — Alert state is an auditable lifecycle, not a UI flag
+**Audit:** Closed-loop implementation, 2026-09-22 · **Status:** ACCEPTED
+
+Live alerts transition through `OPEN → ACKNOWLEDGED → ACTIONED → VALIDATED → CLOSED`.
+Human decisions preserve the recommendation, action, reason, user/role, owner, due
+station/time, evidence snapshot, and later inspection outcome. A durable status endpoint
+rehydrates acknowledgement/action state after refresh. Closure is rejected until
+validation. Run metrics report active/correct/false alerts, alert correctness rate,
+response and containment time, decision correctness, unnecessary intervention, and a
+clearly sourced synthetic avoided-cost estimate.
+
+### ADR-045 — Incident triage becomes Coordinator → Specialists → Synthesizer
+**Audit:** Multi-agent orchestration implementation, 2026-09-22 · **Status:** ACCEPTED
+
+`genai/loop.py`'s single ReAct loop already implements everything the `incident` intent's
+own guidance (`genai/intents.py`) describes end to end: rule out infrastructure, establish
+what changed, then trace affected units. One model, one broad tool registry, one
+transcript. That is a correct answer with poor separation of authority — the agentic
+surface area a reviewer can actually see is one phase trail, not three investigators
+reasoning in distinct roles, and a mentor review specifically asked for genuine
+multi-agent orchestration rather than a single, broadly-scoped agent.
+
+**Chosen:** the `incident` intent now runs three bounded specialist loops (reliability,
+production, risk), each a `genai/loop.py::run_loop` call against a disjoint SUBSET of the
+18-tool registry with its own short guidance and its own, LOWER iteration/tool-call/
+wallclock cap, followed by one synthesis call (also `run_loop`, an EMPTY tool registry)
+that reconciles their evidence into the one `Finding` shape `genai/finding.py` and
+`genai/verifier.py` already know. No change to `genai/verifier.py`, `genai/finding.py`, or
+`genai/prompts.py`'s `SYSTEM` prompt was needed or made: the citation contract is
+universal, and the verifier has never had a concept of "which loop produced this call_id"
+— it checks a `call_id -> result` mapping, and a MERGED map with globally-unique ids across
+four loop invocations satisfies it exactly as one loop's map always did. A dedicated test
+(`tests/test_genai_orchestrator.py::test_happy_path_produces_a_globally_sequential_transcript_the_real_verifier_accepts`)
+proves this by building three real citations, one per specialist, and running the actual
+`genai.verifier.verify()` against the merged transcript — not asserting the claim, testing it.
+
+**The one load-bearing mechanism:** `run_loop`'s call_id numbering (`seq`) was local to
+each invocation. Four sequential invocations sharing one transcript would each start at
+`call_0001` and collide. `run_loop` now takes `initial_seq` (threaded from each prior
+stage's `LoopResult.final_seq`) plus independently-parametrized `max_iterations`,
+`max_tool_calls`, and `wallclock_cap_s` — all four default to today's module constants, so
+the existing single-agent call site and its whole test suite are byte-identical with no
+call-site edits (confirmed: all 14 pre-existing `tests/test_genai_loop.py` cases pass
+unmodified). The call-id counter (`LoopResult.final_seq`) and the per-invocation tool-call
+budget (`calls_made`, local to each `run_loop` call) are deliberately SEPARATE counters —
+coupling them would make a specialist starting at `initial_seq=8` incorrectly
+budget-exhaust after `24-8` calls instead of its own intended cap.
+
+**Coordinator is deterministic, not a model call.** `genai/intents.py` already made this
+argument for intent selection ("a classifier would be a second, unverifiable model call
+and a new failure mode, to save a click on a button already on screen"); the same
+reasoning applies here, and every clause of `INTENTS[INCIDENT].guidance` is unconditional,
+so there is no real per-question judgment to spend a request on yet.
+`orchestrator.select_specialists()` always returns all three for `incident`. An
+LLM-coordinator variant (one no-tool call, the deterministic table as its fallback on any
+failure) is a named, deferred fast-follow — ADR-040's 50-requests/day `:free`-tier ceiling
+makes every guaranteed extra request a real cost, and this decision buys the same
+specialist-separation without one.
+
+**Budget, made concrete (ADR-040 context).** Per-specialist caps: reliability
+(5 iter / 3 calls / 60s), production (6 / 4 / 90s), risk (6 / 4 / 90s), synthesis
+(2 / 0 / 60s) — the four wallclock allotments sum to exactly 300s, the SAME
+`RUN_WALLCLOCK_CAP_S` the single-agent path already uses, just partitioned (pinned by
+`tests/test_genai_orchestrator.py::test_wallclock_budgets_sum_to_the_single_agent_ceiling`).
+Worst-case request count for one orchestrated run: 19. Typical (2-4 iterations per stage,
+as `genai/config.py`'s own `MAX_ITERATIONS` comment already measures for the single-agent
+path): ~9, comparable to the single-agent run's measured 7-12. On the `:free` tier that is
+roughly 2-5 orchestrated incident conversations per day.
+`PULSETWIN_GENAI_MAX_SPECIALISTS` truncates the specialist list (reliability first) as an
+operator-facing degrade lever on a constrained day; `PULSETWIN_GENAI_DISABLE_ORCHESTRATION`
+is a full kill switch back to the single-agent incident path.
+
+**Graceful partial-evidence degradation.** A specialist that exhausts its own
+iteration/tool-call/wallclock cap is not a run failure: `run_loop` returns whatever
+records it accumulated before the cap, and the orchestrator marks that specialist
+`partial` and proceeds to the next stage and eventually the synthesizer, which is told
+explicitly which specialists are partial and to report gaps as `unanswered` rather than
+fill them in. Only a CREDENTIAL/PERMISSION-shaped failure (401/403/404) aborts the whole
+orchestration immediately, matching the single-agent path's existing behaviour for the
+same codes — proceeding to a synthesizer that cannot succeed either would just spend a
+request to reach the same failure.
+
+**Attribution needed a schema change.** `triage_tool_calls` gained a nullable `agent`
+column (`migrations/014_genai_orchestration.sql`, mirrored by hand in `serve/db.py` per
+the existing dual-schema convention) and `triage_runs` gained `orchestrated`/
+`agents_used`. Without the column, specialist attribution would exist only in the live
+heartbeat and be lost the instant `serve/routers/triage.py::get_run` switches from the
+heartbeat to the persisted ledger as authoritative — the same flicker-at-the-handover
+failure mode its own comments already warn about for the phase trail.
+
+**Offline parity: a documented note, not a restructuring.** `genai/offline_triage.py`'s
+`run_incident` already follows the identical METHOD (infrastructure before behaviour,
+then affected units) in one fixed deterministic pass, and PARITY IS A HARD REQUIREMENT
+means every named action works with no provider — it does not mean the deterministic path
+must imitate the agentic path's internal shape. Restructuring it into three fake
+"specialist" functions with no real agent behind them would be exactly the pretence
+CLAUDE.md §3's "an honest lesser thing, never a pretence" already rules out.
+
+**Consequences:** the incident intent now demonstrates genuine multi-agent orchestration
+— three separately-bounded, separately-scoped LLM investigators and a reconciling
+synthesis step, all citation-checked by the SAME unmodified verifier — at a request cost
+comparable to, not multiplicatively worse than, the single-agent path it replaces for
+this one intent. The other four intents (`ask`, `handover`, `shift_intel`, `whatif`) are
+unaffected: `use_agent and intent == intents.INCIDENT and config.ORCHESTRATION_ENABLED`
+is the only new branch condition in `genai/triage.py::run`, and every other code path
+through it is unchanged.
+
+### ADR-046 — Engineering-knowledge retrieval: lexical TF-IDF, a tool not a specialist
+**Audit:** RAG implementation, 2026-09-22 · **Status:** ACCEPTED
+
+A competing prompt evaluated for this hackathon asked for a full RAG subsystem — Qdrant,
+sentence-transformers, a dedicated Knowledge agent — as part of a ground-up rebuild.
+Comparing it against this build surfaced one genuine gap worth keeping: this project had
+no engineering-knowledge retrieval at all. Every other item on that prompt's "agentic AI"
+checklist was already met or exceeded here, most notably the thing it had no equivalent
+of — `genai/verifier.py`'s deterministic re-check of every claim, versus that prompt's
+prompt-only trust discipline ("use language such as 'likely contributing factor'"). This
+ADR adds the one real gap without importing that prompt's weaker trust model.
+
+**Retrieval: deterministic TF-IDF, not embeddings.** `offline/build_knowledge_index.py`
+tokenizes a 10-document, 26-chunk synthetic SOP/fault-code corpus
+(`offline/knowledge/corpus.py`), builds a vocabulary, IDF weights and a dense TF-IDF
+matrix with pure numpy, and bakes them into `artifacts/knowledge_index.npz` +
+`artifacts/knowledge_corpus.json` — the same "precompute heavy, serve thin" split
+`serve/scorer.py` already uses for the trained model. `serve/knowledge_index.py` projects
+a query into that space and ranks by cosine similarity, all numpy/stdlib, well inside the
+import wall. No embedding model, no vector database service, no network call, no new
+dependency anywhere, fully reproducible, and it works with zero LLM credential — the
+`:free`-tier and no-credential constraints (ADR-040, `genai/offline_triage.py`) that
+already govern this tier apply here without needing a second design.
+
+**A real precision bug, caught by running it, not assumed away.** The first version
+tokenized only each chunk's literal body text with a plain word-splitting regex. The
+query "weld current anomaly" then ranked the WRONG document first: the fault-code entry
+titled exactly "FC-301 Weld current anomaly" writes the signal as the single compound
+token `weld_current_a`, so a query using the separate English words "weld" and "current"
+got zero credit for it, while an unrelated section that happened to write "weld-current"
+in prose (splitting on the hyphen) won on a coincidence. Fixed two ways: `tokenize()` now
+emits a compound identifier's underscore-split parts alongside the whole token
+(`weld_current_a` → also `weld`, `current`), and each chunk's document title and section
+heading are indexed alongside its body (title terms like "Calibration" now count for a
+section whose body never repeats that exact word). Confirmed by hand against a battery of
+representative incident-style queries before writing a single test — every one now
+top-ranks the document actually about the query's topic — and pinned in
+`tests/test_knowledge_index.py::test_a_fault_code_query_ranks_its_own_named_document_first`.
+
+**Tool, not a 4th specialist.** `search_engineering_knowledge` joins the 18-tool registry
+(`genai/tools.py`) and is available to the single-agent path and to all three `incident`
+specialists (`genai/orchestrator.py`). Each specialist's `max_tool_calls` is bumped by
+exactly 1 over its ADR-045 budget so an optional knowledge lookup never comes at the cost
+of the domain evidence a specialist was already sized to gather. No orchestrator
+structure change, no new mandatory request per run — the tool is called only if the model
+chooses to, so it adds no guaranteed pressure on the `:free`-tier 50/day budget beyond
+what the model actually uses. A new `PHASE_ORDER` entry ("Searching engineering
+knowledge") is mirrored by hand into `serve/routers/triage.py::PHASE_ORDER`, exactly like
+every existing phase, with `tests/test_genai_progress.py`'s existing agreement test
+catching drift.
+
+**Verification: a citation check with the same rigor as the other four.** A new
+`KnowledgeCitation` (`genai/finding.py`, parallel to `Claim`) requires `quoted_text` plus
+a `Citation` into a `search_engineering_knowledge` result. `genai/verifier.py` resolves
+the pointer against the RECORDED transcript (never re-calling the endpoint, same
+guarantee C1/C2 already rest on) and checks `quoted_text` is a real, whitespace-normalized
+substring of the chunk's actual text. Every failure code for this check — unresolvable
+call or pointer, a non-text target, a fabricated quote, an empty quote — is FATAL
+(`FATAL_CODES`), rejecting the whole run, matching how `UNSOURCED_CURRENCY` and
+`OPERATOR_IDENTITY` are already treated: inventing what a maintenance procedure says is a
+comparable trust violation to inventing a dollar figure, and there is no meaningful
+partial credit for a quote that is 70% real. Knowledge verdicts are tracked in a
+SEPARATE list from claim verdicts precisely so a knowledge citation can never inflate
+`claims_verified` past `claims_total` and corrupt the C1/C2 graded-redaction ratio — a
+failure mode caught and pinned directly
+(`test_a_knowledge_citation_never_inflates_claims_verified`). On success, `served_finding`
+carries `finding.knowledge_citations` unchanged: reaching the success path already means
+every citation passed, so unlike claims there is no partial-redaction case to build.
+
+**Known, stated limitation.** This covers text cited through `knowledge_citations` only.
+Free prose in `summary`/`recommendation` is still swept for numbers only (C3's existing
+scope), not for uncited SOP paraphrases — a model could still describe a procedure in its
+own words in prose without triggering any check. Extending C3 to detect unattributed
+paraphrase (not just uncited numbers) is a materially harder, more speculative problem
+(near-duplicate text detection, not exact substring matching) and is out of scope here;
+the citation contract in `genai/prompts.py`'s SYSTEM prompt instructs the model not to do
+this, same as every other prompt-level rule that C3's design already treats as
+insufficient on its own for the things this module CAN mechanically check.
+
+**Offline parity: unaffected by design.** `genai/offline_triage.py`'s deterministic plans
+call no LLM and produce no `knowledge_citations` — `Finding.knowledge_citations` defaults
+to `[]`, so the offline path and every Finding produced before this ADR parse and verify
+exactly as before (`test_absent_knowledge_citations_is_unaffected`).

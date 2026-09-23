@@ -58,6 +58,7 @@ PHASE_ORDER = (
     "Tracing affected units",
     "Running simulation",
     "Costing the options",
+    "Searching engineering knowledge",
     "Composing the finding",
     "Verifying every number",
 )
@@ -130,6 +131,9 @@ def availability() -> dict[str, Any]:
 
     Reports credential PRESENCE only -- never the value, a prefix, or its length.
     """
+    if os.environ.get("PULSETWIN_JOBS_ENABLED", "1") == "0":
+        return {"enabled": False, "reason": "disabled_in_deployment", "mode": "none",
+                "intents": {}, "phase_order": []}
     if _credential_present():
         return {"enabled": True, "reason": "ok", "mode": "agent",
                 "intents": INTENT_LABELS, "phase_order": list(PHASE_ORDER)}
@@ -148,9 +152,135 @@ def _thread_title(question: str) -> str:
     return text[:72] + ("..." if len(text) > 72 else "")
 
 
+def start_triage_run(
+    ops: Any,
+    *,
+    plant_id: str,
+    question: str,
+    intent: str,
+    role: str,
+    acting_role: str,
+    mode: str,
+    api_base: str,
+    thread_id: str | None = None,
+    station_id: int | None = None,
+) -> dict[str, Any]:
+    """Create the thread/run rows, write the first heartbeat, and spawn the detached
+    `genai.triage` subprocess. This is the ONE path that starts a run -- called both by
+    the HTTP endpoint below (a human asked) and by
+    `serve.live_simulation.LiveSimulationManager._trigger_auto_investigation` (the system
+    investigates before anyone asked). An auto-triggered run must go through the exact
+    same verifier and the exact same DB rows as a manual one, not a second, weaker path
+    for the case nobody is watching yet.
+
+    Raises ValueError on a bad thread reference -- the HTTP caller translates that to the
+    matching HTTPException; the background caller just logs and moves on (see
+    `_trigger_auto_investigation`'s try/except).
+    """
+    run_id = secrets.token_hex(8)
+
+    turn_index = 0
+    if thread_id:
+        thread = db.query_one(
+            ops, "SELECT * FROM triage_threads WHERE thread_id = ?", (thread_id,))
+        if thread is None:
+            raise ValueError(f"unknown thread '{thread_id}'")
+        # A thread is plant-scoped because the values it carries forward are plant facts.
+        # Letting a turn switch plants would carry plant_a's throughput into a plant_b
+        # answer as a verifier exemption.
+        if thread["plant_id"] != plant_id:
+            raise ValueError(f"thread '{thread_id}' belongs to plant '{thread['plant_id']}'")
+        busy = db.query_one(
+            ops,
+            "SELECT run_id FROM triage_runs WHERE thread_id = ? "
+            "AND status IN ('queued','running') LIMIT 1",
+            (thread_id,),
+        )
+        if busy:
+            # Per-turn spawn means two concurrent turns would interleave heartbeats in
+            # one file and race for the same turn index. One turn at a time per thread.
+            raise ValueError(
+                f"thread '{thread_id}' already has run '{busy['run_id']}' in flight")
+        row = db.query_one(
+            ops, "SELECT MAX(turn_index) AS n FROM triage_runs WHERE thread_id = ?",
+            (thread_id,))
+        turn_index = int((row or {}).get("n") or 0) + 1
+    else:
+        thread_id = secrets.token_hex(8)
+        db.execute(
+            ops,
+            """INSERT INTO triage_threads
+               (thread_id, plant_id, title, opened_by, turn_count)
+               VALUES (?, ?, ?, ?, 0)""",
+            (thread_id, plant_id, _thread_title(question), role),
+        )
+
+    # Insert BEFORE spawning so a run is never invisible, even if the worker dies.
+    db.execute(
+        ops,
+        """INSERT INTO triage_runs
+           (run_id, plant_id, question, requested_by, acting_role, mode, status,
+            thread_id, turn_index, intent, station_id)
+           VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)""",
+        (run_id, plant_id, question, role, acting_role, mode,
+         thread_id, turn_index, intent, station_id),
+    )
+
+    # A list argv never goes through a shell, so the question carries no injection
+    # surface; the length and control-character caps in start_run are defence in depth.
+    # The child's stdio goes to a per-run log beside its heartbeat, NOT to DEVNULL.
+    # A detached worker whose failures vanish is precisely how this repo ended up with
+    # a container nobody had run: if the job dies on import, the only evidence is the
+    # row staying `queued` forever, with nothing to read.
+    jobs = _jobs_dir()
+    jobs.mkdir(parents=True, exist_ok=True)
+
+    # Write the FIRST heartbeat before spawning anything.
+    #
+    # The longest single wait in a run is the interpreter starting, importing the
+    # provider SDK, and making the first model round trip -- all of it BEFORE the worker
+    # can write its own first heartbeat. Without this the panel shows a bare spinner for
+    # one to three seconds at the exact moment a demo audience is deciding whether the
+    # thing works. Six lines buy a truthful label in about 200ms.
+    try:
+        (jobs / f"{run_id}.json").write_text(json.dumps({
+            "v": HEARTBEAT_VERSION, "run_id": run_id, "thread_id": thread_id,
+            "turn_index": turn_index, "status": "queued", "mode": mode,
+            "intent": intent, "phase": PHASE_ORDER[0], "phase_index": 0,
+            "iteration": 0, "elapsed_s": 0.0, "tools": [], "done": False,
+        }), encoding="utf-8")
+    except OSError:
+        pass  # a heartbeat failure must never stop a run from starting
+
+    log_path = jobs / f"{run_id}.log"
+    try:
+        log = open(log_path, "w", encoding="utf-8")  # noqa: SIM115 - owned by the child
+    except OSError:
+        log = None
+
+    subprocess.Popen(
+        [sys.executable, "-m", "genai.triage",
+         "--plant", plant_id, "--question", question,
+         "--run-id", run_id, "--api-base", api_base,
+         "--role", acting_role, "--requested-by", role, "--mode", mode,
+         "--intent", intent,
+         "--thread-id", thread_id, "--turn-index", str(turn_index)]
+        + (["--station-id", str(station_id)] if station_id is not None else []),
+        cwd=str(ROOT),
+        env={**os.environ, "OMP_NUM_THREADS": "1", "PYTHONPATH": str(ROOT)},
+        stdout=log or subprocess.DEVNULL,
+        stderr=subprocess.STDOUT if log else subprocess.DEVNULL,
+    )
+
+    return {"run_id": run_id, "status": "queued", "mode": mode, "acting_role": acting_role,
+            "thread_id": thread_id, "turn_index": turn_index, "intent": intent}
+
+
 @router.post("/api/triage/runs")
 def start_run(req: TriageRequest, request: Request,
               role: str = Depends(require_role("manager"))) -> dict[str, Any]:
+    if os.environ.get("PULSETWIN_JOBS_ENABLED", "1") == "0":
+        raise HTTPException(503, "GenAI triage is disabled in this deployment")
     config_path = ROOT / "configs" / f"{req.plant_id}.yaml"
     if not config_path.exists():
         raise HTTPException(404, f"unknown plant '{req.plant_id}'")
@@ -175,113 +305,25 @@ def start_run(req: TriageRequest, request: Request,
     if mode == "agent" and not _credential_present():
         raise HTTPException(503, f"{API_KEY_ENV} is not configured")
 
-    run_id = secrets.token_hex(8)
     ops = request.app.state.ops
-
-    # ---- resolve the thread and allocate this turn's index
-    thread_id = req.thread_id
-    turn_index = 0
-    if thread_id:
-        thread = db.query_one(
-            ops, "SELECT * FROM triage_threads WHERE thread_id = ?", (thread_id,))
-        if thread is None:
-            raise HTTPException(404, f"unknown thread '{thread_id}'")
-        # A thread is plant-scoped because the values it carries forward are plant facts.
-        # Letting a turn switch plants would carry plant_a's throughput into a plant_b
-        # answer as a verifier exemption.
-        if thread["plant_id"] != req.plant_id:
-            raise HTTPException(
-                409, f"thread '{thread_id}' belongs to plant '{thread['plant_id']}'")
-        busy = db.query_one(
-            ops,
-            "SELECT run_id FROM triage_runs WHERE thread_id = ? "
-            "AND status IN ('queued','running') LIMIT 1",
-            (thread_id,),
-        )
-        if busy:
-            # Per-turn spawn means two concurrent turns would interleave heartbeats in
-            # one file and race for the same turn index. One turn at a time per thread.
-            raise HTTPException(
-                409, f"thread '{thread_id}' already has run '{busy['run_id']}' in flight")
-        row = db.query_one(
-            ops, "SELECT MAX(turn_index) AS n FROM triage_runs WHERE thread_id = ?",
-            (thread_id,))
-        turn_index = int((row or {}).get("n") or 0) + 1
-    else:
-        thread_id = secrets.token_hex(8)
-        db.execute(
-            ops,
-            """INSERT INTO triage_threads
-               (thread_id, plant_id, title, opened_by, turn_count)
-               VALUES (?, ?, ?, ?, 0)""",
-            (thread_id, req.plant_id, _thread_title(question), role),
-        )
-
-    # Insert BEFORE spawning so a run is never invisible, even if the worker dies.
-    db.execute(
-        ops,
-        """INSERT INTO triage_runs
-           (run_id, plant_id, question, requested_by, acting_role, mode, status,
-            thread_id, turn_index, intent, station_id)
-           VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)""",
-        (run_id, req.plant_id, question, role, acting, mode,
-         thread_id, turn_index, req.intent, req.station_id),
-    )
-
     port = request.url.port or 7860
     api_base = os.environ.get("PULSETWIN_API_BASE", f"http://127.0.0.1:{port}")
 
-    # A list argv never goes through a shell, so the question carries no injection
-    # surface; the length and control-character caps above are defence in depth.
-    # The child's stdio goes to a per-run log beside its heartbeat, NOT to DEVNULL.
-    # A detached worker whose failures vanish is precisely how this repo ended up with
-    # a container nobody had run: if the job dies on import, the only evidence is the
-    # row staying `queued` forever, with nothing to read.
-    jobs = _jobs_dir()
-    jobs.mkdir(parents=True, exist_ok=True)
-
-    # Write the FIRST heartbeat before spawning anything.
-    #
-    # The longest single wait in a run is the interpreter starting, importing the
-    # provider SDK, and making the first model round trip -- all of it BEFORE the worker
-    # can write its own first heartbeat. Without this the panel shows a bare spinner for
-    # one to three seconds at the exact moment a demo audience is deciding whether the
-    # thing works. Six lines buy a truthful label in about 200ms.
     try:
-        (jobs / f"{run_id}.json").write_text(json.dumps({
-            "v": HEARTBEAT_VERSION, "run_id": run_id, "thread_id": thread_id,
-            "turn_index": turn_index, "status": "queued", "mode": mode,
-            "intent": req.intent, "phase": PHASE_ORDER[0], "phase_index": 0,
-            "iteration": 0, "elapsed_s": 0.0, "tools": [], "done": False,
-        }), encoding="utf-8")
-    except OSError:
-        pass  # a heartbeat failure must never stop a run from starting
+        result = start_triage_run(
+            ops, plant_id=req.plant_id, question=question, intent=req.intent,
+            role=role, acting_role=acting, mode=mode, api_base=api_base,
+            thread_id=req.thread_id, station_id=req.station_id,
+        )
+    except ValueError as exc:
+        status = 404 if str(exc).startswith("unknown thread") else 409
+        raise HTTPException(status, str(exc)) from exc
 
-    log_path = jobs / f"{run_id}.log"
-    try:
-        log = open(log_path, "w", encoding="utf-8")  # noqa: SIM115 - owned by the child
-    except OSError:
-        log = None
-
-    subprocess.Popen(
-        [sys.executable, "-m", "genai.triage",
-         "--plant", req.plant_id, "--question", question,
-         "--run-id", run_id, "--api-base", api_base,
-         "--role", acting, "--requested-by", role, "--mode", mode,
-         "--intent", req.intent,
-         "--thread-id", thread_id, "--turn-index", str(turn_index)]
-        + (["--station-id", str(req.station_id)] if req.station_id is not None else []),
-        cwd=str(ROOT),
-        env={**os.environ, "OMP_NUM_THREADS": "1", "PYTHONPATH": str(ROOT)},
-        stdout=log or subprocess.DEVNULL,
-        stderr=subprocess.STDOUT if log else subprocess.DEVNULL,
-    )
-
-    log_action(request, ops, role, "triage_run_started", "triage", run_id,
+    log_action(request, ops, role, "triage_run_started", "triage", result["run_id"],
                {"plant_id": req.plant_id, "acting_role": acting, "mode": mode,
-                "intent": req.intent, "thread_id": thread_id, "turn_index": turn_index})
-    return {"run_id": run_id, "status": "queued", "mode": mode, "acting_role": acting,
-            "thread_id": thread_id, "turn_index": turn_index, "intent": req.intent}
+                "intent": req.intent, "thread_id": result["thread_id"],
+                "turn_index": result["turn_index"]})
+    return result
 
 
 @router.get("/api/triage/runs")
@@ -292,11 +334,17 @@ def list_runs(request: Request, plant_id: str = "plant_a", limit: int = 10,
         request.app.state.ops,
         """SELECT run_id, created_at, plant_id, question, status, mode, acting_role,
                   claims_total, claims_verified, tool_calls, latency_s, cost_usd,
-                  thread_id, turn_index, intent, capability_profile
+                  thread_id, turn_index, intent, capability_profile,
+                  orchestrated, agents_used
            FROM triage_runs WHERE plant_id = ?
            ORDER BY created_at DESC LIMIT ?""",
         (plant_id, limit),
     )
+    # `agents_used` is JSONB on Postgres (auto-decoded) but TEXT on the SQLite dev/test
+    # backend -- `_loads()` normalises both, same convention `finding`/`verification`
+    # already follow in get_run/get_thread below.
+    for r in rows:
+        r["agents_used"] = _loads(r.get("agents_used"))
     return {"runs": rows, "count": len(rows)}
 
 
@@ -315,17 +363,21 @@ def get_run(run_id: str, request: Request, include_evidence: bool = False,
     out.pop("finding_raw", None)
     out["finding"] = _loads(row.get("finding"))
     out["verification"] = _loads(row.get("verification"))
+    # ADR-045: SELECT * already carries `orchestrated`/`agents_used` for any run where
+    # genai/store.py::record_agents_used ran -- NULL/0 for every other run, unaffected.
+    out["agents_used"] = _loads(row.get("agents_used"))
 
     calls = db.query_all(
         ops,
-        """SELECT call_id, seq, tool_name, arguments, result, duration_ms
+        """SELECT call_id, seq, tool_name, arguments, result, duration_ms, agent
            FROM triage_tool_calls WHERE run_id = ? ORDER BY seq""",
         (run_id,),
     )
     out["tool_ledger"] = [
         {
             "call_id": c["call_id"], "seq": c["seq"], "tool_name": c["tool_name"],
-            "arguments": _loads(c["arguments"]), "duration_ms": c["duration_ms"],
+            "agent": c["agent"], "arguments": _loads(c["arguments"]),
+            "duration_ms": c["duration_ms"],
             **({"result": _loads(c["result"])} if include_evidence else {}),
         }
         for c in calls
@@ -348,6 +400,8 @@ def get_run(run_id: str, request: Request, include_evidence: bool = False,
                 "iteration": hb.get("iteration"),
                 "max_iterations": hb.get("max_iterations"),
                 "elapsed_s": hb.get("elapsed_s"),
+                "agent": hb.get("agent"),
+                "agents": hb.get("agents"),
             }
             if not calls:
                 out["tool_ledger"] = hb.get("tools", [])
@@ -409,7 +463,7 @@ def get_thread(thread_id: str, request: Request,
         """SELECT run_id, created_at, turn_index, intent, station_id, question, status,
                   mode, acting_role, claims_total, claims_verified, tool_calls,
                   latency_s, cost_usd, cost_source, capability_profile, error,
-                  finding, verification
+                  finding, verification, orchestrated, agents_used
              FROM triage_runs WHERE thread_id = ? ORDER BY turn_index""",
         (thread_id,),
     )
@@ -418,6 +472,7 @@ def get_thread(thread_id: str, request: Request,
         turn = dict(r)
         turn["finding"] = _loads(r.get("finding"))
         turn["verification"] = _loads(r.get("verification"))
+        turn["agents_used"] = _loads(r.get("agents_used"))
         turns.append(turn)
 
     return {"thread": dict(thread), "turns": turns, "count": len(turns),

@@ -14,8 +14,10 @@ assertion at all.
 
 from __future__ import annotations
 
+import ast
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
 
 import pytest
 
@@ -193,6 +195,29 @@ def test_rejections_still_carry_cors_headers(client):
     assert denied.status_code == 403
     assert denied.headers.get("access-control-allow-origin") == "*", (
         "a 403 reaches the browser as a CORS error rather than a readable rejection"
+    )
+
+
+def test_postgres_boolean_columns_are_not_compared_to_integer_literals():
+    """SQLite accepts ``boolean_column = 1`` but PostgreSQL rejects it. The mismatch
+    previously made Alert Triage and Shift Summary return HTTP 500 in the Docker stack
+    even though their SQLite API tests passed.
+    """
+    source = (ROOT / "serve" / "routers" / "intelligence.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    executable_strings = "\n".join(
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    )
+    invalid = re.findall(
+        r"\b(?:alert_fired|above_cost_threshold|actual_defect)\s*=\s*[01]\b",
+        executable_strings,
+        flags=re.IGNORECASE,
+    )
+    assert not invalid, (
+        "Boolean SQL must use IS TRUE/IS FALSE so queries work on both SQLite and "
+        f"PostgreSQL; found {invalid}"
     )
 
 

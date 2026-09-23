@@ -150,6 +150,29 @@ cannot beat persistence has no business shipping.
 - **The alarm budget forces misses by construction.** Six alerts per shift is fewer
   alerts than there are defects. That is a deliberate human-factors constraint, and its
   cost is quantified rather than hidden.
+- **Every alert renders the same risk (41% on plant A).** All 648 alerting units share
+  `risk_raw` = 0.880117 exactly. All 32 trees split on `paint_buffer_dwell_s` at the root;
+  once a unit is past the dwell threshold and under the checklist threshold, no later
+  split discriminates, so every such unit lands in the same leaf in every tree. The model
+  identifies the at-risk set but **cannot rank within it**. Measured, reproduced with the
+  numpy scorer, not a rendering fault, and not something retraining should chase (§1: no
+  tuning toward a nicer number). The supervisor alert feed (`frontend/app/supervisor/page.tsx`)
+  now renders this as a qualitative band ("At risk" / "High risk") rather than a
+  false-precision point percentage; the exact number still appears, de-emphasized, in the
+  card body. `AlertTriageTable` already avoided the problem by ranking on the deterministic
+  cost-model dimensions (severity × threshold, lead time, peers) instead of the flat score.
+- **The explanation collapses along with the score.** Verified against the committed
+  plant A artifact: all 113 units with `alert_fired = 1` share not only the identical
+  `calibrated_risk`, but the identical rank-0 decision-path factor, `s15_checklist_time_s`
+  — 113/113, no exceptions. The flat leaf isn't just a flat number; every unit that lands
+  in it gets the identical explanation too, because it is mechanically the same decision
+  path. `/api/alerts/triage`'s "Station" column reflects this correctly (it is reading
+  each unit's real top-ranked factor, not falling back to a constant) — the uniformity in
+  the column is the finding, not a bug in how the column is computed. The broader
+  cost-worthy population that has NOT yet fired (1,310 of the 1,423 plant A candidates)
+  does not share this problem: 1,293 distinct risk values exist among them. A query that
+  orders by `calibrated_risk DESC` with a small `limit` will therefore surface the
+  degenerate already-fired subset first, before ever reaching the more varied tail.
 - **The budget threshold overshoots its own budget on test data.** The operating
   threshold (p ≥ 0.406) is fitted to produce 6 alerts/shift, and on the held-out test
   split it realises **8.5**. That is a ~40% overshoot, and it is a generalisation gap, not

@@ -1,17 +1,21 @@
-# Finals Demo Script — 7 Minutes
+# Finals Demo Script — ~8.5 Minutes
 
 Supersedes `docs/DEMO_SCRIPT.md` for the finals round; that script still covers the
 Round-2 walkthrough (`/supervisor` only) for a judge who missed it. This one assumes they
-saw it and spends all seven minutes on what changed.
+saw it and spends the time on what changed since.
+
+**Was 7 minutes; ACT 2B (below) adds 90s for the multi-agent orchestration story
+(ADR-045), added because a mentor review specifically named multi-agent orchestration as
+missing from the prior walkthrough.** If the slot is hard-capped at 7 minutes, cut ACT 4
+step 3 (the `SCALING_COST_MODEL.md` table read — it repeats what the CLOSE already shows)
+rather than shortening ACT 2B itself.
 
 **Pre-flight, before judges sit down:**
 
 ```bash
 make build-artifact           # ensure artifacts/pulsetwin.db + stream_<plant>.jsonl are current
-docker compose -f docker-compose.prod.yml up --build -d   # postgres, redis, mqtt, migrate, backend, ingestion
-python -m offline.load_to_postgres                        # bridge the artifact into postgres
-python -m ingestion.mqtt_publisher --plant-id plant_a --speed 10 &   # start the live feed
-cd frontend && npm run dev                                          # or the static export, per docker-compose.yml
+docker compose -f docker-compose.prod.yml --profile mqtt-demo up --build -d
+PULSETWIN_REQUIRE_FULL_DEMO=1 python scripts/smoke_demo.py
 ```
 
 Have a second terminal ready with `mosquitto_pub` for Act 2, and the backend process ID
@@ -19,18 +23,19 @@ handy for the kill/restart in the same act. Kick off one retrain now
 (`RetrainingConsole` → **Trigger Retrain**, or `POST /api/admin/trigger-retrain`) so Act 3
 has a finished comparison report to show.
 
-> **Rehearse this at least once end to end before the finals.** As of 2026-09-16 the
-> production stack has never been started — no Docker daemon was available on the build
-> machine — so Act 2's dropout injection and the kill/restart have been verified by unit
-> test and code review, not by running them. That is the single highest-risk gap in this
-> script; see `docs/STATE.md` → NEXT ACTION.
+> **Rehearse this once before the finals.** The full stack and MQTT projection were
+> executed on 2026-09-22. Keep the smoke command in pre-flight so a local Docker or port
+> problem is found before the walkthrough.
+
+The full smoke calls `/api/demo/readiness`; it fails unless database, Redis, MQTT,
+publisher, ingestion projection, online scoring, backend, and frontend are all ready.
 
 ---
 
 ## ACT 1 — "It works" (2 min): brief recap for any new judges
 
 - `/supervisor`, plant A, speed 10×.
-- Let an alert fire on a flagged unit. Open it: root causes in plain language, the
+- Let an alert fire on a flagged unit. Open it: risk drivers in plain language, the
   containment sweep listing every other in-flight unit sharing its fingerprint.
 - **Line:** "You saw this in Round 2. Now let me show you what makes it production-ready."
 
@@ -56,6 +61,27 @@ has a finished comparison report to show.
    the frontend without a manual page refresh.
 7. **Line:** "In a factory, things fail. The question is whether your system fails
    safely — and whether it TELLS you it's degraded instead of quietly guessing."
+
+## ACT 2B — "It's genuinely multi-agent" (90s): the second finals differentiator
+
+1. On `/copilot` (plant A), click **Investigate this incident**.
+2. Point at the agent roster that lights up above the phase trail, in sequence:
+   Reliability → Production → Risk, each with its OWN tool calls distinct from the
+   others — not one trail pretending to be three.
+3. **Line:** "These are three separately-bounded investigators, each with its own tool
+   access and its own request budget — not one model asked to role-play three times."
+4. When the run finishes, open the tool ledger and point at the persisted `agent` tag on
+   a few calls (e.g. `call_0004 — production`): "This isn't decoration. It's what's
+   stored — every number this run cites still traces to exactly which specialist
+   gathered it, in the same database row the single-agent path has always used."
+5. Point at the finding's claims: "A fourth model — the synthesizer — reconciled all
+   three specialists' evidence into this one answer. It has zero tools of its own; every
+   citation here still goes through the identical deterministic verifier
+   (`genai/verifier.py`) the single-agent path always has. Multi-agent didn't loosen the
+   guarantee — it's the same gate, checking a wider investigation."
+6. **Line:** "This is what 'agentic AI' means here — not a chatbot wrapper, bounded
+   agents with disjoint authority, reconciled and re-checked by code that trusts none of
+   them." (ADR-045 has the full design trade-off if a judge wants the written version.)
 
 ## ACT 3 — "It stays honest" (1.5 min)
 

@@ -3,21 +3,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
-  Containment, StationCfg, StreamEvent, UnitDetail, Zone,
-  acknowledgeAlert, getContainment, getEscalationPolicy, getRole, getSensorDropouts,
-  getStations, getUnit, postFeedback, setRole, streamUrl,
+  AlertStatus, Containment, ContainmentAction, ContainmentDecisionHistory, SimulationMetrics, SimulationRun, SimulationScenario, StationCfg, StreamEvent, TriageRun, UnitDetail, Zone,
+  acknowledgeAlert, closeAlert, getAlertStatus, getContainment, getContainmentDecisions, getEscalationPolicy, getRole, getSensorDropouts,
+  getActiveSimulation, getSimulation, getSimulationMetrics, getStations, getTriageRun, getUnit, liveSimulationStreamUrl, pauseSimulation,
+  injectSimulationIncident, postFeedback, recordContainmentDecision, resumeSimulation, startSimulation,
+  stopSimulation, streamUrl,
 } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { usePersonaAccess } from "@/lib/usePersonaAccess";
+import AccessRestricted from "@/components/shared/AccessRestricted";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import SensorDropoutAlert from "@/components/supervisor/SensorDropoutAlert";
 import EscalationChain from "@/components/supervisor/EscalationChain";
 import AlertTriageTable from "@/components/supervisor/AlertTriageTable";
 import { useAuditToast } from "@/components/shared/AuditToast";
 import {
-  AppShell, Badge, Button, DataTable, Panel, SegmentedControl, Skeleton, Stat, Tooltip,
+  AppShell, Badge, Button, DataTable, Panel, SegmentedControl, Select, Skeleton, Stat, Tooltip,
   type Column,
 } from "@/components/ui";
 import CopilotDock from "@/components/copilot/CopilotDock";
+import FindingView from "@/components/copilot/FindingView";
 
 // Station state -> surface treatment. Tint + border rather than a flat fill, so a
 // 42-station line reads as a map instead of a block of colour.
@@ -37,6 +42,17 @@ const STATE_DOT: Record<string, string> = {
   idle: "bg-ink-faint/50",
 };
 
+// Alerting units mostly land in the same terminal leaf of every tree
+// (docs/MODEL_CARD.md "Known failure modes") -- the model identifies the at-risk set but
+// cannot rank within it, so the exact percentage is near-constant across the feed. A band
+// avoids the false-precision look of dozens of near-identical decimals; the real number
+// still appears, de-emphasized, in the card body below.
+function riskBand(risk: number): { label: string; tone: "warn" | "danger" } {
+  return risk > 0.5
+    ? { label: "High risk", tone: "danger" }
+    : { label: "At risk", tone: "warn" };
+}
+
 interface LiveStation {
   state: string;
   unit_id?: string;
@@ -46,6 +62,16 @@ interface LiveStation {
 
 export default function SupervisorPage() {
   const [plant, setPlant] = useState("plant_a");
+  const [mode, setMode] = useState<"replay" | "live_synthetic">("replay");
+  const [scenario, setScenario] = useState<SimulationScenario>("normal");
+  const [seed, setSeed] = useState(42);
+  const [severity, setSeverity] = useState(0.7);
+  const [affectedStation, setAffectedStation] = useState<number | null>(null);
+  const [affectedLot, setAffectedLot] = useState("");
+  const [incidentStartS, setIncidentStartS] = useState(0);
+  const [activeRun, setActiveRun] = useState<SimulationRun | null>(null);
+  const [runMetrics, setRunMetrics] = useState<SimulationMetrics | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
   const [speed, setSpeed] = useState(10);
   const [stations, setStations] = useState<StationCfg[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
@@ -57,32 +83,88 @@ export default function SupervisorPage() {
   const [selected, setSelected] = useState<UnitDetail | null>(null);
   const [containment, setContainment] = useState<Containment | null>(null);
   const [voted, setVoted] = useState<Record<string, string>>({});
+  const [decisionDraft, setDecisionDraft] = useState<{
+    unit: Containment["at_risk_units"][number];
+    action: ContainmentAction;
+  } | null>(null);
+  const [decisionMessage, setDecisionMessage] = useState("");
+  const [decisionOwner, setDecisionOwner] = useState("supervisor");
+  const [decisionDueStation, setDecisionDueStation] = useState<number | null>(null);
+  const [decisionDueAt, setDecisionDueAt] = useState("");
+  const [decisionBusy, setDecisionBusy] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [decisionHistory, setDecisionHistory] = useState<ContainmentDecisionHistory[]>([]);
   const [lastKnownAt, setLastKnownAt] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   // Replay transport. `running` gates the SSE effect; resumeTs is a REF, not state, so
   // the simulated clock advancing on every flush does not retrigger the effect and
   // reopen the connection sixty times a second.
-  const [running, setRunning] = useState(true);
+  // Starts paused: the operator presses Start deliberately rather than the replay
+  // beginning the instant this tab is opened.
+  const [running, setRunning] = useState(false);
   const resumeTs = useRef<string | null>(null);
+  const liveSeq = useRef(0);
   const [dropouts, setDropouts] = useState<
     { station_id: number; sensor: string; since: string; duration_s: number }[]
   >([]);
   const [escalation, setEscalation] = useState<any>(null);
   const [acked, setAcked] = useState<Record<string, string>>({});
+  const [selectedAlertStatus, setSelectedAlertStatus] = useState<AlertStatus | null>(null);
+  const [autoFinding, setAutoFinding] = useState<TriageRun | null>(null);
   const { show, ToastElement } = useAuditToast();
   const reduced = useReducedMotion();
 
+  // An unattended "incident" investigation may already have run for this alert before
+  // anyone clicked anything (serve/live_simulation.py::_trigger_auto_investigation).
+  // Re-fetches whenever the selected alert changes to a different linked run, and clears
+  // when the selection has no linked run at all.
+  useEffect(() => {
+    const runId = selectedAlertStatus?.triage_run_id;
+    if (!runId) {
+      setAutoFinding(null);
+      return;
+    }
+    let cancelled = false;
+    getTriageRun(runId).then((r) => { if (!cancelled) setAutoFinding(r); })
+      .catch(() => { if (!cancelled) setAutoFinding(null); });
+    return () => { cancelled = true; };
+  }, [selectedAlertStatus?.triage_run_id]);
+
   useEffect(() => { getEscalationPolicy().then(setEscalation).catch(() => setEscalation(null)); }, []);
+  useEffect(() => {
+    getContainmentDecisions(plant, mode === "live_synthetic" ? activeRun?.run_id : null)
+      .then(setDecisionHistory).catch(() => setDecisionHistory([]));
+  }, [plant, mode, activeRun?.run_id]);
 
   const acknowledge = async (unitId: string) => {
-    const r = await acknowledgeAlert(unitId, plant);
+    const r = await acknowledgeAlert(
+      unitId,
+      plant,
+      mode === "live_synthetic" ? activeRun?.run_id : null,
+    );
     setAcked((a) => ({ ...a, [unitId]: r.acknowledged_at }));
+    const runId = mode === "live_synthetic" ? activeRun?.run_id : null;
+    getAlertStatus(unitId, plant, runId).then(setSelectedAlertStatus).catch(() => undefined);
     show("Action logged");
   };
 
-  // Identifies this view to the backend RBAC (serve/middleware/auth.py) instead of
-  // relying on lib/api.ts's global "leadership" default.
-  useEffect(() => { setRole("supervisor"); }, []);
+  const closeSelectedAlert = async () => {
+    if (!selected || !activeRun?.run_id) return;
+    const result = await closeAlert(selected.unit_id, plant, activeRun.run_id);
+    setSelectedAlertStatus((current) => current ? {
+      ...current, status: result.status, closed_at: result.closed_at,
+    } : current);
+    getSimulationMetrics(activeRun.run_id).then(setRunMetrics).catch(() => undefined);
+    show("Alert closed");
+  };
+
+  // Gates entry on whatever role /login left in place, THEN locks this page to its own
+  // fixed persona once granted -- see lib/usePersonaAccess.ts. "supervisor" is the floor
+  // of the hierarchy, so this never actually blocks anyone; it stays for symmetry with
+  // /manager and /leadership rather than being a special case. Identifies this view to
+  // the backend RBAC (serve/middleware/auth.py) instead of relying on lib/api.ts's
+  // global "leadership" default.
+  const access = usePersonaAccess("supervisor");
 
   // Sensor dropouts -- real infra state, not simulated -- polled independently of the
   // replay clock so a dropout is visible even if the stream itself is paused.
@@ -146,8 +228,38 @@ export default function SupervisorPage() {
 
   useEffect(() => {
     getStations(plant).then((r) => { setStations(r.stations); setZones(r.zones); });
-    setLive({}); setAlerts([]); setSelected(null); setContainment(null);
+    setLive({}); setAlerts([]); setSelected(null); setContainment(null); setSelectedAlertStatus(null);
+    setDecisionDraft(null); setDecisionMessage(""); setDecisionError(null);
   }, [plant]);
+
+  useEffect(() => {
+    if (mode !== "live_synthetic") return;
+    getActiveSimulation(plant)
+      .then((run) => {
+        setActiveRun(run);
+        setRunning(run?.status === "running");
+        if (run?.simulation_time) setClock(run.simulation_time);
+      })
+      .catch(() => setRunError("Could not read the active synthetic run."));
+  }, [mode, plant]);
+
+  useEffect(() => {
+    if (mode !== "live_synthetic" || !activeRun) return;
+    let cancelled = false;
+    const poll = () => Promise.all([
+      getSimulation(activeRun.run_id),
+      getSimulationMetrics(activeRun.run_id),
+    ]).then(([run, metrics]) => {
+        if (cancelled) return;
+        setActiveRun(run);
+        setRunMetrics(metrics);
+        if (run.simulation_time) setClock(run.simulation_time);
+        if (["stopped", "completed", "failed"].includes(run.status)) setRunning(false);
+      })
+      .catch(() => { if (!cancelled) setRunError("Live run status is unavailable."); });
+    const id = setInterval(poll, 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [mode, activeRun?.run_id]);
 
   useEffect(() => {
     if (!running) {
@@ -159,13 +271,53 @@ export default function SupervisorPage() {
     }
     let es: EventSource | null = null;
     let cancelled = false;
-    streamUrl(plant, speed, resumeTs.current).then((url) => {
+    const urlPromise = mode === "live_synthetic" && activeRun
+      ? liveSimulationStreamUrl(activeRun.run_id, liveSeq.current)
+      : streamUrl(plant, speed, resumeTs.current);
+    urlPromise.then((url) => {
       if (cancelled) return;
       es = new EventSource(url);
       es.onopen = () => setConnected(true);
       es.onerror = () => setConnected(false);
-      es.addEventListener("station_update", (ev) => push(JSON.parse((ev as MessageEvent).data)));
-      es.addEventListener("alert", (ev) => push(JSON.parse((ev as MessageEvent).data)));
+      const accept = (ev: Event) => {
+        const parsed = JSON.parse((ev as MessageEvent).data) as StreamEvent;
+        if (parsed.seq) liveSeq.current = Math.max(liveSeq.current, parsed.seq);
+        push(parsed);
+      };
+      es.addEventListener("station_update", accept);
+      es.addEventListener("alert", accept);
+      es.addEventListener("inspection_outcome", (ev) => {
+        const parsed = JSON.parse((ev as MessageEvent).data) as StreamEvent;
+        if (parsed.seq) liveSeq.current = Math.max(liveSeq.current, parsed.seq);
+        setContainment((current) => current ? {
+          ...current,
+          at_risk_units: current.at_risk_units.map((unit) => {
+            if (unit.unit_id !== parsed.unit_id || !unit.manual_action) return unit;
+            const acted = unit.manual_action === "HOLD" || unit.manual_action === "INSPECT";
+            const defect = parsed.actual_defect === 1;
+            return {
+              ...unit,
+              decision_status: "VALIDATED",
+              actual_outcome: parsed.actual_defect ?? null,
+              outcome_at: parsed.ts,
+              validation_result: acted
+                ? defect ? "correct_intervention" : "unnecessary_intervention"
+                : defect ? "missed_defect" : "correct_monitor",
+            };
+          }),
+        } : current);
+        setSelectedAlertStatus((current) =>
+          current && current.alert_id.endsWith(`:${parsed.unit_id}`)
+            ? {
+                ...current,
+                status: "VALIDATED",
+                validated_at: parsed.ts,
+                outcome: parsed.actual_defect ?? null,
+                outcome_at: parsed.ts,
+              }
+            : current
+        );
+      });
     });
     // Deliberately does NOT setConnected(false): this cleanup runs on every speed and
     // plant change, and marking the twin offline for the ~50ms of an intentional
@@ -176,25 +328,122 @@ export default function SupervisorPage() {
     // retryNonce has no effect on what the stream does -- it exists so OfflineBanner's
     // [Retry Now] button (and its auto-retry ticker) can force this effect to re-run and
     // open a fresh EventSource without duplicating the connection logic above.
-  }, [plant, speed, push, retryNonce, running]);
+  }, [plant, speed, push, retryNonce, running, mode, activeRun]);
 
   // Switching plant must not resume the NEW plant at the OLD plant's timestamp.
   useEffect(() => { resumeTs.current = null; }, [plant]);
 
-  const restart = () => {
+  const resetView = () => {
     resumeTs.current = null;
+    liveSeq.current = 0;
     setLive({});
     setAlerts([]);
     setSelected(null);
+    setSelectedAlertStatus(null);
     setContainment(null);
+    setDecisionDraft(null);
+    setDecisionMessage("");
+    setDecisionError(null);
+    setRunMetrics(null);
     setClock("");
-    setRunning(true);
     setRetryNonce((n) => n + 1);
   };
 
+  const begin = async () => {
+    setRunError(null);
+    if (mode === "replay") {
+      setRunning(true);
+      return;
+    }
+    try {
+      if (activeRun?.producer === "mqtt" && activeRun.status === "running") {
+        setRunning(true);
+        return;
+      }
+      const run = activeRun?.status === "paused"
+        ? await resumeSimulation(activeRun.run_id)
+        : await startSimulation(plant, scenario, seed, speed, severity, affectedStation, affectedLot, incidentStartS);
+      setActiveRun(run);
+      setRunning(true);
+    } catch {
+      setRunError("Could not start the live synthetic run. Stop the active run or retry.");
+    }
+  };
+
+  const pause = async () => {
+    setRunError(null);
+    if (mode === "live_synthetic" && activeRun && activeRun.producer !== "mqtt") {
+      try {
+        const run = await pauseSimulation(activeRun.run_id);
+        setActiveRun(run);
+      } catch {
+        setRunError("Could not pause the live synthetic run.");
+        return;
+      }
+    }
+    setRunning(false);
+  };
+
+  const restart = async () => {
+    if (mode === "live_synthetic" && activeRun?.producer === "mqtt") {
+      resetView();
+      setRunning(activeRun.status === "running");
+      return;
+    }
+    if (mode === "live_synthetic" && activeRun && ["running", "paused"].includes(activeRun.status)) {
+      await stopSimulation(activeRun.run_id).catch(() => undefined);
+    }
+    setActiveRun(null);
+    resetView();
+    if (mode === "replay") {
+      setRunning(true);
+      return;
+    }
+    try {
+      const run = await startSimulation(plant, scenario, seed, speed, severity, affectedStation, affectedLot, incidentStartS);
+      setActiveRun(run);
+      setRunning(true);
+    } catch {
+      setRunError("Could not restart the live synthetic run.");
+    }
+  };
+
+  const endRun = async () => {
+    if (mode === "live_synthetic" && activeRun && activeRun.producer !== "mqtt") {
+      const run = await stopSimulation(activeRun.run_id);
+      setActiveRun(run);
+    }
+    setRunning(false);
+  };
+
+  const injectIncident = async () => {
+    if (!activeRun || activeRun.producer === "mqtt" || scenario === "normal") return;
+    setRunError(null);
+    try {
+      const run = await injectSimulationIncident(
+        activeRun.run_id, scenario, severity, affectedStation, affectedLot,
+      );
+      setActiveRun(run);
+      show("Synthetic incident injected");
+    } catch {
+      setRunError("Could not inject the incident into this run.");
+    }
+  };
+
   const openUnit = async (unitId: string) => {
-    const [u, c] = await Promise.all([getUnit(unitId, plant), getContainment(unitId, plant)]);
-    setSelected(u); setContainment(c);
+    setDecisionDraft(null);
+    setDecisionMessage("");
+    setDecisionError(null);
+    const runId = mode === "live_synthetic" ? activeRun?.run_id : null;
+    const [u, c, status] = await Promise.all([
+      getUnit(unitId, plant, clock || null, runId),
+      getContainment(unitId, plant, clock || null, runId),
+      getAlertStatus(unitId, plant, runId).catch(() => null),
+    ]);
+    setSelected(u); setContainment(c); setSelectedAlertStatus(status);
+    if (status?.acknowledged_at) {
+      setAcked((current) => ({ ...current, [unitId]: status.acknowledged_at! }));
+    }
   };
 
   const vote = async (unitId: string, verdict: string) => {
@@ -209,9 +458,72 @@ export default function SupervisorPage() {
   const simTime = useMemo(() => (clock ? clock.slice(11, 19) : "--:--:--"), [clock]);
   const simDate = useMemo(() => (clock ? clock.slice(0, 10) : ""), [clock]);
 
+  const beginDecision = (unit: Containment["at_risk_units"][number]) => {
+    setDecisionDraft({ unit, action: unit.manual_action ?? unit.action });
+    setDecisionMessage("");
+    setDecisionOwner("supervisor");
+    const nextInspection = stations.find((station) =>
+      !!station.is_inspection && (unit.current_station === null || station.station_id >= unit.current_station)
+    );
+    setDecisionDueStation(nextInspection?.station_id ?? null);
+    setDecisionDueAt("");
+    setDecisionError(null);
+  };
+
+  const saveDecision = async () => {
+    if (!containment || !decisionDraft || decisionMessage.trim().length < 4) return;
+    setDecisionBusy(true);
+    setDecisionError(null);
+    try {
+      const saved = await recordContainmentDecision(
+        plant,
+        containment.flagged_unit,
+        decisionDraft.unit.unit_id,
+        decisionDraft.action,
+        decisionMessage.trim(),
+        mode === "live_synthetic" ? activeRun?.run_id : null,
+        clock || null,
+        decisionOwner,
+        decisionDueStation,
+        decisionDueAt || null,
+      );
+      setContainment((current) => current && current.flagged_unit === saved.flagged_unit_id
+        ? {
+            ...current,
+            at_risk_units: current.at_risk_units.map((unit) => unit.unit_id === saved.target_unit_id
+              ? {
+                  ...unit,
+                  manual_action: saved.selected_action,
+                  decision_recorded_at: saved.created_at,
+                }
+              : unit),
+          }
+        : current);
+      setDecisionDraft(null);
+      setDecisionMessage("");
+      if (selected && selected.unit_id === containment.flagged_unit) {
+        getAlertStatus(
+          selected.unit_id, plant, mode === "live_synthetic" ? activeRun?.run_id : null,
+        ).then(setSelectedAlertStatus).catch(() => undefined);
+      }
+      getContainmentDecisions(plant, mode === "live_synthetic" ? activeRun?.run_id : null)
+        .then(setDecisionHistory).catch(() => undefined);
+      show("Containment decision logged");
+    } catch {
+      setDecisionError("Could not save this decision. Check the connection and try again.");
+    } finally {
+      setDecisionBusy(false);
+    }
+  };
+
   const containmentCols: Column<Containment["at_risk_units"][number]>[] = [
     { key: "unit", header: "Unit", cell: (u) => <span className="text-numeric text-ink">{u.unit_id}</span> },
-    { key: "at", header: "At", cell: (u) => <span className="text-numeric text-ink-dim">S{u.current_station}</span> },
+    {
+      key: "at", header: "At",
+      cell: (u) => <span className="text-numeric text-ink-dim">
+        {u.current_station === null ? "—" : `S${u.current_station}`}
+      </span>,
+    },
     {
       key: "risk", header: "Risk", align: "right",
       cell: (u) => (
@@ -223,17 +535,46 @@ export default function SupervisorPage() {
     {
       key: "shared", header: "Shared factors",
       // Group labels only -- never an operator ID (CLAUDE.md §3, operator privacy).
-      cell: (u) => <span className="text-ink-faint">{u.shared_factors.join(", ")}</span>,
+      cell: (u) => (
+        <Tooltip content={u.explanation}>
+          <span className="cursor-help text-ink-faint">
+            {u.shared_factors.join(", ").replaceAll("_", " ")}
+          </span>
+        </Tooltip>
+      ),
     },
     {
-      key: "action", header: "Action", align: "right",
+      key: "action", header: "Suggested", align: "right",
       cell: (u) => (
         <Badge variant={u.action === "HOLD" ? "danger" : u.action === "INSPECT" ? "warn" : "neutral"}>
           {u.action}
         </Badge>
       ),
     },
+    {
+      key: "decision", header: "Human decision", align: "right",
+      cell: (u) => (
+        <div className="flex items-center justify-end gap-1.5">
+          {u.manual_action && (
+            <div className="flex flex-col items-end gap-0.5">
+              <Badge variant={u.manual_action === "HOLD" ? "danger" : u.manual_action === "INSPECT" ? "warn" : "ok"}>
+                {u.manual_action}
+              </Badge>
+              <span className="text-2xs text-ink-faint">
+                {u.validation_result?.replaceAll("_", " ") ?? u.decision_status?.toLowerCase()}
+              </span>
+            </div>
+          )}
+          <Button variant="outline" size="xs" onClick={() => beginDecision(u)}>
+            {u.manual_action ? "Update" : "Decide"}
+          </Button>
+        </div>
+      ),
+    },
   ];
+
+  if (access === null) return null;
+  if (access === false) return <AccessRestricted minRole="supervisor" />;
 
   return (
     <AppShell
@@ -249,34 +590,130 @@ export default function SupervisorPage() {
       onRetry={() => setRetryNonce((n) => n + 1)}
       controls={
         <>
-          {/* Replay transport. Pause closes the SSE connection outright rather than
-              buffering: the server is streaming a file, so a paused client that keeps
-              the socket open would just accumulate a backlog to flush on resume. */}
+          <SegmentedControl
+            name="source-mode"
+            aria-label="Simulation source"
+            value={mode}
+            onChange={(next) => {
+              setMode(next);
+              setRunning(false);
+              setRunError(null);
+              resetView();
+            }}
+            options={[
+              { value: "replay", label: "Replay" },
+              { value: "live_synthetic", label: "Live synthetic" },
+            ]}
+          />
+
+          {mode === "live_synthetic" && activeRun?.producer !== "mqtt" && (
+            <div className="flex items-center gap-1">
+              <Select
+                value={scenario}
+                onChange={setScenario}
+                ariaLabel="Synthetic scenario"
+                options={[
+                  { value: "normal", label: "Normal production" },
+                  { value: "torque_degradation", label: "Torque degradation" },
+                  { value: "bad_material_lot", label: "Bad material lot" },
+                  { value: "high_humidity", label: "High humidity" },
+                  { value: "rushed_checklist", label: "Rushed checklist" },
+                  { value: "sensor_dropout", label: "Sensor dropout" },
+                  { value: "station_breakdown", label: "Station breakdown" },
+                  { value: "buffer_congestion", label: "Buffer congestion" },
+                ]}
+              />
+              <label className="flex h-7 items-center gap-1 rounded-md border border-line bg-surface-2 px-2 text-2xs text-ink-faint">
+                Seed
+                <input
+                  type="number"
+                  value={seed}
+                  min={0}
+                  max={2147483647}
+                  onChange={(event) => setSeed(Number(event.target.value) || 0)}
+                  className="text-numeric w-14 bg-transparent text-right text-ink outline-none"
+                />
+              </label>
+              <label className="flex h-7 items-center gap-1 rounded-md border border-line bg-surface-2 px-2 text-2xs text-ink-faint">
+                Severity
+                <input type="range" min={0} max={1} step={0.1} value={severity}
+                  onChange={(event) => setSeverity(Number(event.target.value))}
+                  className="w-16 accent-current" />
+                <span className="text-numeric w-7 text-right text-ink">{Math.round(severity * 100)}%</span>
+              </label>
+              <label className="flex h-7 items-center gap-1 rounded-md border border-line bg-surface-2 px-2 text-2xs text-ink-faint">
+                Station
+                <select value={affectedStation ?? ""}
+                  onChange={(event) => setAffectedStation(event.target.value ? Number(event.target.value) : null)}
+                  className="max-w-20 bg-transparent text-ink outline-none">
+                  <option value="">Auto</option>
+                  {stations.map((station) => <option key={station.station_id} value={station.station_id}>S{station.station_id}</option>)}
+                </select>
+              </label>
+              <label className="flex h-7 items-center gap-1 rounded-md border border-line bg-surface-2 px-2 text-2xs text-ink-faint">
+                Lot
+                <input value={affectedLot} placeholder="auto" maxLength={40}
+                  onChange={(event) => setAffectedLot(event.target.value)}
+                  className="w-16 bg-transparent text-ink outline-none" />
+              </label>
+              <label className="flex h-7 items-center gap-1 rounded-md border border-line bg-surface-2 px-2 text-2xs text-ink-faint">
+                Starts
+                <input type="number" min={0} max={86400} step={30} value={incidentStartS}
+                  onChange={(event) => setIncidentStartS(Math.max(0, Number(event.target.value) || 0))}
+                  className="text-numeric w-14 bg-transparent text-right text-ink outline-none" />
+                s
+              </label>
+              <Tooltip content="Generate a new random seed">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  aria-label="Generate random simulation seed"
+                  onClick={() => setSeed(crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff)}
+                >
+                  Random
+                </Button>
+              </Tooltip>
+              {activeRun?.status === "running" && scenario !== "normal" && (
+                <Button variant="outline" size="xs" onClick={injectIncident}>Inject incident</Button>
+              )}
+            </div>
+          )}
+
           <div className="flex shrink-0 items-center gap-1">
-            <Tooltip content={running ? "Pause the replay — the line map keeps its last state" : "Resume from where the replay stopped"}>
+            <Tooltip content={activeRun?.producer === "mqtt"
+              ? (running ? "Pause this browser's MQTT monitor" : "Resume this browser's MQTT monitor")
+              : (running ? "Pause while keeping the shared plant state" : "Start or resume this simulation")}>
               <Button
                 variant={running ? "warn" : "ok"}
                 size="sm"
-                onClick={() => setRunning((r) => !r)}
-                aria-label={running ? "Stop simulation" : "Start simulation"}
+                onClick={running ? pause : begin}
+                aria-label={running ? "Pause simulation" : "Start simulation"}
               >
-                {running ? "■ Stop" : "▶ Start"}
+                {running ? "Pause" : activeRun?.status === "paused" ? "Resume" : "Start"}
               </Button>
             </Tooltip>
-            <Tooltip content="Restart the shift from the beginning and clear the alert feed">
+            <Tooltip content="Start a new deterministic run and clear the local view">
               <Button variant="ghost" size="sm" onClick={restart} aria-label="Restart simulation">
                 ↻
               </Button>
             </Tooltip>
+            {mode === "live_synthetic" && activeRun && (
+              <Button variant="ghost" size="sm" onClick={endRun}
+                aria-label={activeRun.producer === "mqtt" ? "Disconnect from MQTT run" : "Stop live synthetic run"}>
+                {activeRun.producer === "mqtt" ? "Disconnect" : "Stop"}
+              </Button>
+            )}
           </div>
 
-          <SegmentedControl
-            name="speed"
-            aria-label="Replay speed"
-            value={speed}
-            onChange={setSpeed}
-            options={[1, 5, 10, 50].map((s) => ({ value: s, label: `${s}×` }))}
-          />
+          {activeRun?.producer !== "mqtt" && (
+            <SegmentedControl
+              name="speed"
+              aria-label="Simulation speed"
+              value={speed}
+              onChange={setSpeed}
+              options={[1, 5, 10, 50].map((s) => ({ value: s, label: `${s}×` }))}
+            />
+          )}
 
           {/* Budget is SERVER-derived (ADR-012): it survives a refresh and view switches,
               which client-side accumulation could not, since localStorage is banned. */}
@@ -314,7 +751,7 @@ export default function SupervisorPage() {
         // header past one line once the webfont swapped in (Inter is wider than the
         // fallback), which dropped MAIN 32px at ~850ms -- load CLS 0.145.
         <>
-          <Tooltip content={simDate ? `Replay clock — ${simDate}` : "Waiting for the first event"}>
+          <Tooltip content={simDate ? `Simulation clock — ${simDate}` : "Waiting for the first event"}>
             <span className="text-numeric w-[4.75rem] shrink-0 cursor-help text-right text-2xs tabular-nums text-ink">
               {simTime}
             </span>
@@ -324,7 +761,9 @@ export default function SupervisorPage() {
             dot
             className="w-[4.75rem] justify-center"
           >
-            {!running ? "Paused" : connected ? "Live" : "Down"}
+            {!running ? "Paused" : connected
+              ? (activeRun?.producer === "mqtt" ? "MQTT live" : mode === "live_synthetic" ? "Synthetic" : "Replay")
+              : "Down"}
           </Badge>
           <span className="w-8 shrink-0">
             <StaleDataIndicator timestamp={lastKnownAt} />
@@ -332,6 +771,30 @@ export default function SupervisorPage() {
         </>
       }
     >
+      <div className={cn(
+        "mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs",
+        mode === "live_synthetic"
+          ? "border-ai/35 bg-ai/10 text-ai-fg"
+          : "border-info/30 bg-info/10 text-info-fg"
+      )}>
+        <span className="font-semibold uppercase tracking-[0.12em]">
+          {mode === "live_synthetic"
+            ? "Live synthetic simulation — no real factory data connected"
+            : "Recorded replay — committed synthetic shift"}
+        </span>
+        <span className="text-numeric text-2xs opacity-80">
+          {mode === "live_synthetic"
+            ? activeRun
+              ? `${activeRun.run_id} · ${activeRun.producer === "mqtt" ? "MQTT transport" : `seed ${activeRun.seed}`} · ${activeRun.scenario.replaceAll("_", " ")} · ${activeRun.event_count} events · ${activeRun.units_in_progress} units · ${runMetrics?.active_alerts ?? activeRun.alerts_count} active alerts · ${runMetrics?.validated_decisions ?? 0} validated · ${runMetrics?.alert_correctness_rate == null ? "—" : `${(runMetrics.alert_correctness_rate * 100).toFixed(0)}%`} alert correctness · ${runMetrics?.estimated_escaped_defects_avoided ?? 0} avoided`
+              : `not started · seed ${seed} · ${scenario.replaceAll("_", " ")}`
+            : "Reproducible recorded events"}
+        </span>
+      </div>
+      {runError && (
+        <div role="alert" className="mb-4 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger-fg">
+          {runError}
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,1fr)]">
         <div className="flex min-w-0 flex-col gap-4">
           {/* ------------------------------------------------------------ line map */}
@@ -485,7 +948,7 @@ export default function SupervisorPage() {
                     <Stat
                       label="Risk"
                       value={`${(selected.calibrated_risk * 100).toFixed(0)}%`}
-                      sub={`CI ${(selected.ci_low * 100).toFixed(0)}–${(selected.ci_high * 100).toFixed(0)}%`}
+                      sub={`Derived range ${(selected.ci_low * 100).toFixed(0)}–${(selected.ci_high * 100).toFixed(0)}%`}
                       tone={selected.calibrated_risk > 0.5 ? "danger" : "warn"}
                     />
                     <Stat
@@ -500,7 +963,7 @@ export default function SupervisorPage() {
                     />
                   </div>
 
-                  <SectionLabel>Root causes</SectionLabel>
+                  <SectionLabel>Risk drivers</SectionLabel>
                   <div className="mb-5 space-y-2">
                     {selected.factors.map((f) => (
                       <FactorBar
@@ -525,23 +988,46 @@ export default function SupervisorPage() {
                     ))}
                   </div>
 
-                  {selected.alert_fired ? (
+                  {selected.alert_fired || selectedAlertStatus ? (
                     <div className="mt-5 border-t border-line pt-4">
                       <SectionLabel>Escalation</SectionLabel>
                       <EscalationChain levels={escalation?.levels ?? []} currentLevel={1} />
-                      <Button
-                        variant="outline"
-                        size="xs"
-                        className="mt-3"
-                        onClick={() => acknowledge(selected.unit_id)}
-                        disabled={!!acked[selected.unit_id]}
-                      >
-                        {acked[selected.unit_id]
-                          ? `Acknowledged ${acked[selected.unit_id].slice(11, 19)}`
-                          : "Acknowledge"}
-                      </Button>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          onClick={() => acknowledge(selected.unit_id)}
+                          disabled={!!acked[selected.unit_id] || selectedAlertStatus?.status === "CLOSED"}
+                        >
+                          {acked[selected.unit_id]
+                            ? `Acknowledged ${acked[selected.unit_id].slice(11, 19)}`
+                            : "Acknowledge"}
+                        </Button>
+                        {selectedAlertStatus && (
+                          <Badge variant={selectedAlertStatus.status === "CLOSED" ? "ok" : "neutral"}>
+                            {selectedAlertStatus.status.toLowerCase()}
+                          </Badge>
+                        )}
+                        {selectedAlertStatus?.status === "VALIDATED" && activeRun?.run_id && (
+                          <Button variant="ok" size="xs" onClick={closeSelectedAlert}>
+                            Close alert
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   ) : null}
+
+                  {autoFinding && (
+                    <div className="mt-5 border-t border-line pt-4">
+                      <div className="mb-1.5 flex items-center gap-2">
+                        <Badge variant="ai">AI</Badge>
+                        <span className="text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+                          Auto-investigated before this alert was even opened here
+                        </span>
+                      </div>
+                      <FindingView run={autoFinding} />
+                    </div>
+                  )}
                 </Panel>
               </motion.div>
             )}
@@ -558,7 +1044,7 @@ export default function SupervisorPage() {
               >
                 <Panel
                   tone="warn"
-                  title={`Containment — ${containment.total_at_risk} units share this fingerprint`}
+                  title={`Containment — ${containment.total_at_risk} units share production context`}
                   note={`${containment.containment_window_min} min window · operator identity shown as group only`}
                 >
                   <DataTable
@@ -567,6 +1053,120 @@ export default function SupervisorPage() {
                     rowKey={(u) => u.unit_id}
                     maxHeight={260}
                   />
+                  {decisionDraft && (
+                    <div className="mt-3 rounded-md border border-line-strong bg-surface-2 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="text-xs font-semibold text-ink">
+                            Manual decision for {decisionDraft.unit.unit_id}
+                          </div>
+                          <div className="mt-0.5 text-2xs text-ink-faint">
+                            System suggestion: {decisionDraft.unit.action}
+                          </div>
+                        </div>
+                        <div className="flex gap-1" role="group" aria-label="Containment action">
+                          {(["MONITOR", "INSPECT", "HOLD"] as ContainmentAction[]).map((action) => (
+                            <Button
+                              key={action}
+                              size="xs"
+                              variant={decisionDraft.action === action
+                                ? action === "HOLD" ? "danger" : action === "INSPECT" ? "warn" : "ok"
+                                : "outline"}
+                              aria-pressed={decisionDraft.action === action}
+                              onClick={() => setDecisionDraft((draft) => draft ? { ...draft, action } : draft)}
+                            >
+                              {action}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                      <label htmlFor="containment-decision-message" className="mt-3 block text-2xs font-medium text-ink-dim">
+                        Message for later validation
+                      </label>
+                      <textarea
+                        id="containment-decision-message"
+                        value={decisionMessage}
+                        maxLength={500}
+                        rows={2}
+                        placeholder="Example: Inspect paint finish at the next quality gate."
+                        onChange={(event) => setDecisionMessage(event.target.value)}
+                        className="mt-1 w-full resize-y rounded-md border border-line-strong bg-surface px-2.5 py-2 text-xs text-ink outline-none placeholder:text-ink-faint focus:border-info"
+                      />
+                      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                        <label className="text-2xs font-medium text-ink-dim">
+                          Owner
+                          <input
+                            value={decisionOwner}
+                            maxLength={100}
+                            onChange={(event) => setDecisionOwner(event.target.value)}
+                            className="mt-1 w-full rounded-md border border-line-strong bg-surface px-2 py-1.5 text-xs text-ink outline-none focus:border-info"
+                          />
+                        </label>
+                        <label className="text-2xs font-medium text-ink-dim">
+                          Due station
+                          <input
+                            type="number"
+                            min={1}
+                            value={decisionDueStation ?? ""}
+                            onChange={(event) => setDecisionDueStation(event.target.value ? Number(event.target.value) : null)}
+                            className="mt-1 w-full rounded-md border border-line-strong bg-surface px-2 py-1.5 text-xs text-ink outline-none focus:border-info"
+                          />
+                        </label>
+                        <label className="text-2xs font-medium text-ink-dim">
+                          Due time
+                          <input
+                            type="datetime-local"
+                            value={decisionDueAt}
+                            onChange={(event) => setDecisionDueAt(event.target.value)}
+                            className="mt-1 w-full rounded-md border border-line-strong bg-surface px-2 py-1.5 text-xs text-ink outline-none focus:border-info"
+                          />
+                        </label>
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-2xs text-ink-faint">
+                          Required. Do not enter operator names or personal data. {decisionMessage.length}/500
+                        </span>
+                        <div className="flex gap-1.5">
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            disabled={decisionBusy}
+                            onClick={() => { setDecisionDraft(null); setDecisionMessage(""); setDecisionError(null); }}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            variant="ok"
+                            size="xs"
+                            disabled={decisionBusy || decisionMessage.trim().length < 4}
+                            onClick={saveDecision}
+                          >
+                            {decisionBusy ? "Saving…" : "Save decision"}
+                          </Button>
+                        </div>
+                      </div>
+                      {decisionError && <p role="alert" className="mt-2 text-2xs text-danger-fg">{decisionError}</p>}
+                    </div>
+                  )}
+                  {decisionHistory.length > 0 && (
+                    <div className="mt-4 border-t border-line pt-3">
+                      <SectionLabel>Decision history</SectionLabel>
+                      <div className="space-y-1.5">
+                        {decisionHistory.slice(0, 5).map((decision) => (
+                          <div key={decision.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-surface-2 px-2.5 py-1.5 text-2xs">
+                            <span className="text-numeric text-ink">{decision.target_unit_id}</span>
+                            <span className="text-ink-dim">
+                              {decision.selected_action} · {decision.decided_by_user || decision.decided_by_role}
+                              {decision.due_station ? ` · due S${decision.due_station}` : ""}
+                            </span>
+                            <Badge variant={decision.validation_result === "correct_intervention" ? "ok" : decision.validation_result ? "warn" : "neutral"}>
+                              {(decision.validation_result ?? decision.status).replaceAll("_", " ")}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </Panel>
               </motion.div>
             )}
@@ -575,12 +1175,18 @@ export default function SupervisorPage() {
           {/* ------------------------------------------------------- alert triage */}
           {/* Selecting a row drives the same unit panel the line map does, so the
               ranking and the detail view are never looking at different units. */}
-          <AlertTriageTable plant={plant} onSelect={openUnit} refreshKey={retryNonce} />
+          <AlertTriageTable plant={plant} onSelect={openUnit} refreshKey={retryNonce} atTs={clock} />
         </div>
 
         {/* ------------------------------------------------------------ alert feed */}
         <Panel
-          title="Alert feed"
+          title={
+            <Tooltip content="The model flags the at-risk set; it does not rank within it. Alerting units on this plant currently share one calibrated score, so this feed orders by time, not by risk. See docs/MODEL_CARD.md 'Known failure modes'.">
+              <span className="cursor-help border-b border-dashed border-ink-faint/40">
+                Alert feed
+              </span>
+            </Tooltip>
+          }
           note={alerts.length ? `${alerts.length} shown` : undefined}
           className="xl:sticky xl:top-[60px] xl:max-h-[calc(100vh-76px)]"
           bodyClassName="p-3"
@@ -611,9 +1217,9 @@ export default function SupervisorPage() {
                     className="rounded-lg border border-danger/30 bg-danger/[0.06] p-2.5"
                   >
                     <div className="flex items-baseline justify-between gap-2">
-                      <span className="text-numeric text-lg font-semibold text-danger-fg">
-                        {(a.calibrated_risk * 100).toFixed(0)}%
-                      </span>
+                      <Badge variant={riskBand(a.calibrated_risk).tone}>
+                        {riskBand(a.calibrated_risk).label}
+                      </Badge>
                       <span className="text-numeric text-2xs text-ink-faint">{a.ts.slice(11, 19)}</span>
                     </div>
                     <div className="text-numeric mt-0.5 truncate text-xs text-ink">
@@ -623,7 +1229,8 @@ export default function SupervisorPage() {
                       </span>
                     </div>
                     <div className="text-numeric text-2xs text-ink-faint">
-                      at S{a.station_id} · cycle {a.cycle_time_s.toFixed(0)}s
+                      at S{a.station_id} · cycle {a.cycle_time_s.toFixed(0)}s ·{" "}
+                      {(a.calibrated_risk * 100).toFixed(0)}%
                     </div>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       <Button variant="outline" size="xs" onClick={() => openUnit(a.unit_id)}>

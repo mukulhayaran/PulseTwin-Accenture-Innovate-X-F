@@ -1,5 +1,26 @@
 @import "tailwindcss";
 
+/* Self-hosted, not fetched at runtime or build time: both files are vendored into
+   public/fonts/ (latin subset, variable weight) so the plant-network / air-gapped
+   Docker build in CLAUDE.md §5 still works with zero external requests. The
+   @theme block below already named these as the intended faces; this is what
+   makes that intent actually render instead of silently falling back to
+   whatever system font the OS substitutes. */
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/Inter-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Variable.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ============================================================================
    PulseTwin design system  —  Tailwind v4, CSS-first.
    Replaces tailwind.config.ts (deleted; v4 has no JS config).
@@ -72,11 +93,14 @@
   --text-3xl: 2.375rem; /* 38px — landing headline                   */
   --text-3xl--line-height: 2.75rem;
 
-  /* ---- fonts: injected by next/font in layout.tsx. Before this existed the
-         config named JetBrains Mono but nothing ever fetched it, so every
-         machine rendered a different fallback. ---------------------------- */
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-mono: var(--font-jetbrains), ui-monospace, "SF Mono", Menlo, monospace;
+  /* ---- fonts: self-hosted via @font-face above, not next/font (no build-time
+         fetch, works air-gapped). Before that @font-face existed, this line named
+         Inter but nothing ever served it, so every machine rendered whatever
+         system face ui-sans-serif resolved to instead -- the fallback chain
+         below still exists for the split second before the local woff2 parses,
+         and as a floor if a static-export path ever serves public/ wrong. ---- */
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
 
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -96,6 +120,7 @@
 
 :root {
   color-scheme: dark;
+  scroll-behavior: smooth;
 }
 
 body {
@@ -195,4 +220,33 @@ body {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
+}
+
+/* Slowly turning hub spokes on the hero chassis. Plain CSS, not motion: framer-motion
+   forces an animated SVG element's transform-origin to 50% of the *view-box* rather
+   than honouring an explicit origin, which sends a small rotating element flying to
+   the viewBox center instead of spinning in place. CSS keyframes have no such override,
+   and the reduced-motion rule above already collapses any animation to one 0.01ms tick. */
+@keyframes hub-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes spoke-fade-in {
+  to {
+    opacity: 1;
+  }
+}
+.hub-spokes {
+  transform-box: view-box;
+  opacity: 0;
+  animation:
+    hub-spin 7s linear 1.3s infinite,
+    spoke-fade-in 0.3s ease-out 1.3s forwards;
+}
+.hub-spokes--rear {
+  transform-origin: 166px 153px;
+}
+.hub-spokes--front {
+  transform-origin: 456px 153px;
 }

@@ -25,6 +25,7 @@ import json
 import os
 import random
 import time
+import uuid
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
@@ -33,6 +34,7 @@ from ingestion.config_lite import station_zones
 from ingestion.unified_namespace import (
     checklist_topic,
     control_dropout_topic,
+    simulation_topic,
     state_topic,
     telemetry_topic,
     unit_entered_topic,
@@ -89,7 +91,8 @@ class FaultInjector:
         return value
 
 
-def _publish_event(client: mqtt.Client, plant_id: str, zones: dict[int, str], rec: dict,
+def _publish_event(client: mqtt.Client, plant_id: str, run_id: str,
+                    zones: dict[int, str], rec: dict,
                     faults: FaultInjector, wall_now: float, inject_faults: bool) -> int:
     sid = int(rec["station_id"])
     zone = zones.get(sid, "unknown")
@@ -117,9 +120,11 @@ def _publish_event(client: mqtt.Client, plant_id: str, zones: dict[int, str], re
             # The subscriber must not measure arrival lag against `ts`: doing so made every
             # reading look ~231 days late, pinning the timeliness component of every
             # station's data-quality score at 0.0 (see ingestion/data_quality.py).
-            "ts": rec["ts"], "emitted_at": wall_now,
+            "ts": rec["ts"], "emitted_at": wall_now, "run_id": run_id,
+            "source": "live_synthetic", "transport": "mqtt",
             "unit_id": rec["unit_id"], "station_id": sid,
             "variant": rec.get("variant"), "lot_id": rec.get("lot_id"),
+            "shift_id": rec.get("shift_id"), "elapsed_s": rec.get("elapsed_s"),
             "provenance": rec.get("provenance", {}), **payload,
         })
         client.publish(telemetry_topic(plant_id, zone, sid), body, qos=1)
@@ -129,6 +134,18 @@ def _publish_event(client: mqtt.Client, plant_id: str, zones: dict[int, str], re
 
     state_body = json.dumps({
         "ts": rec["ts"], "unit_id": rec["unit_id"], "station_id": sid,
+        "run_id": run_id, "source": "live_synthetic", "transport": "mqtt",
+        "variant": rec.get("variant"), "lot_id": rec.get("lot_id"),
+        "shift_id": rec.get("shift_id"), "exit_ts": rec.get("exit_ts"),
+        "elapsed_s": rec.get("elapsed_s"),
+        "exit_elapsed_s": rec.get(
+            "exit_elapsed_s",
+            (float(rec.get("elapsed_s") or 0) + float(rec.get("cycle_time_s") or 0)),
+        ),
+        "blocked_before_s": rec.get("blocked_before_s"),
+        "buffer_wait_s": rec.get("buffer_wait_s"),
+        "ambient_temperature_c": rec.get("ambient_temperature_c"),
+        "ambient_humidity_pct": rec.get("ambient_humidity_pct"),
         "station_state": rec.get("station_state"), "cycle_time_s": rec.get("cycle_time_s"),
         "calibrated_risk": rec.get("calibrated_risk"), "alert": rec.get("alert", 0),
     })
@@ -138,26 +155,30 @@ def _publish_event(client: mqtt.Client, plant_id: str, zones: dict[int, str], re
     if "checklist_time_s" in rec:
         ck_body = json.dumps({
             "ts": rec["ts"], "unit_id": rec["unit_id"], "station_id": sid,
+            "run_id": run_id, "source": "live_synthetic", "transport": "mqtt",
             "checklist_time_s": rec["checklist_time_s"],
             "checklist_pass": rec["checklist_pass"], "notes_code": rec["notes_code"],
+            "operator_bucket": rec.get("operator_bucket"),
         })
         client.publish(checklist_topic(plant_id, zone, sid), ck_body, qos=1)
         n_published += 1
 
     client.publish(
         unit_entered_topic(plant_id, str(rec["unit_id"])),
-        json.dumps({"ts": rec["ts"], "station_id": sid}), qos=0,
+        json.dumps({"ts": rec["ts"], "station_id": sid, "run_id": run_id,
+                    "source": "live_synthetic", "transport": "mqtt"}), qos=0,
     )
     return n_published
 
 
 def run(plant_id: str, broker: str, port: int, speed: float, loop: bool,
-        inject_faults: bool) -> None:
+        inject_faults: bool, run_id: str | None = None) -> None:
     stream_path = ROOT / "artifacts" / f"stream_{plant_id}.jsonl"
     if not stream_path.exists():
         raise SystemExit(f"no stream artifact for {plant_id}: {stream_path}")
 
     zones = station_zones(plant_id)
+    run_id = run_id or f"MQTT-{plant_id}-{uuid.uuid4().hex[:10]}"
     faults = FaultInjector()
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"pulsetwin-publisher-{plant_id}")
@@ -176,6 +197,20 @@ def run(plant_id: str, broker: str, port: int, speed: float, loop: bool,
     client.subscribe(control_dropout_topic(plant_id))
     client.loop_start()
 
+    lifecycle_topic = simulation_topic(plant_id)
+    lifecycle = {
+        "run_id": run_id, "plant_id": plant_id, "status": "running",
+        "source": "live_synthetic", "producer": "mqtt", "transport": "mqtt",
+        "scenario": "normal", "seed": SEED, "speed": speed,
+        "started_at": time.time(),
+    }
+    client.publish(lifecycle_topic, json.dumps(lifecycle), qos=1, retain=True)
+    print(f"[publisher] run {run_id} started")
+    # The compose dependency means the subscriber process has started, not necessarily
+    # that its MQTT subscription is active. The lifecycle marker is retained, but state
+    # messages are not; this short grace period avoids losing the first dashboard frame.
+    time.sleep(1.0)
+
     n_events = 0
     while True:
         prev_ts = None
@@ -193,12 +228,15 @@ def run(plant_id: str, broker: str, port: int, speed: float, loop: bool,
                 if extra_delay:
                     time.sleep(min(extra_delay / speed, 2.0))
 
-                n_events += _publish_event(client, plant_id, zones, rec, faults, time.time(),
+                n_events += _publish_event(client, plant_id, run_id, zones, rec, faults, time.time(),
                                             inject_faults)
                 if n_events % 500 == 0:
                     print(f"[publisher] {n_events} messages published")
         if not loop:
             break
+    lifecycle.update({"status": "completed", "ended_at": time.time()})
+    client.publish(lifecycle_topic, json.dumps(lifecycle), qos=1, retain=True)
+    time.sleep(0.1)
     client.loop_stop()
     client.disconnect()
 
@@ -212,8 +250,10 @@ def main() -> int:
     ap.add_argument("--loop", action="store_true", default=True)
     ap.add_argument("--no-loop", dest="loop", action="store_false")
     ap.add_argument("--no-inject-faults", dest="inject_faults", action="store_false", default=True)
+    ap.add_argument("--run-id", help="stable run id shown by the dashboard")
     args = ap.parse_args()
-    run(args.plant_id, args.broker, args.port, args.speed, args.loop, args.inject_faults)
+    run(args.plant_id, args.broker, args.port, args.speed, args.loop,
+        args.inject_faults, args.run_id)
     return 0
 
 

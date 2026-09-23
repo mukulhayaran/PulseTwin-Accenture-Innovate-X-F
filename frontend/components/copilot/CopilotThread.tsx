@@ -21,6 +21,7 @@ import { cn } from "@/lib/cn";
 import { Badge, Skeleton } from "@/components/ui";
 import FindingView, { SectionLabel, VerdictStrip } from "./FindingView";
 import PhaseTrail from "./PhaseTrail";
+import AgentTrail from "./AgentTrail";
 
 // 1Hz while a run is in flight, and NOT AT ALL when idle. The old console polled a flat
 // 2s and kept polling after the run finished until the component unmounted.
@@ -246,6 +247,13 @@ function Turn({ turn, phases }: { turn: TriageRun; phases: string[] }) {
 
       {/* the agent's turn */}
       <div className="rounded-lg border border-line bg-surface/60 p-3">
+        {turn.intent === "incident" &&
+          (turn.progress?.agents?.length || turn.agents_used?.length) && (
+            <AgentTrail
+              agents={turn.progress?.agents ?? turn.agents_used ?? []}
+              done={!active}
+            />
+          )}
         {phases.length > 0 && (
           <div className="mb-3">
             <PhaseTrail

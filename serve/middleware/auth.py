@@ -31,6 +31,15 @@ def get_role(request: Request) -> str:
     return role
 
 
+def get_user(request: Request, role: str = Depends(get_role)) -> str:
+    """Demo identity seam; replace this header with the OIDC subject claim in production."""
+    user = request.headers.get("X-PulseTwin-User", f"demo-{role}").strip()
+    if not user or len(user) > 100 or any(ord(char) < 32 for char in user):
+        raise HTTPException(400, "X-PulseTwin-User must be 1-100 visible characters")
+    request.state.user = user
+    return user
+
+
 def require_role(minimum: str):
     """FastAPI dependency factory: `Depends(require_role("system"))`.
 

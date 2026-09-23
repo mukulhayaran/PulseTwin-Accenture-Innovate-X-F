@@ -43,7 +43,10 @@ class Intent:
     requires_station: bool = False
 
 
-_COMMON = (
+# Exported (not module-private) so genai/orchestrator.py's specialist and synthesis
+# guidance can reuse the identical citation-discipline boilerplate rather than drifting
+# a second copy of it.
+COMMON_GUIDANCE = (
     "Work only from tool results. Every number you report must be citable to a call you "
     "actually made in THIS turn."
 )
@@ -73,7 +76,10 @@ INTENTS: dict[str, Intent] = {
             "and get_data_quality before concluding the line changed. Then identify the "
             "affected units with get_containment rather than describing them in the "
             "abstract. If the evidence supports an association but not a cause, say so "
-            "in those words. " + _COMMON
+            "in those words. If a procedure or fault-code meaning would strengthen your "
+            "evidence, call search_engineering_knowledge and cite anything you quote or "
+            "paraphrase from it in `knowledge_citations`, never in prose alone. "
+            + COMMON_GUIDANCE
         ),
         plan="incident",
     ),
@@ -91,7 +97,7 @@ INTENTS: dict[str, Intent] = {
             "been tried or ruled out, so they do not repeat it. Start from "
             "get_shift_summary. Name units and stations concretely. Anything you could "
             "not determine belongs in `unanswered` -- an incomplete handover an operator "
-            "can trust beats a complete one they cannot. " + _COMMON
+            "can trust beats a complete one they cannot. " + COMMON_GUIDANCE
         ),
         plan="handover",
     ),
@@ -107,7 +113,7 @@ INTENTS: dict[str, Intent] = {
             "then rank the top three sources of loss and qualify each one: how confident "
             "the detector is, whether the underlying statistics are measured or "
             "reconstructed, and whether the model itself is drifting (get_model_health). "
-            "A loss you cannot rank confidently is worth saying so about. " + _COMMON
+            "A loss you cannot rank confidently is worth saying so about. " + COMMON_GUIDANCE
         ),
         plan="shift_intel",
     ),
@@ -126,7 +132,7 @@ INTENTS: dict[str, Intent] = {
             "the question asks for anything else -- taking a station offline, changing a "
             "tool, reordering the line -- say plainly that the simulator cannot answer it "
             "and put that in `unanswered`. Do NOT approximate an unsupported intervention "
-            "with a supported one. " + _COMMON
+            "with a supported one. " + COMMON_GUIDANCE
         ),
         plan="whatif",
         requires_station=True,
@@ -179,6 +185,6 @@ def plan(key: str | None) -> str:
 
 __all__ = [
     "ASK", "INCIDENT", "HANDOVER", "SHIFT_INTEL", "WHATIF",
-    "Intent", "INTENTS", "KEYS", "LABELS",
+    "Intent", "INTENTS", "KEYS", "LABELS", "COMMON_GUIDANCE",
     "get", "expand", "guidance", "plan",
 ]

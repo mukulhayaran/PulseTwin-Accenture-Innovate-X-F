@@ -20,9 +20,36 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def load_config(plant_id: str) -> dict:
+    return yaml.safe_load((ROOT / "configs" / f"{plant_id}.yaml").read_text(encoding="utf-8"))
+
+
 def load_stations(plant_id: str) -> list[dict]:
-    cfg = yaml.safe_load((ROOT / "configs" / f"{plant_id}.yaml").read_text(encoding="utf-8"))
-    return cfg["stations"]
+    return load_config(plant_id)["stations"]
+
+
+def feature_context(plant_id: str) -> dict:
+    cfg = load_config(plant_id)
+    stations = cfg["stations"]
+    zones = {
+        str(zone["id"]): min(int(station_id) for station_id in zone["stations"])
+        for zone in cfg["zones"]
+    }
+    station_zones_map = {int(station["id"]): str(station["zone"]) for station in stations}
+    manual_nominals = {
+        int(station["id"]): float(station.get("checklist_nominal_s") or 1.0)
+        for station in stations if station.get("checklist_nominal_s") is not None
+    }
+    mode_a = cfg["defect_physics"]["mode_a"]
+    return {
+        "variants": [str(value["id"]) for value in cfg["variants"]],
+        "shifts": [str(value["id"]) for value in cfg["shifts"]],
+        "zone_first_station": zones,
+        "station_zones": station_zones_map,
+        "checklist_nominals": manual_nominals,
+        "dwell_window": mode_a["dwell_window"],
+        "dwell_nominal_s": float(mode_a["dwell_nominal_s"]),
+    }
 
 
 def station_zones(plant_id: str) -> dict[int, str]:

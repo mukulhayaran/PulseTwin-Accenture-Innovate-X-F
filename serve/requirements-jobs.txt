@@ -1,0 +1,9 @@
+# Dependencies used only by detached retraining and GenAI subprocesses. The API
+# process keeps its import wall; these packages are present so its existing job routes
+# do not fail with ModuleNotFoundError inside the production demo container.
+pandas>=2.2
+scipy>=1.14
+scikit-learn>=1.5
+pyarrow>=17
+PyYAML>=6.0
+openai>=1.60

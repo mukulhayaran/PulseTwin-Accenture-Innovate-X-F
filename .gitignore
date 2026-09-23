@@ -29,3 +29,10 @@ frontend/tsconfig.tsbuildinfo
 # .gitignore never applies to files already in the index. Use `git rm --cached` for those.
 *.md
 !README.md
+
+# Real-dataset benchmark subsystem (ADR pending, docs/benchmarking.md): raw downloads and
+# Parquet caches never committed, matching artifacts/'s "commit derived output once, never
+# raw bulk data" convention. tests/fixtures/*.csv (small, curated) are NOT covered by this
+# and stay tracked.
+benchmark/data/
+benchmark/reports/

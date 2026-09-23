@@ -366,6 +366,18 @@ def test_containment_escalation_matches_the_router(alert_policies) -> None:
     assert block["skip_to_level"] == CONTAINMENT_SKIP_TO_LEVEL
 
 
+def test_containment_action_thresholds_match_the_router(alert_policies) -> None:
+    pytest.importorskip("fastapi")
+    from serve.routers.alerts_mgmt import (
+        CONTAINMENT_HOLD_RISK, CONTAINMENT_INSPECT_RISK,
+    )
+
+    block = alert_policies["escalation"]["containment_actions"]
+    assert block["hold_risk"] == CONTAINMENT_HOLD_RISK
+    assert block["inspect_risk"] == CONTAINMENT_INSPECT_RISK
+    assert CONTAINMENT_HOLD_RISK > CONTAINMENT_INSPECT_RISK > 0
+
+
 def test_triage_thresholds_match_the_router(alert_policies) -> None:
     """ADR-038. The alert-triage rules are alert policy, so they live beside the
     escalation policy and are mirrored into serve/routers/intelligence.py by hand."""

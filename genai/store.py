@@ -203,6 +203,18 @@ def record_capability_profile(con: Any, run_id: str, profile: str) -> None:
                (profile, run_id))
 
 
+def record_agents_used(con: Any, run_id: str, agents: list[dict[str, Any]]) -> None:
+    """Which specialists ran and how each finished (ADR-045). Set only for orchestrated
+    runs -- `genai/triage.py::_persist()` calls this only when
+    `LoopResult.agents_used` is non-empty, so a single-agent run's row keeps
+    `orchestrated=0` and `agents_used=NULL`."""
+    db.execute(
+        con,
+        "UPDATE triage_runs SET orchestrated=1, agents_used=? WHERE run_id=?",
+        (_dumps(agents), run_id),
+    )
+
+
 def bump_thread(con: Any, thread_id: str) -> None:
     db.execute(
         con,
@@ -261,9 +273,10 @@ def record_tool_calls(con: Any, run_id: str, records: list[Any]) -> None:
         db.execute(
             con,
             """INSERT INTO triage_tool_calls
-               (run_id, call_id, seq, tool_name, arguments, result, duration_ms, phase)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (run_id, call_id, seq, tool_name, arguments, result, duration_ms, phase,
+                agent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (run_id, r.call_id, r.seq, r.name,
              _dumps(r.arguments), _dumps(r.result), r.duration_ms,
-             getattr(r, "phase", "") or ""),
+             getattr(r, "phase", "") or "", getattr(r, "agent", "") or None),
         )

@@ -145,19 +145,22 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 | Simulator | `offline/simulator/generate.py` | `docs/SPEC.md` §Phase 2 |
 | Features / model | `offline/ml/{featurize,train,thresholds}.py` | `docs/MODEL_CARD.md` |
 | Artifact build | `offline/build_artifact.py` (16 tables) | ADR-027, ADR-032 |
-| Runtime API | `serve/main.py` (+ 6 routers) — 35 endpoints | `docs/ARCHITECTURE.md` |
+| Runtime API | `serve/main.py` (+ 9 routers) — 37 endpoints | `docs/ARCHITECTURE.md` |
 | Numpy scorer | `serve/scorer.py` — decision-path, NOT SHAP | ADR-015 |
 | MQTT ingestion | `ingestion/` — separate deployable | `docs/PRODUCTION_ARCHITECTURE.md` |
 | MLOps | `mlops/{drift_detector,retrainer,model_registry,evaluation,fallback}.py` | `docs/MLOPS_LIFECYCLE.md` |
 | **GenAI triage** | `genai/` — separate deployable, never imported by `serve/` | **ADR-037** |
+| Multi-agent orchestration | `genai/orchestrator.py` — `incident` only, 3 specialists + synthesizer | **ADR-045** |
+| Knowledge retrieval | `offline/build_knowledge_index.py` + `serve/knowledge_index.py` — lexical TF-IDF, no embeddings | **ADR-046** |
 | Frontend | `frontend/app/{supervisor,manager,leadership,ops}` + `components/ui/` | §7 below |
 
 **`genai/` file roles** (all provider-independent except `client.py`):
 `config.py` model ID + caps · `client.py` the ONLY `openai` import · `api_client.py`
 stdlib HTTP to PulseTwin's own API · `tools.py` the closed registry = the data-egress
-allowlist · `loop.py` the agent loop · `verifier.py` **the deterministic gate** ·
-`offline_triage.py` no-LLM path that passes the same gate · `store.py` ops-DB writes ·
-`triage.py` CLI entry.
+allowlist · `loop.py` the agent loop · `orchestrator.py` Coordinator → Specialists →
+Synthesizer for `incident` (ADR-045) · `verifier.py` **the deterministic gate**, now also
+checking `KnowledgeCitation` substrings (ADR-046) · `offline_triage.py` no-LLM path that
+passes the same gate · `store.py` ops-DB writes · `triage.py` CLI entry.
 
 Finals upgrade docs — read the relevant one before changing that subsystem:
 
@@ -188,11 +191,14 @@ it in both. `configs/alert_policies.yaml`'s escalation levels and
 ## 5. COMMANDS
 
 ```bash
-make generate        # simulate both plants
-make train           # train models (per-plant)
-make build-artifact  # bake SQLite + model_<plant>.npz + stream JSONL
-make test            # pytest tests/ -v   (339 tests, ~18 min — it runs real models)
-make demo            # docker compose: backend + frontend (SQLite runtime)
+make generate            # simulate both plants
+make train               # train models (per-plant)
+make build-artifact      # bake SQLite + model_<plant>.npz + stream JSONL
+make build-knowledge-index  # bake the engineering-knowledge TF-IDF index (ADR-046)
+make test                # pytest tests/ -v   (611 tests — it runs real models; ~18 min
+                          # was measured pre-ADR-045/046, not remeasured against the
+                          # larger current count)
+make demo                # docker compose: backend + frontend (SQLite runtime)
 
 make dev-backend     # uvicorn on :7860
 make dev-frontend    # next dev on :3000
@@ -206,9 +212,10 @@ make drift-check     # python -m mlops.drift_detector
 make retrain         # python -m mlops.retrainer (champion-challenger)
 make test-all        # pytest tests/ -v --tb=short
 
-# genai tier (ADR-037/038/040) -- needs a running backend; a provider key is optional
+# genai tier (ADR-037/038/040/045/046) -- needs a running backend; a provider key is optional
 pip install -r genai/requirements.txt
 python -m genai.triage --plant plant_a --question "..." [--mode deterministic]
+python -m genai.triage --plant plant_a --intent incident   # Coordinator -> Specialists -> Synthesizer
 python -m genai.verify_cli --run-id X      # re-run the gate over a stored transcript
 ```
 

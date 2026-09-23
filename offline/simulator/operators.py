@@ -20,10 +20,10 @@ from datetime import timedelta
 
 import numpy as np
 
+from feature_contract import NOTE_CODES
 from offline.config_schema import PlantConfig, Station
 from offline.simulator.line_model import SIM_START, Unit
 
-NOTE_CODES = ("OK", "MINOR_ADJ", "TOOL_SWAP", "REWORK_FLAG", "MATERIAL_VAR")
 
 
 @dataclass(slots=True)

@@ -45,11 +45,13 @@ def _activate_scorer(request: Request, plant_id: str, artifact_path: str | None)
     endpoint "is the only code path that changes what /api/predict/defect actually serves"
     was true only in the sense that no code path did.
 
-    Deliberately RUNTIME-ONLY: it does not overwrite the committed
-    `artifacts/model_<plant>.npz`. That file is a build output under version control
-    (ADR-027) and a demo action should not rewrite it; a restart therefore reverts to the
-    committed champion, which is the honest behaviour for an ephemeral container and is
-    stated in the response rather than hidden.
+    Deliberately does not overwrite the committed `artifacts/model_<plant>.npz` -- that
+    file is a build output under version control (ADR-027) and a demo action should not
+    rewrite it. A restart no longer loses this promotion, though: `serve/main.py::lifespan`
+    (ADR-041) asks `model_registry` for the current champion's `artifact_path` at startup
+    and loads THAT, falling back to the committed artifact only if no champion row exists
+    or its file is missing. This function's hot-swap and that startup lookup read the same
+    row, so a promotion made once is what both a live process and its next restart serve.
 
     Never raises: a missing or corrupt artifact must not roll back a registry change that
     already committed. The outcome is reported to the caller either way.
@@ -69,7 +71,14 @@ def _activate_scorer(request: Request, plant_id: str, artifact_path: str | None)
         scorers[plant_id] = Scorer(path)
     except Exception as e:  # noqa: BLE001 - any load failure must leave serving intact
         return {"swapped": False, "reason": f"could not load artifact: {e}"}
-    return {"swapped": True, "artifact": path.name, "persists_across_restart": False}
+    # True since ADR-041: `lifespan` now loads whatever `model_registry` names as champion,
+    # so a restart re-reads the SAME row this call just wrote rather than the committed
+    # default. Verified against a real `docker kill` + restart of the backend container,
+    # not just the unit tests. The one edge this doesn't cover -- the promoted artifact's
+    # .npz being pruned off disk -- is guarded separately: mlops/retrainer.py keeps the 10
+    # most recent challenger files per plant specifically so a live champion/rollback
+    # target is never the one pruning deletes.
+    return {"swapped": True, "artifact": path.name, "persists_across_restart": True}
 
 
 def _utc_now() -> str:
@@ -95,6 +104,8 @@ class RetrainRequest(BaseModel):
 @router.post("/api/admin/trigger-retrain")
 def trigger_retrain(req: RetrainRequest, request: Request,
                      role: str = Depends(require_role("system"))) -> dict[str, Any]:
+    if os.environ.get("PULSETWIN_JOBS_ENABLED", "1") == "0":
+        raise HTTPException(503, "Retraining is disabled in this deployment")
     config_path = ROOT / "configs" / f"{req.plant_id}.yaml"
     if not config_path.exists():
         raise HTTPException(404, f"unknown plant '{req.plant_id}'")
@@ -153,6 +164,12 @@ def promote_model(req: PromoteRequest, request: Request,
         (now, role, req.model_id),
     )
     swap = _activate_scorer(request, challenger["plant_id"], challenger.get("artifact_path"))
+    model_info = getattr(request.app.state, "model_info", None)
+    if swap["swapped"] and model_info is not None:
+        model_info[challenger["plant_id"]] = {
+            "model_id": req.model_id,
+            "version": int(challenger.get("version") or 1),
+        }
     log_action(request, ops, role, "model_promoted", "model", req.model_id,
                {"previous_champion": previous["model_id"] if previous else None,
                 "scorer_swapped": swap["swapped"]})
@@ -194,6 +211,12 @@ def rollback_model(req: RollbackRequest, request: Request,
              "WHERE model_id=?", (now, role, previous["model_id"]),
     )
     swap = _activate_scorer(request, req.plant_id, previous.get("artifact_path"))
+    model_info = getattr(request.app.state, "model_info", None)
+    if swap["swapped"] and model_info is not None:
+        model_info[req.plant_id] = {
+            "model_id": previous["model_id"],
+            "version": int(previous.get("version") or 1),
+        }
     log_action(request, ops, role, "model_rolled_back", "model", previous["model_id"],
                {"replaced": current["model_id"] if current else None,
                 "scorer_swapped": swap["swapped"]})

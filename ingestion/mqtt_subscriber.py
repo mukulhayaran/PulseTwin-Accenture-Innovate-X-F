@@ -35,9 +35,10 @@ from datetime import datetime, timezone
 import paho.mqtt.client as mqtt
 import psycopg
 
-from ingestion.config_lite import prediction_cutoff_station
+from ingestion.config_lite import feature_context, prediction_cutoff_station
 from ingestion.data_quality import DataQualityTracker, is_valid_reading
 from ingestion.feature_buffer import FeatureBuffer
+from ingestion.live_projection import LiveProjection
 from ingestion.unified_namespace import parse_topic
 
 REORDER_WINDOW_S = 60.0
@@ -88,6 +89,7 @@ class Deduplicator:
 class Ingestor:
     def __init__(self, database_url: str, redis_url: str, plant_ids: list[str]):
         self.con = _connect_pg(database_url)
+        self.live = LiveProjection(self.con)
         self.dedup = Deduplicator()
         self.tracker = DataQualityTracker()
         self.sensor_status: dict[tuple[str, int, str], str] = {}
@@ -96,7 +98,8 @@ class Ingestor:
         self.watermark = 0.0          # newest EVENT timestamp seen -- see flush_ready()
         self.last_message_at = 0.0    # newest ARRIVAL wall clock -- idle-drain trigger
         self.buffers = {
-            pid: FeatureBuffer(redis_url, prediction_cutoff_station(pid)) for pid in plant_ids
+            pid: FeatureBuffer(redis_url, prediction_cutoff_station(pid), feature_context(pid))
+            for pid in plant_ids
         }
         self.n_processed = 0
         self.n_deduped = 0
@@ -117,16 +120,22 @@ class Ingestor:
         except json.JSONDecodeError:
             return
 
-        if parsed.kind == "telemetry":
+        if parsed.kind == "simulation":
+            self.live.lifecycle(parsed.plant_id, body)
+        elif parsed.kind == "telemetry":
             self._queue_telemetry(parsed, body, arrival_ts)
         elif parsed.kind == "state":
             self._on_state(parsed, body, arrival_ts)
+        elif parsed.kind == "checklist":
+            self._on_checklist(parsed, body)
 
     def _queue_telemetry(self, parsed, body: dict, arrival_ts: float) -> None:
         event_ts = datetime.fromisoformat(body["ts"]).timestamp()
         record = {
             "plant_id": parsed.plant_id, "station_id": parsed.station_id,
             "unit_id": body.get("unit_id"), "event_ts_iso": body["ts"],
+            "run_id": body.get("run_id"),
+            "variant": body.get("variant"),
             "event_ts": event_ts, "arrival_ts": arrival_ts,
             # Wall clock at the edge gateway (ingestion/mqtt_publisher.py). Absent only if
             # something upstream of us publishes live data whose `ts` already IS wall
@@ -139,15 +148,28 @@ class Ingestor:
         heapq.heappush(self.reorder_heap, (event_ts, next(self._seq), record))
 
     def _on_state(self, parsed, body: dict, arrival_ts: float) -> None:
+        del arrival_ts
         unit_id = body.get("unit_id")
         if unit_id is None:
             return
         buf = self.buffers.get(parsed.plant_id)
-        if buf is None:
-            return
-        result = buf.maybe_score(parsed.plant_id, str(unit_id), parsed.station_id)
-        if result is not None:
-            self._log_prediction(parsed.plant_id, result)
+        if buf is not None:
+            buf.add_station_context(parsed.plant_id, str(unit_id), parsed.station_id, body)
+        self.live.station_state(parsed.plant_id, parsed.station_id, body)
+        if (parsed.plant_id, parsed.station_id) in self.live.inspection_stations and buf is not None:
+            row = self.con.execute(
+                "SELECT actual_defect FROM units WHERE plant_id=%s AND unit_id=%s",
+                (parsed.plant_id, str(unit_id)),
+            ).fetchone()
+            lot_id = body.get("lot_id")
+            if row is not None and lot_id is not None:
+                buf.add_inspection(parsed.plant_id, str(lot_id), int(row[0] or 0))
+
+    def _on_checklist(self, parsed, body: dict) -> None:
+        unit_id = body.get("unit_id")
+        buf = self.buffers.get(parsed.plant_id)
+        if unit_id is not None and buf is not None:
+            buf.add_checklist(parsed.plant_id, str(unit_id), parsed.station_id, body)
 
     def flush_ready(self, now: float) -> int:
         """Write every buffered reading the reorder window has closed over.
@@ -206,8 +228,19 @@ class Ingestor:
                 (record["unit_id"], plant_id, station_id, signal, value),
             )
             if buf is not None:
-                buf.add_reading(plant_id, str(record["unit_id"]), station_id, signal, value)
+                buf.add_reading(plant_id, str(record["unit_id"]), station_id, signal, value,
+                                record.get("variant"))
             self.n_processed += 1
+
+        # Score only after the complete telemetry record has left the late-arrival
+        # reorder buffer. State messages arrive immediately, so scoring in _on_state
+        # raced ahead of these feature writes and often found an empty Redis hash.
+        if buf is not None and record.get("unit_id") is not None:
+            result = buf.maybe_score(plant_id, str(record["unit_id"]), station_id)
+            if result is not None:
+                result["run_id"] = record.get("run_id")
+                self._log_prediction(plant_id, result)
+                self.live.prediction(plant_id, result)
 
     def check_dropouts(self, now: float) -> None:
         if now - self._last_dropout_check < DROPOUT_CHECK_INTERVAL_S:
@@ -234,9 +267,16 @@ class Ingestor:
 
     def _log_prediction(self, plant_id: str, result: dict) -> None:
         self.con.execute(
-            """INSERT INTO model_predictions_log (model_id, unit_id, prediction)
-               VALUES (%s,%s,%s)""",
-            (f"{plant_id}_live", result.get("unit_id"), result.get("probability")),
+            """INSERT INTO model_predictions_log
+                   (model_id,unit_id,prediction,run_id,model_version,feature_set_version,
+                    prediction_ts,features_available,features_missing,
+                    data_completeness_pct,source)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (result.get("model_id"), result.get("unit_id"), result.get("probability"),
+             result.get("run_id"), result.get("model_version"),
+             result.get("feature_set_version"), result.get("prediction_ts"),
+             result.get("features_available"), result.get("features_missing"),
+             result.get("data_completeness_pct"), result.get("source")),
         )
         print(f"[subscriber] real-time prediction {plant_id}/{result.get('unit_id')}: "
               f"{result.get('probability'):.3f} "

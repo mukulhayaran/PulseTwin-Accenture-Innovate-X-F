@@ -56,6 +56,24 @@ class Claim:
 
 
 @dataclass(frozen=True)
+class KnowledgeCitation:
+    """A quoted or paraphrased excerpt from `search_engineering_knowledge` (ADR-046).
+
+    The text-shaped counterpart to Claim: instead of a numeric value re-derived from a
+    tool result, `quoted_text` must be a real (verifier-checked) substring of the source
+    chunk's own text at `citation`. Kept as a SEPARATE list from `claims`, not folded in,
+    because it is checked by a different rule (substring match, not numeric tolerance) --
+    conflating the two would mean one field meant two different verification contracts.
+    """
+
+    id: str
+    quoted_text: str
+    doc_id: str
+    section: str
+    citation: Citation
+
+
+@dataclass(frozen=True)
 class Finding:
     question: str
     summary: str
@@ -69,6 +87,9 @@ class Finding:
     # First-class output: "I could not read /api/economics/roi at role=manager (403)"
     # is a good answer. An agent that cannot say "I don't know" will say something else.
     unanswered: list[str] = field(default_factory=list)
+    # Empty for every Finding produced before ADR-046, and for any turn where the model
+    # simply chose not to use search_engineering_knowledge -- never required.
+    knowledge_citations: list[KnowledgeCitation] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -172,11 +193,35 @@ def parse_finding(text: str, *, question: str) -> Finding:
     if confidence not in CONFIDENCE:
         confidence = "low"
 
+    # OPTIONAL key (ADR-046), not required like `claims` -- absent entirely means the
+    # model made no knowledge-tool citations this turn, which every Finding produced
+    # before this field existed already looks like. A PRESENT-but-malformed entry is
+    # still a hard parse error, the same strictness `claims` gets: half-structured output
+    # is not more trustworthy than none.
+    knowledge_citations: list[KnowledgeCitation] = []
+    for idx, kc in enumerate(raw.get("knowledge_citations") or []):
+        if not isinstance(kc, dict):
+            raise ParseError(f"knowledge_citations[{idx}] is not an object")
+        cit = _require(kc, "citation", dict)
+        knowledge_citations.append(
+            KnowledgeCitation(
+                id=str(kc.get("id") or f"k{idx + 1}"),
+                quoted_text=_require(kc, "quoted_text", str),
+                doc_id=_require(kc, "doc_id", str),
+                section=_require(kc, "section", str),
+                citation=Citation(
+                    call_id=_require(cit, "call_id", str),
+                    pointer=_require(cit, "pointer", str),
+                ),
+            )
+        )
+
     return Finding(
         question=question,
         summary=_require(raw, "summary", str),
         claims=claims,
         recommendation=_require(raw, "recommendation", str),
+        knowledge_citations=knowledge_citations,
         alternatives_considered=[
             str(a) for a in raw.get("alternatives_considered", []) if isinstance(a, str)
         ],
