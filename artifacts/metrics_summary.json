@@ -1,0 +1,457 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-23T09:24:12.545095+00:00",
+  "git_sha": "847b594c15f766e9e06fd005e5340517b77b043e",
+  "generated_by": "tools/metrics_summary.py",
+  "note": "THE source for every documented metric. Do not hand-edit. Regenerate with `python tools/metrics_summary.py --write` after rebuilding artifacts.",
+  "plants": {
+    "plant_a": {
+      "pr_auc": 0.25586592381661577,
+      "pr_auc_ci_low": 0.2072032733368462,
+      "pr_auc_ci_high": 0.30801453973217696,
+      "oracle_pr_auc": 0.48106705410871126,
+      "oracle_capture": 0.5318716416584939,
+      "roc_auc": 0.8831290561968541,
+      "brier": 0.02061126050040184,
+      "base_rate_test": 0.025204510280787087,
+      "positives_test": 228.0,
+      "cost_optimal_threshold": 0.00651611294595773,
+      "budget_threshold": 0.4060785365829261,
+      "precision_at_budget": 0.3539325842696629,
+      "recall_at_budget": 0.27631578947368424,
+      "alerts_per_shift": 8.476190476190476,
+      "marginal_value_of_doubling": 3920547.224414628,
+      "marginal_cost_of_doubling": 118928.57142857143,
+      "bottleneck_detection_accuracy": 0.8586309523809523,
+      "bottleneck_shift_events": 461.0,
+      "forecast_skill_vs_persistence": 0.1360597473809495,
+      "forecast_mae_model": 0.0016993122174752122,
+      "forecast_mae_persistence": 0.0019669325654450252,
+      "soft_sensor_ablation_delta": 0.060080079770917866,
+      "soft_sensor_masked_r2": 0.2644223240414459,
+      "instrumentation_total_cost": 10000.0,
+      "instrumentation_total_value": 30791.596318788976,
+      "escape_rate": 0.10128913443830571
+    },
+    "plant_b": {
+      "pr_auc": 0.05247785421513487,
+      "pr_auc_ci_low": 0.039098695475477174,
+      "pr_auc_ci_high": 0.07585283459111414,
+      "oracle_pr_auc": 0.07470543538920969,
+      "oracle_capture": 0.7024636686973204,
+      "roc_auc": 0.6312100319330602,
+      "brier": 0.02277422404765348,
+      "base_rate_test": 0.023546435148645094,
+      "positives_test": 179.0,
+      "cost_optimal_threshold": 0.006220094947323425,
+      "budget_threshold": 0.09280216476008844,
+      "precision_at_budget": 0.07936507936507936,
+      "recall_at_budget": 0.055865921787709494,
+      "alerts_per_shift": 6.0,
+      "marginal_value_of_doubling": 1283860.0451467268,
+      "marginal_cost_of_doubling": 202500.0,
+      "bottleneck_detection_accuracy": 0.9017857142857143,
+      "bottleneck_shift_events": 246.0,
+      "forecast_skill_vs_persistence": 0.20503673714425952,
+      "forecast_mae_model": 0.0013996124747852204,
+      "forecast_mae_persistence": 0.0017606001939729935,
+      "soft_sensor_ablation_delta": 0.01484531065106344,
+      "soft_sensor_masked_r2": 0.1201289004375637,
+      "instrumentation_total_cost": 20000.0,
+      "instrumentation_total_value": 71817.79953069036,
+      "escape_rate": 0.1399548532731377
+    }
+  },
+  "bottleneck_benchmark": {
+    "status": "OK",
+    "league": {
+      "active_share": {
+        "detector": "active_share",
+        "label": "Active Share",
+        "provenance": "faithful; this is PulseTwin's shipped detector (offline/ml/bottleneck.py)",
+        "is_current_detector": 1,
+        "scenarios": 1,
+        "top1": 0.9333333333333333,
+        "top3": 1.0,
+        "mrr": 0.9666666666666667,
+        "mean_station_distance": 0.4666666666666667
+      },
+      "utilization": {
+        "detector": "utilization",
+        "label": "Utilization",
+        "provenance": "faithful; textbook utilisation",
+        "is_current_detector": 0,
+        "scenarios": 1,
+        "top1": 0.9333333333333333,
+        "top3": 1.0,
+        "mrr": 0.9666666666666667,
+        "mean_station_distance": 0.4666666666666667
+      },
+      "active_period": {
+        "detector": "active_period",
+        "label": "Active Period (mean span)",
+        "provenance": "faithful; Roser active-period method, measured at event level",
+        "is_current_detector": 0,
+        "scenarios": 1,
+        "top1": 0.7,
+        "top3": 1.0,
+        "mrr": 0.85,
+        "mean_station_distance": 2.1
+      },
+      "turning_point_adapted": {
+        "detector": "turning_point_adapted",
+        "label": "Turning Point (adapted)",
+        "provenance": "ADAPTED to 15-minute buckets; not a reproduction of the published algorithm",
+        "is_current_detector": 0,
+        "scenarios": 1,
+        "top1": 0.0,
+        "top3": 1.0,
+        "mrr": 0.5,
+        "mean_station_distance": 7.0
+      },
+      "arrow_blocked_starved_adapted": {
+        "detector": "arrow_blocked_starved_adapted",
+        "label": "Arrow / blocked-starved direction (adapted)",
+        "provenance": "ADAPTED to bucketed durations; decision rule is the published one",
+        "is_current_detector": 0,
+        "scenarios": 1,
+        "top1": 0.0,
+        "top3": 1.0,
+        "mrr": 0.5,
+        "mean_station_distance": 7.0
+      },
+      "average_queue_length": {
+        "detector": "average_queue_length",
+        "label": "Average Queue Length",
+        "provenance": "faithful; time-weighted mean input-buffer occupancy",
+        "is_current_detector": 0,
+        "scenarios": 1,
+        "top1": 0.0,
+        "top3": 0.0,
+        "mrr": 0.07762515262515264,
+        "mean_station_distance": 9.0
+      },
+      "busy_ratio": {
+        "detector": "busy_ratio",
+        "label": "Busy Ratio",
+        "provenance": "faithful; occupancy including blocked time",
+        "is_current_detector": 0,
+        "scenarios": 1,
+        "top1": 0.0,
+        "top3": 0.0,
+        "mrr": 0.06896214896214896,
+        "mean_station_distance": 18.0
+      }
+    },
+    "scenarios": {
+      "plant_a.baseline": {
+        "plant_id": "plant_a",
+        "scenario": "baseline",
+        "relative_perturbation": 0.1,
+        "horizon_days": 5.0,
+        "n_seeds": 30,
+        "seeds": [
+          1000,
+          1001,
+          1002,
+          1003,
+          1004,
+          1005,
+          1006,
+          1007,
+          1008,
+          1009,
+          1010,
+          1011,
+          1012,
+          1013,
+          1014,
+          1015,
+          1016,
+          1017,
+          1018,
+          1019,
+          1020,
+          1021,
+          1022,
+          1023,
+          1024,
+          1025,
+          1026,
+          1027,
+          1028,
+          1029
+        ],
+        "bottleneck_station": 19,
+        "runner_up_station": 12,
+        "margin_uph_per_unit_relative": 5.010270936187261,
+        "separated": true,
+        "throughput_baseline_mean_uph": 53.52013199263952,
+        "throughput_baseline_std_uph": 0.1974799965748314,
+        "ranking": [
+          19,
+          12,
+          18,
+          17,
+          8,
+          30,
+          22,
+          6,
+          29,
+          16,
+          3,
+          5,
+          27,
+          23,
+          14,
+          10,
+          4,
+          2,
+          15,
+          28,
+          11,
+          26,
+          20,
+          21,
+          9,
+          7,
+          24,
+          1,
+          13,
+          25
+        ]
+      }
+    },
+    "runs": {
+      "plant_a": {
+        "profile": "dev",
+        "n_seeds": 30,
+        "horizon_days": 5.0,
+        "relative_perturbation": 0.1,
+        "git_sha": "847b594c15f766e9e06fd005e5340517b77b043e",
+        "generated_at": "2026-09-23T09:12:53.411674+00:00",
+        "elapsed_s": 3345.9
+      }
+    }
+  },
+  "sensor_degradation": {
+    "status": "NOT RUN"
+  },
+  "external_benchmark": {
+    "status": "OK",
+    "tasks": {
+      "defect_prediction": {
+        "dataset_id": "ai4i",
+        "dataset_name": "AI4I 2020 Predictive Maintenance Dataset",
+        "run_id": "8c0f3741a293",
+        "timestamp": "2026-09-22T20:37:58Z",
+        "model_name": "HistGradientBoostingClassifier + Platt calibration",
+        "split_strategy": "stratified (seeded, class-balanced)",
+        "n_rows": 10000,
+        "target_prevalence": 0.0339,
+        "metrics": {
+          "pr_auc": 0.7729306784199467,
+          "pr_auc_ci_low": 0.6567364412977675,
+          "pr_auc_ci_high": 0.8726867377279579,
+          "roc_auc": 0.9876392572944297,
+          "roc_auc_ci_low": 0.9786211869815916,
+          "roc_auc_ci_high": 0.993885832647231,
+          "base_rate_test": 0.03462050599201065,
+          "positives_test": 52,
+          "n_test": 1502,
+          "n_train": 6999,
+          "n_validate": 1499,
+          "pr_auc_validate": 0.7134142709474984,
+          "brier_test": 0.014614734711612237,
+          "reliability": [
+            {
+              "bin": 0,
+              "predicted": 0.004766338069211748,
+              "observed": 0.0,
+              "n": 151,
+              "ci_low": 0.0,
+              "ci_high": 5.043913124018791e-06
+            },
+            {
+              "bin": 1,
+              "predicted": 0.004797081435231206,
+              "observed": 0.0,
+              "n": 150,
+              "ci_low": 0.0,
+              "ci_high": 5.060698239044358e-06
+            },
+            {
+              "bin": 2,
+              "predicted": 0.00481409797743123,
+              "observed": 0.0,
+              "n": 150,
+              "ci_low": 0.0,
+              "ci_high": 5.060698239044358e-06
+            },
+            {
+              "bin": 3,
+              "predicted": 0.004834424516410911,
+              "observed": 0.0,
+              "n": 151,
+              "ci_low": 0.0,
+              "ci_high": 5.043913124018791e-06
+            },
+            {
+              "bin": 4,
+              "predicted": 0.00486346776091842,
+              "observed": 0.0,
+              "n": 149,
+              "ci_low": 0.0,
+              "ci_high": 5.07765204947823e-06
+            },
+            {
+              "bin": 5,
+              "predicted": 0.004902484570952353,
+              "observed": 0.0,
+              "n": 150,
+              "ci_low": 0.0,
+              "ci_high": 5.060698239044358e-06
+            },
+            {
+              "bin": 6,
+              "predicted": 0.004981018375862323,
+              "observed": 0.0,
+              "n": 150,
+              "ci_low": 0.0,
+              "ci_high": 5.060698239044358e-06
+            },
+            {
+              "bin": 7,
+              "predicted": 0.00523893685407647,
+              "observed": 0.0,
+              "n": 150,
+              "ci_low": 0.0,
+              "ci_high": 5.060698239044358e-06
+            },
+            {
+              "bin": 8,
+              "predicted": 0.007401490708790206,
+              "observed": 0.013333333333333334,
+              "n": 150,
+              "ci_low": 0.0,
+              "ci_high": 0.03168878342719233
+            },
+            {
+              "bin": 9,
+              "predicted": 0.2963383442730477,
+              "observed": 0.33112582781456956,
+              "n": 151,
+              "ci_low": 0.2560610264908981,
+              "ci_high": 0.406190629138241
+            }
+          ],
+          "pos_weight": 28.531645569620252,
+          "n_features": 8,
+          "pr_auc_lift_over_base": 22.325805365129998
+        }
+      },
+      "sensor_robustness": {
+        "dataset_id": "ai4i",
+        "dataset_name": "AI4I 2020 Predictive Maintenance Dataset",
+        "run_id": "737fdd6d2d35",
+        "timestamp": "2026-09-22T20:23:35Z",
+        "model_name": "HistGradientBoostingClassifier + Platt calibration",
+        "split_strategy": "stratified (seeded, class-balanced)",
+        "n_rows": 10000,
+        "target_prevalence": 0.0339,
+        "metrics": {
+          "pr_auc": 0.12438728060100764,
+          "pr_auc_ci_low": 0.07309479401174832,
+          "pr_auc_ci_high": 0.2152726191048642,
+          "roc_auc": 0.7521551724137931,
+          "roc_auc_ci_low": 0.6982076727376048,
+          "roc_auc_ci_high": 0.8090704754424712,
+          "base_rate_test": 0.03462050599201065,
+          "positives_test": 52,
+          "n_test": 1502,
+          "n_train": 6999,
+          "n_validate": 1499,
+          "pr_auc_validate": 0.15003673885617627,
+          "brier_test": 0.031943955339488496,
+          "reliability": [
+            {
+              "bin": 0,
+              "predicted": 0.005353470351917416,
+              "observed": 0.0,
+              "n": 169,
+              "ci_low": 0.0,
+              "ci_high": 4.767741703023095e-06
+            },
+            {
+              "bin": 1,
+              "predicted": 0.005493273737259007,
+              "observed": 0.0,
+              "n": 132,
+              "ci_low": 0.0,
+              "ci_high": 5.394722449119168e-06
+            },
+            {
+              "bin": 2,
+              "predicted": 0.006637400156920855,
+              "observed": 0.012269938650306749,
+              "n": 163,
+              "ci_low": 0.0,
+              "ci_high": 0.029170557233020686
+            },
+            {
+              "bin": 3,
+              "predicted": 0.011664633437605857,
+              "observed": 0.0,
+              "n": 137,
+              "ci_low": 0.0,
+              "ci_high": 5.295363624191332e-06
+            },
+            {
+              "bin": 4,
+              "predicted": 0.026193866275373047,
+              "observed": 0.032467532467532464,
+              "n": 154,
+              "ci_low": 0.0044742951174090335,
+              "ci_high": 0.0604607698176559
+            },
+            {
+              "bin": 5,
+              "predicted": 0.03843479080056288,
+              "observed": 0.06321839080459771,
+              "n": 174,
+              "ci_low": 0.027058896871778433,
+              "ci_high": 0.09937788473741699
+            },
+            {
+              "bin": 6,
+              "predicted": 0.04135582636576531,
+              "observed": 0.03363914373088685,
+              "n": 327,
+              "ci_low": 0.014096904465984193,
+              "ci_high": 0.053181382995789506
+            },
+            {
+              "bin": 8,
+              "predicted": 0.05549957891988451,
+              "observed": 0.042105263157894736,
+              "n": 95,
+              "ci_low": 0.0017201452437051734,
+              "ci_high": 0.0824903810720843
+            },
+            {
+              "bin": 9,
+              "predicted": 0.1031386543161979,
+              "observed": 0.12582781456953643,
+              "n": 151,
+              "ci_low": 0.07292796750245739,
+              "ci_high": 0.17872766163661546
+            }
+          ],
+          "pos_weight": 28.531645569620252,
+          "n_features": 8,
+          "pr_auc_lift_over_base": 3.592878758898336
+        }
+      }
+    }
+  }
+}

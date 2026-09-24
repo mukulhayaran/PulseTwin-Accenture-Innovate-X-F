@@ -35,7 +35,7 @@ dependencies = [
     "uvicorn==0.51.0",
     "pydantic==2.13.4",
     "numpy>=2.1",
-    "orjson==3.10.0",
+    "orjson==3.10.18",
     "psycopg[binary,pool]==3.2.3",
     "prometheus-client==0.21.0",
     "prometheus-fastapi-instrumentator==8.1.0",
@@ -49,6 +49,11 @@ dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",
     "ruff>=0.6",
+    # starlette.testclient (which fastapi.TestClient is) raises at IMPORT time without
+    # httpx, so its absence is not 37 failing tests -- it is 37 COLLECTION errors, and
+    # pytest then exits before running anything. Test-only: it is deliberately absent
+    # from serve/requirements.txt, so the import wall and the runtime image are unchanged.
+    "httpx>=0.27",
 ]
 
 # The offline pipeline: simulator, featurisation, training, benchmarks. MIRRORS
@@ -90,6 +95,13 @@ default-groups = ["dev", "ml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The tests import the first-party source trees directly (`from offline.config_schema
+# import ...`), and those are plain directories in the repo root, not an installed
+# package. `python -m pytest` -- what the Makefile runs -- puts the working directory on
+# sys.path and so hides this; the bare `pytest` console script that CI runs does not, and
+# every module that imports offline/, serve/, genai/ or mlops/ dies at COLLECTION with
+# ModuleNotFoundError. Setting it here makes both invocations behave the same.
+pythonpath = ["."]
 # The suite trains and scores real models rather than mocking them; a hung test should
 # fail loudly instead of holding CI for its full timeout budget.
 timeout = 900

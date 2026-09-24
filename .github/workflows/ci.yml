@@ -28,7 +28,12 @@ jobs:
   backend:
     name: Backend (ubuntu, py${{ matrix.python }})
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 45 was too tight to be safe. The suite trains and scores real models rather than
+    # mocking them (CLAUDE.md section 5 -- that IS the coverage), and it has grown to 757
+    # tests; a full local run measured 55:49. A runner is only billed for the minutes it
+    # actually uses, so a ceiling well clear of the real number costs nothing and stops a
+    # passing build being killed at 44:59.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +49,13 @@ jobs:
       - name: Sync the locked environment
         # --frozen: fail if uv.lock disagrees with pyproject.toml rather than silently
         # re-resolving, which would make a green run say nothing about reproducibility.
-        run: uv sync --frozen --group dev --group ml --python ${{ matrix.python }}
+        #
+        # `ingestion` is here for redis: tests/test_live_feature_parity.py imports
+        # ingestion.feature_buffer, which imports redis at module scope. The test supplies
+        # its own FakeRedis and needs no server -- only the library -- so installing the
+        # group lets the live/offline feature-parity check actually RUN. Skipping it
+        # instead would silently drop that coverage, which is the point of the file.
+        run: uv sync --frozen --group dev --group ml --group ingestion --python ${{ matrix.python }}
 
       - name: Lint
         run: uv run ruff check .
@@ -86,14 +97,54 @@ jobs:
           uv run python tools/metrics_summary.py --check
 
       - name: metrics_summary.json is reproducible from the artifacts
-        # --write above regenerated it. If that produced a different file than the one
-        # committed, the committed summary was hand-edited or built from other artifacts.
+        # Intent: catch a hand-edited summary. A raw `git diff` cannot express that,
+        # because three parts of the file legitimately differ on every run:
+        #   * generated_at  -- datetime.now() at write time;
+        #   * git_sha       -- the commit being built, so it differs from the commit that
+        #                      last regenerated the file, always;
+        #   * any section whose inputs are gitignored (external_benchmark needs
+        #     benchmark/data/, sensor_degradation needs its artifacts) degrades to
+        #     "NOT RUN" in a clean checkout while the committed copy holds real results.
+        # So the diff compares the METRIC CONTENT with those excluded. That still fails on
+        # a hand-edited number, which is the thing worth failing on.
         run: |
-          if ! git diff --quiet -- artifacts/metrics_summary.json; then
-            echo "::error::artifacts/metrics_summary.json is not reproducible from the committed artifacts."
-            git diff -- artifacts/metrics_summary.json | head -60
-            exit 1
-          fi
+          python - <<'PY'
+          import json, subprocess, sys
+
+          VOLATILE = {"generated_at", "git_sha", "elapsed_s"}
+          NOT_RUN = "NOT RUN"
+
+          def strip(node):
+              if isinstance(node, dict):
+                  return {k: strip(v) for k, v in node.items() if k not in VOLATILE}
+              if isinstance(node, list):
+                  return [strip(v) for v in node]
+              return node
+
+          head = subprocess.run(
+              ["git", "show", "HEAD:artifacts/metrics_summary.json"],
+              capture_output=True, text=True, check=True,
+          ).stdout
+          committed = strip(json.loads(head))
+          with open("artifacts/metrics_summary.json", encoding="utf-8") as fh:
+              regenerated = strip(json.load(fh))
+
+          # Drop sections the checkout cannot rebuild rather than comparing a real result
+          # against the NOT RUN placeholder that replaced it.
+          for key, value in list(regenerated.items()):
+              if isinstance(value, dict) and value.get("status") == NOT_RUN:
+                  regenerated.pop(key), committed.pop(key, None)
+
+          if committed != regenerated:
+              print("::error::artifacts/metrics_summary.json is not reproducible from the "
+                    "committed artifacts -- a number was hand-edited, or it was built from "
+                    "artifacts other than these.")
+              for k in sorted(set(committed) | set(regenerated)):
+                  if committed.get(k) != regenerated.get(k):
+                      print(f"  section differs: {k}")
+              sys.exit(1)
+          print("metrics_summary.json matches what the committed artifacts regenerate")
+          PY
 
   # ------------------------------------------------------- python core on windows
   backend-windows:

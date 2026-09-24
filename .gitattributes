@@ -1,0 +1,32 @@
+# Line-ending policy. This file exists for one reason: `core.autocrlf=true` is the Windows
+# default, this repo is developed on Windows, and the artifacts are BYTE-EXACT inputs to a
+# hash gate and to a byte-offset index. Without the rules below git stores LF, checks out
+# CRLF, and two separate things break at once:
+#
+#   1. tools/verify_artifacts.py hashes the artifact's own bytes. A CRLF checkout changes
+#      every hash, so the provenance job reports "the artifact's own bytes differ from the
+#      manifest" on a clean clone that nobody touched.
+#   2. stream_index.byte_offset is counted against a 1-byte "\n" (build_artifact writes
+#      with newline=""). A CRLF checkout adds one byte per preceding line, so every offset
+#      drifts and `?from_ts=` seeks into the middle of a record. That is CLAUDE.md section
+#      8's "stream_index.byte_offset is unreliable on Windows-built artifacts", and it cost
+#      a debugging session once already.
+#
+# NOTE ON ORDERING: in .gitattributes the LAST matching pattern wins, so the artifacts/
+# rule has to come after the per-extension rules below -- otherwise `*.json text eol=lf`
+# re-enables translation for MANIFEST.json and metrics_summary.json, which are hashed.
+
+# Belt and braces for the same formats outside artifacts/, and so git stops trying to diff
+# them as text.
+*.npz   binary
+*.db    binary
+*.jsonl -text
+
+# Everything under artifacts/ is never translated, whatever its extension. The .json and
+# .csv files in there are hashed by MANIFEST.json exactly like the .npz and .jsonl ones.
+artifacts/** -text
+
+# DELIBERATELY NOT HERE: a repo-wide `*.py text eol=lf` / `*.tsx text eol=lf` block. It is
+# the right end state, but adding it renormalises every text file in the repository at
+# once, which buries real changes under a whole-tree diff. Do it on its own, in its own
+# commit (`git add --renormalize .`), when nobody has work in flight.
