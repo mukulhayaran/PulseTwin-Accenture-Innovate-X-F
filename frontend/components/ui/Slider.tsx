@@ -30,10 +30,10 @@ export default function Slider({
   return (
     <div className={cn("min-w-0", className)}>
       <div className="mb-2 flex items-baseline justify-between gap-2">
-        <span className="text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+        <span className="text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
           {label}
         </span>
-        <span className="text-numeric text-xs font-semibold text-info-fg">{display}</span>
+        <span className="text-numeric text-xs font-bold text-info-fg">{display}</span>
       </div>
       <RSlider.Root
         aria-label={label}

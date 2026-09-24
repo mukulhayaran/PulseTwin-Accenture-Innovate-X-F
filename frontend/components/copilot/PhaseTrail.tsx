@@ -55,7 +55,7 @@ export default function PhaseTrail({
                     ? "border-ai/50 bg-ai/10 text-ai-fg"
                     : reached
                       ? "border-line-strong bg-surface-2 text-ink-dim"
-                      : "border-line bg-surface/40 text-ink-faint/60"
+                      : "border-line bg-surface-2 text-ink-disabled"
                 )}
               >
                 {active && !reduce && (
@@ -69,7 +69,7 @@ export default function PhaseTrail({
                 {phase}
               </span>
               {i < phases.length - 1 && (
-                <span aria-hidden className="text-2xs text-ink-faint/50">
+                <span aria-hidden className="text-2xs text-ink-disabled">
                   ›
                 </span>
               )}

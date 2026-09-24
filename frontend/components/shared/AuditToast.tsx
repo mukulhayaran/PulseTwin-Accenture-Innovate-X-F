@@ -25,7 +25,10 @@ function Toast({ message, onDismiss }: { message: string | null; onDismiss: () =
           // Bottom-LEFT, not right: the copilot launcher (components/copilot/CopilotDock)
           // owns the bottom-right corner on every persona page, and grew enough (h-11,
           // pill, icon) that a bottom-right toast would sit on top of it.
-          className="fixed bottom-5 left-5 z-50 flex cursor-pointer items-center gap-2 rounded-lg border border-ok/35 bg-surface px-3 py-2 text-xs text-ink shadow-pop"
+          // The left offset clears the 15rem sidebar rail (ADR-047). Anchored bottom-left
+          // over the rail, the toast covered the "signed in as" line on every persona
+          // page and read as part of the navigation rather than as a confirmation.
+          className="fixed bottom-5 left-5 z-50 flex cursor-pointer items-center gap-2 border border-ok/45 bg-canvas px-3 py-2 text-xs text-ink shadow-pop lg:left-[16.25rem]"
         >
           <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-ok/15 text-2xs text-ok-fg">
             ✓

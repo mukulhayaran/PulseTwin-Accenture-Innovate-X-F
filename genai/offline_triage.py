@@ -604,7 +604,7 @@ def run_whatif(
     value = data.get("annual_value")
     if isinstance(value, (int, float)):
         claims.append(Claim(
-            id="c4", text=f"Annualised value of the tested change",
+            id="c4", text="Annualised value of the tested change",
             value=float(value), unit="usd", provenance="measured",
             citation=Citation(sim_id, "/data/annual_value"),
             # Contract #2: a dollar figure carries its source. The simulator states its

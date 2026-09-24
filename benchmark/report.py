@@ -71,8 +71,8 @@ class BenchmarkReport:
             "",
             "## Dataset",
             "",
-            f"| rows | train | validate | test | features | target | prevalence |",
-            f"|---|---|---|---|---|---|---|",
+            "| rows | train | validate | test | features | target | prevalence |",
+            "|---|---|---|---|---|---|---|",
             f"| {self.n_rows} | {self.n_train} | {self.n_validate} | {self.n_test} "
             f"| {self.n_features} | `{self.target_column}` "
             f"| {self.target_prevalence:.4f} |",
@@ -88,8 +88,8 @@ class BenchmarkReport:
             "",
             "## Metrics (never accuracy alone -- this target is imbalanced)",
             "",
-            f"| PR-AUC | ROC-AUC | precision | recall | F1 | false alarm rate |",
-            f"|---|---|---|---|---|---|",
+            "| PR-AUC | ROC-AUC | precision | recall | F1 | false alarm rate |",
+            "|---|---|---|---|---|---|",
             f"| {m.get('pr_auc', float('nan')):.4f} "
             f"[{m.get('pr_auc_ci_low', float('nan')):.4f}, "
             f"{m.get('pr_auc_ci_high', float('nan')):.4f}] "
@@ -102,9 +102,9 @@ class BenchmarkReport:
             f"Confusion matrix at threshold {t.get('threshold', float('nan')):.4f} "
             f"(chosen on validation, never on test):",
             "",
-            f"```",
+            "```",
             f"{json.dumps(t.get('confusion_matrix', {}), indent=2)}",
-            f"```",
+            "```",
             "",
         ]
         if self.sensor_robustness:

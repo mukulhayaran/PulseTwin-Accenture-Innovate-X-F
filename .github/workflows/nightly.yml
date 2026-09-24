@@ -1,0 +1,165 @@
+# NIGHTLY / MANUAL: the expensive experiments. Never runs on a pull request.
+#
+# These regenerate the evidence the documentation cites. The bottleneck benchmark alone is
+# thousands of discrete-event simulation runs; the sensor-degradation sweep is seven
+# coverage levels times thirty masks per signal. Neither belongs anywhere near a PR gate.
+#
+# Nothing here pushes to the repository. Results are uploaded as workflow artifacts and a
+# human decides whether to commit them, because a regenerated benchmark that moves a
+# README number is a claim change, not a build output.
+name: Nightly experiments
+
+on:
+  schedule:
+    # 02:30 UTC daily. Off-peak for GitHub-hosted runners.
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Benchmark profile (smoke | dev | full)"
+        required: false
+        default: "dev"
+        type: choice
+        options: ["smoke", "dev", "full"]
+
+env:
+  OMP_NUM_THREADS: "1"
+  PYTHONHASHSEED: "0"
+
+jobs:
+  bottleneck-benchmark:
+    name: Bottleneck benchmark (${{ inputs.profile || 'dev' }})
+    runs-on: ubuntu-latest
+    # A dev-profile plant B run is thousands of DES runs; full is an order more. The cap
+    # is deliberately generous and the job is expected to use it.
+    timeout-minutes: 720
+    strategy:
+      fail-fast: false
+      matrix:
+        plant: [plant_a, plant_b]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group dev --group ml
+
+      - name: Throughput-sensitivity ground truth + detector league table
+        run: >
+          uv run python -m offline.benchmarks.run_bottleneck_benchmark
+          --plant ${{ matrix.plant }}
+          --profile ${{ inputs.profile || 'dev' }}
+          --workers 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bottleneck-${{ matrix.plant }}
+          path: artifacts/benchmarks/
+          if-no-files-found: error
+
+  sensor-degradation:
+    name: Sensor-degradation sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        plant: [plant_a, plant_b]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group dev --group ml
+
+      - name: Progressive sensor-loss benchmark
+        run: >
+          uv run python -m offline.benchmarks.sensor_degradation
+          --plant ${{ matrix.plant }} --profile dev
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sensor-degradation-${{ matrix.plant }}
+          path: artifacts/benchmarks/
+          if-no-files-found: error
+
+  retrain-and-verify:
+    name: Regenerate pipeline + verify artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group dev --group ml
+
+      - name: Simulate both plants
+        run: |
+          uv run python -m offline.simulator.generate --config configs/plant_a.yaml
+          uv run python -m offline.simulator.generate --config configs/plant_b.yaml
+
+      - name: Train
+        run: |
+          uv run python -m offline.ml.train --config configs/plant_a.yaml
+          uv run python -m offline.ml.train --config configs/plant_b.yaml
+
+      - name: Rebuild the artifact
+        run: |
+          rm -f artifacts/pulsetwin.db
+          uv run python -m offline.build_artifact --config configs/plant_a.yaml
+          uv run python -m offline.build_artifact --config configs/plant_b.yaml
+
+      - name: Did the headline metrics move?
+        # NOT a failure. A moved metric is a real result that needs a human to update the
+        # documents (and docs/CLAIMS.md) deliberately. The point of printing the diff is
+        # that nobody discovers it during a demo instead.
+        run: |
+          uv run python tools/metrics_summary.py --write
+          if git diff --quiet -- artifacts/metrics_summary.json; then
+            echo "### Metrics unchanged after a full regeneration" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### Metrics MOVED after a full regeneration"
+              echo '```diff'
+              git diff -- artifacts/metrics_summary.json
+              echo '```'
+              echo "Update README.md, docs/MODEL_CARD.md and docs/CLAIMS.md together."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Full test suite against the regenerated artifacts
+        run: uv run pytest tests/ -q --timeout=1800
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: regenerated-artifacts
+          path: |
+            artifacts/metrics_summary.json
+            artifacts/MANIFEST.json
+          if-no-files-found: error
+
+  external-benchmark:
+    name: External public-dataset benchmark (AI4I)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group dev --group ml --group benchmark-external
+
+      - name: Run the external benchmark
+        # Deliberately a separate job and a separate dependency group: this is the ONLY
+        # thing in the repo that touches data PulseTwin did not generate, and it must
+        # never become a prerequisite for running or testing the product. It validates
+        # the training/evaluation PIPELINE, not the automotive defect task -- see
+        # docs/CLAIMS.md for the wording this result is and is not allowed to support.
+        run: uv run python -m benchmark.run --dataset ai4i --task defect_prediction
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: external-benchmark-reports
+          path: benchmark/reports/
+          if-no-files-found: error

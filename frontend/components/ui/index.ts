@@ -11,3 +11,4 @@ export { default as AppShell, PLANT_OPTIONS } from "./AppShell";
 export { Kpi, Stat, Fact } from "./Kpi";
 export { default as Skeleton, SkeletonStats, SkeletonTable, SkeletonChart } from "./Skeleton";
 export { ChartFrame, ChartTooltip, ChartLegend } from "./Chart";
+export * from "./icons";

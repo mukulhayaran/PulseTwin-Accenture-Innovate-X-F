@@ -15,7 +15,7 @@ export default function Skeleton({
     <div
       aria-hidden
       style={style}
-      className={cn("animate-pulse rounded-md bg-surface-2", className)}
+      className={cn("animate-pulse bg-surface-3", className)}
     />
   );
 }
@@ -70,7 +70,7 @@ export function SkeletonChart({ height = 230 }: { height?: number }) {
       {BAR_HEIGHTS.map((h, i) => (
         <Skeleton
           key={i}
-          className="flex-1 rounded-sm"
+          className="flex-1"
           style={{ height: `${h}%`, animationDelay: `${i * 30}ms` }}
         />
       ))}

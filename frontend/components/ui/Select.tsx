@@ -33,10 +33,12 @@ export default function Select<T extends string>({
       <RS.Trigger
         aria-label={ariaLabel}
         className={cn(
-          "inline-flex items-center justify-between gap-2 rounded-md border border-line bg-surface-2",
-          "font-medium text-ink transition-colors duration-150",
-          "hover:border-line-strong data-[state=open]:border-info/50",
-          size === "sm" ? "h-7 px-2.5 text-xs" : "h-8 px-3 text-xs",
+          "inline-flex items-center justify-between gap-2 border border-line-strong bg-canvas",
+          "font-bold text-ink transition-colors duration-150",
+          // BMW `text-input`: the border thickens to ink on focus rather than
+          // taking a coloured ring.
+          "hover:border-ink data-[state=open]:border-ink",
+          size === "sm" ? "h-8 px-3 text-xs" : "h-9 px-3.5 text-xs",
           className
         )}
       >
@@ -53,7 +55,7 @@ export default function Select<T extends string>({
           position="popper"
           sideOffset={6}
           className={cn(
-            "z-50 overflow-hidden rounded-lg border border-line-strong bg-surface shadow-pop",
+            "z-50 overflow-hidden border border-line-strong bg-canvas shadow-pop",
             "data-[state=open]:animate-in data-[state=open]:fade-in-0"
           )}
         >
@@ -63,7 +65,7 @@ export default function Select<T extends string>({
                 key={o.value}
                 value={o.value}
                 className={cn(
-                  "relative cursor-pointer select-none rounded-md px-2.5 py-1.5 pr-8 text-xs outline-none",
+                  "relative cursor-pointer select-none px-3 py-2 pr-8 text-xs outline-none",
                   "text-ink-dim data-[highlighted]:bg-surface-3 data-[highlighted]:text-ink",
                   "data-[state=checked]:text-ink"
                 )}

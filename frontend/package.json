@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "node scripts/write-runtime-config.js && next build",
-    "start": "next start -p 3000"
+    "start": "next start -p 3000",
+    "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
     "@radix-ui/react-select": "^2.3.7",

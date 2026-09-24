@@ -151,7 +151,7 @@ export default function TriageConsole({
           <div className="flex flex-wrap gap-1.5">
             {presets.map((p) => (
               <button key={p} onClick={() => setQuestion(p)}
-                      className="rounded-md border border-line bg-surface-2/60 px-2 py-0.5 text-2xs text-ink-faint transition-colors hover:border-line-strong hover:text-ink-dim">
+                      className="rounded-md border border-line bg-surface-2 px-2 py-0.5 text-2xs text-ink-faint transition-colors hover:border-line-strong hover:text-ink-dim">
                 {p.length > 62 ? `${p.slice(0, 60)}…` : p}
               </button>
             ))}
@@ -219,7 +219,7 @@ export default function TriageConsole({
       {/* --------------------------------------------------------- rejected */}
       {run?.status === "rejected" && (
         <div className="rounded-lg border border-danger/35 bg-danger/[0.07] p-3">
-          <p className="mb-1 text-xs font-semibold text-danger-fg">
+          <p className="mb-1 text-xs font-bold text-danger-fg">
             Finding discarded — it could not be verified
           </p>
           <p className="text-numeric text-2xs text-ink-dim">
@@ -286,7 +286,7 @@ export default function TriageConsole({
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mb-1.5 text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+    <div className="mb-1.5 text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
       {children}
     </div>
   );
@@ -300,7 +300,7 @@ function ClaimRow({ claim }: { claim: TriageClaim }) {
         "rounded-md border px-2.5 py-1.5",
         redacted
           ? "border-danger/30 bg-danger/[0.05]"
-          : "border-line bg-surface-2/50"
+          : "border-line bg-surface-2"
       )}
     >
       <div className="flex items-start justify-between gap-3">

@@ -61,7 +61,7 @@ export default function SensorHealthGrid({ stations, dropouts }: Props) {
 
             {s.sensor_tier === "manual" ? (
               <Tooltip content="Manual station — no continuous sensor expected. Values here are inferred, never measured.">
-                <span className="hatch-inferred cursor-help rounded-md border border-warn/35 px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wider text-warn-fg">
+                <span className="hatch-inferred cursor-help rounded-md border border-warn/35 px-1.5 py-0.5 text-2xs font-bold uppercase tracking-wider text-warn-fg">
                   Manual
                 </span>
               </Tooltip>
@@ -78,7 +78,7 @@ export default function SensorHealthGrid({ stations, dropouts }: Props) {
                           setSelected({ stationId: s.station_id, stationName: s.station_name, sensor })
                         }
                         className={cn(
-                          "rounded-md border px-1.5 py-0.5 text-2xs font-medium transition-colors duration-150",
+                          "rounded-md border px-1.5 py-0.5 text-2xs font-bold transition-colors duration-150",
                           down
                             ? "border-warn/50 bg-warn/12 text-warn-fg"
                             : "border-ok/30 bg-ok/[0.07] text-ok-fg hover:bg-ok/15",

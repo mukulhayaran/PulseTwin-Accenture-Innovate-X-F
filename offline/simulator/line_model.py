@@ -89,6 +89,8 @@ class StationRuntime:
     blocked_since: float | None = None
     last_block_duration_s: float = 0.0
 
+    buf_marked_at: float = 0.0          # only used when the sim tracks buffer occupancy
+
     # context captured at work start, emitted with the visit record at work end
     pending: tuple = (IDLE, 0.0, 0.0, float("nan"))
 
@@ -117,6 +119,11 @@ class SimResult:
     horizon_s: float
     completed_units: int
     warmup_units: int
+    # station_id -> (bucket,) unit-seconds of output-buffer occupancy. None unless the
+    # simulator was constructed with track_buffers=True (offline benchmarks only).
+    buffer_unit_seconds: dict[int, np.ndarray] | None = None
+    # station_id -> [n_active_periods, total_active_seconds]; None unless instrumented.
+    active_periods: dict[int, np.ndarray] | None = None
 
     def achieved_uph(self) -> float:
         """Throughput over the post-warmup horizon."""
@@ -133,7 +140,13 @@ class LineSimulator:
         result = sim.run()
     """
 
-    def __init__(self, cfg: PlantConfig, operator_pool, rng: np.random.Generator) -> None:
+    def __init__(
+        self,
+        cfg: PlantConfig,
+        operator_pool,
+        rng: np.random.Generator,
+        instrument: bool = False,
+    ) -> None:
         self.cfg = cfg
         self.pool = operator_pool
         self.rng = rng
@@ -161,6 +174,33 @@ class LineSimulator:
         }
         self._state_idx = {s: i for i, s in enumerate(ALL_STATES)}
 
+        # station_id -> (bucket,) accumulated unit-seconds of output-buffer occupancy.
+        # None when tracking is off, which is what keeps `_buf_mark` free.
+        self.buffer_unit_seconds: dict[int, np.ndarray] | None = (
+            {
+                st.cfg.id: np.zeros(self.bucket_count, dtype=np.float64)
+                for st in self.stations
+            }
+            if instrument
+            else None
+        )
+
+        # station_id -> [n_periods, total_active_seconds]. An ACTIVE PERIOD is a maximal
+        # uninterrupted span in which the station is neither BLOCKED nor STARVED -- i.e.
+        # not waiting on anybody else. Roser's active-period criterion ranks stations by
+        # the MEAN length of these spans, which is a different statistic from the total
+        # active time `active_matrix` accumulates: a station can be active 50% of the
+        # time in many short bursts or in one long span, and only the second is a
+        # constraint. Two float64s per station, so tracking it costs nothing.
+        self.active_periods: dict[int, np.ndarray] | None = (
+            {st.cfg.id: np.zeros(2, dtype=np.float64) for st in self.stations}
+            if instrument
+            else None
+        )
+        self._active_since: dict[int, float] = (
+            {st.cfg.id: 0.0 for st in self.stations} if instrument else {}
+        )
+
         self.queue: list[tuple[float, int, int, int, int]] = []
         self._seq = 0
         self.now = 0.0
@@ -172,6 +212,11 @@ class LineSimulator:
 
         self._variant_ids = cfg.variant_ids
         self._weekday_cache: dict[int, int] = {}
+
+        # stepping state (see start/step/finish)
+        self._started = False
+        self._exhausted = False
+        self._warmup_done_at: float | None = None
 
     # ------------------------------------------------------------------ scheduling
 
@@ -191,27 +236,75 @@ class LineSimulator:
         if new_state == BLOCKED:
             rt.blocked_since = now
 
+        self._mark_active_period(rt, new_state, now)
+
         rt.state = new_state
         rt.state_since = now
+
+    def _spread(self, target: np.ndarray, start: float, end: float, weight: float) -> None:
+        """Add `weight * seconds` into every 15-minute bucket the interval touches.
+
+        The one place this arithmetic lives. State accumulation passes weight 1.0 into a
+        (bucket,) column view; buffer-occupancy tracking passes the queue length, which
+        makes the accumulated quantity unit-seconds and its bucket mean the time-weighted
+        average queue length.
+        """
+        if end <= start or weight == 0.0:
+            return
+        b0 = int(start // STATE_BUCKET_S)
+        b1 = int(end // STATE_BUCKET_S)
+        if b0 >= self.bucket_count:
+            return
+        if b0 == b1:
+            target[b0] += weight * (end - start)
+            return
+        target[b0] += weight * ((b0 + 1) * STATE_BUCKET_S - start)
+        for b in range(b0 + 1, min(b1, self.bucket_count - 1)):
+            target[b] += weight * STATE_BUCKET_S
+        if b1 < self.bucket_count:
+            target[b1] += weight * (end - b1 * STATE_BUCKET_S)
 
     def _accumulate(self, rt: StationRuntime, state: str, start: float, end: float) -> None:
         """Spread a state interval across the 15-minute buckets it touches."""
         if end <= start:
             return
         col = self._state_idx[state]
-        row = self.state_seconds[rt.cfg.id]
-        b0 = int(start // STATE_BUCKET_S)
-        b1 = int(end // STATE_BUCKET_S)
-        if b0 >= self.bucket_count:
+        self._spread(self.state_seconds[rt.cfg.id][:, col], start, end, 1.0)
+
+    def _mark_active_period(self, rt: StationRuntime, new_state: str, now: float) -> None:
+        """Open or close `rt`'s current active period across a state transition.
+
+        Called from `_set_state` only, before the transition is applied, so `rt.state` is
+        still the OLD state here. Off unless the simulator was constructed with
+        instrument=True.
+        """
+        if self.active_periods is None:
             return
-        if b0 == b1:
-            row[b0, col] += end - start
+        waiting = (BLOCKED, STARVED)
+        was_active = rt.state not in waiting
+        now_active = new_state not in waiting
+        if was_active and not now_active:
+            duration = now - self._active_since[rt.cfg.id]
+            if duration > 0:
+                self.active_periods[rt.cfg.id] += (1.0, duration)
+        elif now_active and not was_active:
+            self._active_since[rt.cfg.id] = now
+
+    def _buf_mark(self, rt: StationRuntime, now: float) -> None:
+        """Close the current output-buffer occupancy interval for `rt`.
+
+        MUST be called immediately BEFORE any change to `rt.out_buf`'s length, so the
+        length being integrated is the one that actually held over the interval. Off by
+        default: `track_buffers=False` leaves the shipped pipeline byte-identical, and
+        only the bottleneck benchmark turns it on (average-queue-length is one of the
+        detectors it compares against).
+        """
+        if self.buffer_unit_seconds is None:
             return
-        row[b0, col] += (b0 + 1) * STATE_BUCKET_S - start
-        for b in range(b0 + 1, min(b1, self.bucket_count - 1)):
-            row[b, col] += STATE_BUCKET_S
-        if b1 < self.bucket_count:
-            row[b1, col] += end - b1 * STATE_BUCKET_S
+        self._spread(
+            self.buffer_unit_seconds[rt.cfg.id], rt.buf_marked_at, now, float(len(rt.out_buf))
+        )
+        rt.buf_marked_at = now
 
     # --------------------------------------------------------------------- variants
 
@@ -279,6 +372,7 @@ class LineSimulator:
         up = self.stations[idx - 1]
         if not up.out_buf:
             return None
+        self._buf_mark(up, now)
         unit, _pushed_at = up.out_buf.pop(0)
         self._on_buffer_freed(up, now)
         return unit
@@ -324,6 +418,7 @@ class LineSimulator:
         if rt.held is None or len(rt.out_buf) >= rt.capacity:
             return False
 
+        self._buf_mark(rt, now)
         rt.out_buf.append((rt.held, now))
         rt.held = None
         self._set_state(rt, IDLE, now)
@@ -383,6 +478,7 @@ class LineSimulator:
             return
 
         if len(rt.out_buf) < rt.capacity:
+            self._buf_mark(rt, now)
             rt.out_buf.append((unit, now))
             self._set_state(rt, IDLE, now)
             self._try_start(rt, now)
@@ -427,45 +523,83 @@ class LineSimulator:
 
     # -------------------------------------------------------------------- main loop
 
-    def run(self) -> SimResult:
+    # ------------------------------------------------------------------ stepping
+    #
+    # run() is start() + step() to exhaustion + finish(). The split exists so the LIVE
+    # twin (offline/live_twin/) can drive this exact event loop one event at a time,
+    # paced against wall-clock, instead of reimplementing a second simulator that would
+    # then drift from this one. Nothing about the batch path changed: the sequence of
+    # operations and of random draws is identical, which
+    # tests/test_live_simulation_engine.py::test_stepping_reproduces_the_batch_run pins.
+
+    def start(self) -> None:
+        """Seed the queue and open the first state intervals. Idempotent per instance."""
+        if self._started:
+            return
         for rt in self.stations:
             rt.state = STARVED if rt.index > 0 else IDLE
             rt.state_since = 0.0
             self._schedule_failure(rt, 0.0)
 
         self._try_start(self.stations[0], 0.0)
+        self._started = True
 
-        warmup = self.cfg.simulation.warmup_units
-        warmup_done_at: float | None = None
+    def step(self) -> bool:
+        """Advance to the next scheduled event.
 
-        while self.queue:
-            when, _seq, kind, idx, epoch = heapq.heappop(self.queue)
-            if when > self.horizon_s:
-                break
-            rt = self.stations[idx]
+        Returns False once the queue is empty or the next event is past the horizon --
+        at which point the run is over and finish() may be called.
+        """
+        if self._exhausted or not self.queue:
+            self._exhausted = True
+            return False
 
-            if kind == EV_FAILURE:
-                self.now = when
-                self._on_failure(rt, when)
-                continue
+        when, _seq, kind, idx, epoch = heapq.heappop(self.queue)
+        if when > self.horizon_s:
+            self._exhausted = True
+            return False
 
-            if epoch != rt.epoch:
-                continue  # stale: invalidated by a breakdown
+        rt = self.stations[idx]
 
+        if kind == EV_FAILURE:
             self.now = when
-            if kind == EV_WORK_DONE:
-                self._on_work_done(rt, when)
-                if warmup_done_at is None and self._completed >= warmup:
-                    warmup_done_at = when
-            elif kind == EV_REPAIR_DONE:
-                self._on_repair_done(rt, when)
+            self._on_failure(rt, when)
+            return True
 
-        # close out every open state interval at the horizon
+        if epoch != rt.epoch:
+            return True  # stale: invalidated by a breakdown
+
+        self.now = when
+        if kind == EV_WORK_DONE:
+            self._on_work_done(rt, when)
+            if self._warmup_done_at is None and self._completed >= self.cfg.simulation.warmup_units:
+                self._warmup_done_at = when
+        elif kind == EV_REPAIR_DONE:
+            self._on_repair_done(rt, when)
+        return True
+
+    def finish(self) -> SimResult:
+        """Close every open interval at the horizon and package the result."""
         end = min(self.now, self.horizon_s)
         for rt in self.stations:
             self._accumulate(rt, rt.state, rt.state_since, end)
+            self._buf_mark(rt, end)
+            if self.active_periods is not None and rt.state not in (BLOCKED, STARVED):
+                duration = end - self._active_since[rt.cfg.id]
+                if duration > 0:
+                    self.active_periods[rt.cfg.id] += (1.0, duration)
 
-        start = warmup_done_at if warmup_done_at is not None else 0.0
+        start = self._warmup_done_at if self._warmup_done_at is not None else 0.0
+        return self._result(start, end)
+
+    def run(self) -> SimResult:
+        self.start()
+        while self.step():
+            pass
+        return self.finish()
+
+    def _result(self, start: float, end: float) -> SimResult:
+        warmup = self.cfg.simulation.warmup_units
         return SimResult(
             plant_id=self.cfg.plant_id,
             units=self.units,
@@ -475,6 +609,8 @@ class LineSimulator:
             horizon_s=max(0.0, end - start),
             completed_units=max(0, self._completed - warmup),
             warmup_units=warmup,
+            buffer_unit_seconds=self.buffer_unit_seconds,
+            active_periods=self.active_periods,
         )
 
 

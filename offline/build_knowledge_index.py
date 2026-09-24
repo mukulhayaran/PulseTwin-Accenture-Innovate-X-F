@@ -18,7 +18,6 @@ runtime dependency beyond what `serve/`'s import wall already allows.
 from __future__ import annotations
 
 import json
-import math
 import re
 from collections import Counter
 from pathlib import Path

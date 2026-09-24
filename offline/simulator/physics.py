@@ -175,7 +175,6 @@ def generate_signals(
         sensors = set(st.sensors)
         is_mode_c = st.id in mode_c_stations
 
-        entry = out["entry_ts"].to_numpy()[sidx]
         cyc = out["cycle_s"].to_numpy()[sidx]
         prior = out["prior_state"].to_numpy()[sidx]
         b_bias = bias_pct[sidx]

@@ -30,7 +30,7 @@ import json
 import os
 import queue
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 import paho.mqtt.client as mqtt
 import psycopg

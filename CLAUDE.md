@@ -134,7 +134,7 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 |---|---|
 | `docs/STATE.md` | **Start here.** Progress ledger, every bug found, next action. |
 | `docs/SPEC.md` | The corrected canonical spec. This is the Round 2 build target. |
-| `docs/DECISIONS.md` | 37 numbered ADRs — why we deviate from the original prompt. |
+| `docs/DECISIONS.md` | 48 numbered ADRs — why we deviate from the original prompt. |
 | `docs/AUDIT.md` | The 31-finding flaw analysis of the original prompt (plus B34). |
 | `pulsetwin_final_prompt.md` | The original Round 2 brief. **Historical only — do not edit.** Note: it contains NO finals section and no mention of GenAI, despite older text claiming otherwise. |
 
@@ -152,7 +152,7 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 | **GenAI triage** | `genai/` — separate deployable, never imported by `serve/` | **ADR-037** |
 | Multi-agent orchestration | `genai/orchestrator.py` — `incident` only, 3 specialists + synthesizer | **ADR-045** |
 | Knowledge retrieval | `offline/build_knowledge_index.py` + `serve/knowledge_index.py` — lexical TF-IDF, no embeddings | **ADR-046** |
-| Frontend | `frontend/app/{supervisor,manager,leadership,ops}` + `components/ui/` | §7 below |
+| Frontend | `frontend/app/{overview,supervisor,manager,leadership,ops,copilot}` + `components/ui/` | §7 below, **ADR-047** |
 
 **`genai/` file roles** (all provider-independent except `client.py`):
 `config.py` model ID + caps · `client.py` the ONLY `openai` import · `api_client.py`
@@ -272,22 +272,43 @@ Tailwind v4 is **CSS-first** — there is no `tailwind.config.ts`; all tokens li
 `@theme` block of `frontend/app/globals.css`, mirrored in `frontend/lib/theme.ts` for
 Recharts (which takes hex, not class names). Change one, change both.
 
-Dense, information-rich, dark. Linear/Vercel-dashboard polish, not a marketing page.
-Monospace for all numbers.
+**BMW corporate-automotive, light (ADR-047).** Dense and information-rich, but light:
+white canvas, BMW blue as the *only* action colour, **0px corners everywhere**, **no drop
+shadow on a card** (depth is colour-block contrast plus a hairline), and a **700/300
+weight pair with 500 absent from the system**. Monospace for all numbers. This replaced a
+dark control-room palette — if you find a doc still describing `#0a0c11`, that doc is
+stale, not the code.
 
 ```
---color-canvas     #0a0c11   --color-ink        #e6e9ef   --color-ok      #10b981  measured/healthy
---color-surface    #111419   --color-ink-dim    #a0a8b4   --color-danger  #ef4444  alert/defect
---color-surface-2  #171b22   --color-ink-faint  #88919f   --color-warn    #f59e0b  inferred/warning
---color-surface-3  #1e232c   (ink-faint is WCAG-AA      --color-info    #3b82f6  info/selection
---color-line       #232834    tuned -- #6b7482 failed)   --color-ai      #8b5cf6  prediction/AI
+--color-canvas     #ffffff   --color-ink        #262626   --color-ok      #16a34a  measured/healthy
+--color-surface    #ffffff   --color-ink-dim    #4a4a4a   --color-danger  #dc2626  alert/defect
+--color-surface-2  #fafafa   --color-ink-faint  #757575   --color-warn    #d97706  inferred/warning
+--color-surface-3  #f0f0f0   (AA-pinned at 4.6:1 -- it   --color-info    #1c69d4  info/selection
+--color-line       #e6e6e6    carries every axis label)  --color-ai      #7c3aed  prediction/AI
+--color-primary    #1c69d4  BMW blue -- `info` is the SAME hex on purpose: the corporate
+                            system has exactly one blue, so there is no second action colour.
 ```
-Each signal also has a brightened `-fg` variant for text on dark (`--color-ok-fg` etc.).
+`surface` deliberately **equals** `canvas` — the hairline is what makes a panel a panel.
+Each signal has a **darkened** `-fg` variant for text on white (`--color-ok-fg` etc.).
+Note this INVERTED with the palette: `-fg` used to mean "brightened for black".
+
+**The dark surface is one band, not a theme.** `--color-surface-dark` (`#1a2129`, warm
+navy) carries the sidebar rail, the landing hero and CTA bands, the tooltip and the chart
+tip. Inside it, use `text-on-dark` / `text-on-dark-soft` and the `-on-dark` signal set
+(`--color-ok-on-dark` etc.) — the darkened `-fg` values go muddy on navy. BMW's rhythm
+rule holds: **no two consecutive bands share a surface mode.**
+
+**`label-upper`** is the "LEARN MORE ›" inline link (13px / 700 / 0.115em); `Button`'s
+`link` variant is its button form. **`m-stripe`** is the M tricolor — divider and badge
+role only, never a CTA fill.
 
 **Use `components/ui/` — do not hand-roll.** `Panel` was once reimplemented 8 times.
 Available: `Panel Badge Button Select Slider SegmentedControl Tooltip DataTable
-AnimatedNumber AppShell Kpi/Stat/Fact Skeleton ChartFrame/ChartTooltip/ChartLegend`.
-Type sizes come from the scale (`text-2xs`…`text-3xl`), never `text-[11px]`.
+AnimatedNumber AppShell Kpi/Stat/Fact Skeleton ChartFrame/ChartTooltip/ChartLegend`
+plus `components/ui/icons.tsx` (inline stroke icons — do NOT add lucide for twelve paths).
+Type sizes come from the scale (`text-2xs`…`text-4xl`), never `text-[11px]`. Radius comes
+from `rounded-none` or `rounded-full` and nothing between; the four `--radius-*` steps all
+resolve to 0 and exist only so no call site had to be edited.
 
 **`cn()` from `lib/cn.ts`, not template strings.** It registers `text-numeric` as its own
 tailwind-merge class group — without that, tailwind-merge sees the `text-` prefix and
@@ -295,15 +316,42 @@ silently strips it whenever another `text-*` follows, which once cost every figu
 app its monospace face.
 
 No `localStorage` / `sessionStorage` in React components — persistent UI state
-(alert budget, shift counters) is derived server-side from the replay clock. The RBAC role
-follows the same rule: it lives in a module variable in `frontend/lib/api.ts` and resets
-on reload, which is why each persona page calls `setRole()` for itself on mount.
+(alert budget, shift counters) is derived server-side from the replay clock. **One
+exception, ADR-048:** the login session is persisted in `sessionStorage` by
+`frontend/lib/api.ts` — never by a component. A sign-in is not derived state, and since
+this ships as a static export, typing `/manager` into the address bar is a reload, so
+without it every hard navigation would sign the user out. What is stored is a
+server-issued token the server re-validates (`restoreSession`), not a role string.
 
-**Four views, and they are not symmetric.** `/supervisor`, `/manager` and `/leadership`
-each pin themselves to one role and show that persona's job. `/ops` is the exception: it
-carries a live "Viewing as" selector so a demo can drop the role and watch `RoleGate`
-close panels in real time. Put new role-gated UI there, not in the three fixed views,
-where a gate can never actually fire.
+**Auth is two things that are easy to confuse (ADR-048).**
+`session` = who the server says you are (`getSession()`, null when anonymous, established
+only by `/api/auth/login`). `viewRole` = which persona the mounted page speaks as
+(`setRole()`, and it is **clamped** to the session — a page can drop below its role, never
+climb above it). `getRole()` returns the second falling back to the first, then to
+`supervisor`. Change `setRole` and you are changing a privilege boundary, not a label.
+
+**Who may open which view lives in ONE table:** `frontend/lib/routeAccess.ts`. It is an
+**exact match, not the role hierarchy** — `manager` and `leadership` are peers who do not
+see each other's view, and `system` is refused on both despite outranking them. The
+hierarchy in `serve/middleware/auth.py` still governs what the API *allows*; these are
+different questions. Both the route guard (`usePersonaAccess`) and `AppShell`'s rail read
+that table, so a lock icon can never sit on a link that still opens.
+
+**The views are not symmetric.** `/manager`, `/leadership` and `/ops` each require exactly
+their own role and show that persona's job. `/ops` additionally carries a live "Viewing
+as" selector so a demo can drop the role and watch `RoleGate` close panels in real time —
+put new role-gated UI there, not in the fixed views, where a gate can never actually fire.
+**`/supervisor` and `/overview` are the exceptions and they are PUBLIC:** the floor view is
+where an unauthenticated visitor lands, and `/overview` pins no persona and degrades panel
+by panel — it is the page you arrive on before choosing, so gating its entry would defeat
+it. Signed out, both act as `supervisor`, matching the API's own default for a caller with
+no credential.
+
+**`AppShell` owns the chrome: a dark rail + a light top bar.** Its prop contract
+(`persona plant onPlantChange role connected lastKnownAt onRetry controls status`) is
+unchanged from the pre-ADR-047 header, which is why all four persona pages mount it
+unedited — rebuild its internals, don't fork it. Anything `position: fixed` must clear the
+15rem rail (`lg:left-[16.25rem]`), or it lands on top of the navigation.
 
 ---
 
@@ -343,6 +391,21 @@ Read this before debugging anything. Every line below was paid for once.
   from their own `tell()`. This is what broke `?from_ts=` for the whole life of the repo.
 
 ### Frontend traps
+- **An UNLAYERED CSS rule beats every Tailwind utility, at any specificity.** Tailwind v4
+  emits utilities inside `@layer utilities`, and unlayered always wins over layered. A bare
+  `h2 { color: var(--color-ink) }` in `globals.css` therefore overrode `text-on-dark` and
+  rendered every heading in every dark band invisible, and `.text-2xs { font-weight: 400 }`
+  overrode `font-bold` on every badge, panel title and table header. Everything in the base
+  block must stay inside `@layer base` (ADR-047).
+- **Don't verify CSS by grepping the stylesheet** — Next's dev server injects CSS through
+  JS, so a response-body grep captures nothing and reports every class as missing. Probe
+  `getComputedStyle` on a throwaway element in the page instead.
+- **Don't test the static export with `python -m http.server`.** It forces
+  `/overview.html` into the address bar, so `usePathname()` returns `"/overview.html"`
+  while the build prerendered `"/overview"` — the active nav item differs and React throws
+  hydration error #418 on every page whose shell prerenders. Production serves clean URLs
+  (`serve out`, see `frontend/Dockerfile`) and never sees it. Serve `out/` behind a
+  clean-URL shim, or the bug you chase will be in your harness.
 - `fallback ?? default` does **not** short-circuit on `null` — an explicit
   `fallback={null}` still renders the default. `RoleGate` checks `!== undefined`.
 - **Radix `Select` renders its placeholder for `value=""`**, so an "All" option with an

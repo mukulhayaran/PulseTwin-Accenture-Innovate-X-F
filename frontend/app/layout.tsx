@@ -9,7 +9,9 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="bg-canvas text-ink antialiased">{children}</body>
+      {/* text-ink-dim, not text-ink: body copy runs at BMW's Light 300 in the softer
+          body ink, and display type opts up to ink + 700 per element. */}
+      <body className="bg-canvas text-ink-dim antialiased">{children}</body>
     </html>
   );
 }

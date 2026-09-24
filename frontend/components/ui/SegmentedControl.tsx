@@ -30,7 +30,9 @@ export default function SegmentedControl<T extends string | number>({
       role="radiogroup"
       aria-label={rest["aria-label"]}
       className={cn(
-        "inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-line bg-surface p-0.5",
+        // BMW `category-tab` / `filter-chip`: square, hairline, and the selected
+        // chip inverts to ink rather than lifting a grey plate.
+        "inline-flex shrink-0 items-center border border-line-strong bg-canvas",
         className
       )}
     >
@@ -43,14 +45,15 @@ export default function SegmentedControl<T extends string | number>({
             aria-checked={active}
             onClick={() => onChange(o.value)}
             className={cn(
-              "relative rounded-md px-2.5 py-1 text-2xs font-medium transition-colors duration-150",
-              active ? "text-ink" : "text-ink-faint hover:text-ink-dim"
+              "relative px-3 py-1.5 text-2xs font-bold uppercase tracking-[0.08em]",
+              "transition-colors duration-150",
+              active ? "text-on-dark" : "text-ink-faint hover:text-ink"
             )}
           >
             {active && (
               <motion.span
                 layoutId={`segmented-${name}`}
-                className="absolute inset-0 rounded-md border border-line-strong bg-surface-3"
+                className="absolute inset-0 bg-ink"
                 transition={{ type: "spring", stiffness: 380, damping: 32 }}
               />
             )}

@@ -553,6 +553,62 @@ that no amount of stub testing would have produced, and all four changed code.
 - `python -m genai.verify_cli --run-id X` re-runs the gate over a stored transcript and
   must reach a byte-identical verdict — the property that makes the audit claim real.
 
+### Auth: real sessions + per-persona route isolation (2026-09-23) — ADR-048
+
+The `/login` shipped in `847b594` checked a credential server-side and then returned a
+role *string*, which the client echoed back in `X-PulseTwin-Role` forever. Two holes
+followed from that, and both are now closed.
+
+**Hole 1 — signing in was optional.** `lib/api.ts`'s `currentRole` defaulted to
+`"leadership"`, so a visitor who never opened `/login` reached `/manager`, `/leadership`
+and every leadership panel on `/overview`.
+
+**Hole 2 — entry was a rank comparison.** `usePersonaAccess` used
+`roleAtLeast(entryRole, minRole)`, mirroring the API hierarchy, so a leadership login
+walked into `/manager` and `system` walked into all four. A hierarchy can say "leadership
+may call a manager endpoint"; it cannot say "these are two different jobs."
+
+**Built.**
+
+- `serve/session_store.py` — opaque 256-bit tokens, 8h TTL, process-local, evicts rather
+  than refusing when full. `POST /api/auth/login` mints, `GET /api/auth/session`
+  validates, `POST /api/auth/logout` revokes (idempotently).
+- `serve/middleware/auth.py` — `X-PulseTwin-Token` outranks the declared header: a role at
+  or below the session's is honoured (that is `/ops`'s "Viewing as" drop), above it is
+  ignored, and a dead token is a `401` rather than a fall-back. `get_user` takes the
+  session's user, so a token-holder cannot relabel who acted in the audit trail.
+  **Absent header ≠ `supervisor`** once a session exists — conflating those demoted every
+  request that did not restate its own role, and cost four test failures to find.
+- `frontend/lib/routeAccess.ts` — the ONE exact-match table of who may open what, read by
+  both the route guard and the rail, so a lock icon can never sit on a working link.
+  `/supervisor` and `/overview` are public; the rest require exactly their own role.
+- `frontend/lib/usePersonaAccess.ts` — re-validates the session against the server, then
+  redirects (`/login?next=`) or refuses (`AccessRestricted`). `setRole()` is now clamped
+  to the session, so a persona pin can no longer be the thing that grants privilege.
+- `AppShell` locks unreachable rail entries and shows a real sign-out; `/ops` and
+  `/copilot` gained the guard they never had; the login form's inputs gained
+  `htmlFor`/`id` (both were announced as unlabelled before).
+
+**The rule bent, on purpose.** The session lives in `sessionStorage`, read/written only in
+`lib/api.ts`. CLAUDE.md §7 bans browser storage in components; a sign-in is not derived
+state, and with a static export typing `/manager` into the address bar is a reload, so
+without persistence every hard navigation signed the user out. Reasoned through in
+ADR-048.
+
+**Measured in a browser against a live backend**, not inferred: signed out, `/supervisor`
+and `/overview` render and the other four redirect carrying `next`; a manager signed in
+from a `/copilot` bounce lands on `/copilot`, is refused on `/leadership` and `/ops`,
+opens `/manager`, and survives a reload; sign-out returns to `/login` and `/manager`
+bounces again; leadership is refused on `/manager`. The only 4xx on a signed-out page is
+`/api/shift/summary` (manager-gated), already caught and degraded by `AppShell`.
+
+**Tests.** `tests/test_auth_session.py`, 17 cases, including "a declared role cannot climb
+above the session", "an expired token is 401 not a header fallback", and "no token behaves
+exactly as before" — the last one pinning the header seam `docs/SECURITY.md` describes,
+which this deliberately does NOT close. `tests/test_auth.py` (80) unchanged and passing;
+`test_api`/`test_audit`/`test_triage_api`/`test_intelligence_api`/`test_qa_regressions`
+(148) unchanged and passing. `npx tsc --noEmit` clean.
+
 ### Known test-isolation weakness
 
 `tests/test_qa_regressions.py`'s model-registry tests read the **default temp ops DB** and
@@ -1061,3 +1117,76 @@ knowing whether we are ahead or behind.
                      calling search_engineering_knowledge and citing a result (deferred,
                      same budget-conscious reasoning as the ADR-045 entry above); the
                      ACT 2B demo-script beat does not yet mention it.
+
+2026-09-23  Design   Rebuilt the frontend in BMW's corporate-automotive language, light
+                     (ADR-047), from two references that disagreed: dashboard mockups
+                     carrying a new information architecture, and a written BMW design
+                     system that is light where the mockups were dark. Took structure
+                     from one and language from the other; the palette conflict was
+                     resolved in BMW's favour on the user's explicit call, which is why
+                     CLAUDE.md §7 is rewritten rather than left contradicting the code.
+                     White canvas, BMW blue #1c69d4 as the single action colour, 0px
+                     corners everywhere, no card shadow, 700/300 weights with 500 absent.
+                     The dark surface survives as ONE band (#1a2129: sidebar rail, hero
+                     and CTA bands, tooltip, chart tip) with its own -on-dark signal set.
+                     The swap was cheap because zero hex literals and zero bg-black/
+                     text-white existed outside the token layer: app/globals.css plus
+                     lib/theme.ts carried ~9,000 lines of view code with them, and the
+                     --radius-* names were kept (all now 0) so no call site needed an
+                     edit. Three contracts untouched -- only the signal VALUES moved, and
+                     hatch-inferred went 28% -> 42% alpha because an amber hatch tuned for
+                     #111419 nearly vanishes on white, which would have been a broken
+                     provenance contract rather than a styling nit. AppShell rebuilt as a
+                     dark rail + light top bar WITHOUT a prop-contract change, so all four
+                     persona pages mount it unedited; its two new affordances are real,
+                     not decorative -- a notification tray derived from /api/shift/summary
+                     (the badge counts conditions the API actually reported) and a search
+                     box with exactly two destinations that exist (^U\d{4,8}$ -> that unit
+                     on /supervisor via #unit=, anything else -> a DRAFT on /copilot via
+                     #q= that the composer seeds but does not send). New /overview page:
+                     not gated by usePersonaAccess, degrades panel by panel naming the
+                     role each blocked panel needs, and bands its station heatmap
+                     RELATIVELY (top decile / next fifth of the plant's own measured
+                     distribution) after an absolute uph threshold painted 24 of 30
+                     stations red -- unsensored stations take no band and are excluded
+                     from the ranked loss table, since /api/stations/stats reports them
+                     with no interval. Verified by driving all 8 routes in Chromium and
+                     by reading getComputedStyle on probe elements (260px rail clearance,
+                     80px section rhythm, 0px radius, no shadow, weight 700 surviving on
+                     text-2xs, on-dark tokens resolving); a deterministic copilot
+                     `incident` run rendered 5/5 claims VERIFIED in the new theme.
+                     BUG FOUND AND FIXED, worth the §8 entry: the base rules were
+                     initially UNLAYERED, and unlayered CSS beats Tailwind v4's
+                     @layer utilities at any specificity -- so h2{color:ink} rendered
+                     every heading in every dark band invisible and .text-2xs{weight:400}
+                     overrode font-bold on every badge, panel title and table header.
+                     Also fixed: bg-surface-2/50-style translucent insets (invisible at
+                     50% over white) and an audit toast anchored on top of the new rail.
+                     `next build` then run for real (dev stopped first per §8, and
+                     restarted after): compiles clean, all 9 routes prerender and export,
+                     and the exported bundle was re-driven in Chromium at 1500px and at
+                     390px. tsc --noEmit is clean; no pytest test references the frontend
+                     theme. SECOND BUG, found only by testing the export and worth its own
+                     §8 line: serving out/ with `python -m http.server` forces /overview
+                     .html into the address bar, so usePathname() returns "/overview.html"
+                     while the build prerendered "/overview" -- the active nav item
+                     differs and React throws hydration error #418 on every page whose
+                     shell prerenders. Production never sees it (frontend/Dockerfile runs
+                     `serve out`, which resolves clean URLs), so the defect was ENTIRELY
+                     in the test harness; re-tested behind a clean-URL shim, all 8 routes
+                     are clean. Worth knowing before someone "fixes" the shell. Also note
+                     for anyone bisecting: a stale backend has been listening on :7860
+                     since before this session with no intelligence router mounted, and it
+                     404s /api/shift/summary. The live backend this frontend targets is
+                     :9100, which is what frontend/public/config.json already says.
+                     SUPERSEDED 2026-09-23: that :9100 move was a workaround for the stale
+                     process, not a decision, and it became its OWN bug -- a second stale
+                     backend (pre-session-store, no /api/auth/session) then squatted :9100
+                     and every manager/leadership login bounced straight back to /login,
+                     because restoreSession() reads a 404 as a dead session. The stale
+                     processes are gone and both config.json files are back to :7860,
+                     which is what the other ~40 references say (Makefile, both compose
+                     files, serve/Dockerfile, k8s, prometheus, ingestion, genai/triage.py,
+                     scripts/smoke_demo.py, lib/api.ts's own fallback, and the "start the
+                     backend on :7860" string the landing page shows the user). Run the
+                     dev backend on 7860 and nothing disagrees.

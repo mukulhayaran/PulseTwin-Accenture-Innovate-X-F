@@ -170,7 +170,6 @@ def build(config_path: str) -> dict:
 
     tel = pd.read_parquet(d / "telemetry.parquet")
     ck = pd.read_parquet(d / "checklists.parquet")
-    ins = pd.read_parquet(d / "inspections.parquet")
     scores = pd.read_parquet(d / "scores.parquet")
     feats = pd.read_parquet(d / "features.parquet")
     meta = pd.read_parquet(d / "feature_meta.parquet")
@@ -375,7 +374,7 @@ def build(config_path: str) -> dict:
         erows.append((pid, f"sensor_{k}", float(v["value"]), "USD", v["source"]))
     erows.append((pid, "system_implementation_cost", econ.system["implementation_cost"].value,
                   "USD", econ.system["implementation_cost"].source))
-    con.executemany(f"INSERT OR REPLACE INTO economics VALUES (?,?,?,?,?)", erows)
+    con.executemany("INSERT OR REPLACE INTO economics VALUES (?,?,?,?,?)", erows)
 
     # -------------------------------------------------------- what-if scenario grid
     # ADR-007: 6 candidate stations x 5 buffer deltas x 3 cycle deltas on a 4-hour

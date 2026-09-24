@@ -70,7 +70,7 @@ export default function OfflineBanner({ connected, lastKnownAt, onRetry }: Offli
           className="sticky top-0 z-50 overflow-hidden border-b border-warn/50 bg-warn/[0.09] backdrop-blur-md"
         >
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2">
-            <span className="flex shrink-0 items-center gap-2 text-xs font-semibold text-danger-fg">
+            <span className="flex shrink-0 items-center gap-2 text-xs font-bold text-danger-fg">
               <motion.span
                 className="size-2 rounded-full bg-danger"
                 animate={{ opacity: [1, 0.25, 1] }}

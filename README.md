@@ -134,24 +134,78 @@ Plant A, held-out test week (7 days, 9,046 units, 228 positives, 2.5% base rate)
 
 | Metric | Value |
 |---|---|
-| PR-AUC | **0.256** [95% CI 0.207–0.308] |
-| **Oracle PR-AUC** | **0.481** — the simulator's own latent propensity |
-| **Share of the ceiling captured** | **53%** |
-| ROC-AUC | 0.883 [0.855–0.909] |
+| PR-AUC | **0.256** <!--metric:plant_a.pr_auc:.3f--> [95% CI 0.207<!--metric:plant_a.pr_auc_ci_low:.3f-->–0.308<!--metric:plant_a.pr_auc_ci_high:.3f-->] |
+| **Oracle PR-AUC** | **0.481** <!--metric:plant_a.oracle_pr_auc:.3f--> — the simulator's own latent propensity |
+| **Share of the ceiling captured** | **53%** <!--metric:plant_a.oracle_capture:.0%--> |
+| ROC-AUC | 0.883 <!--metric:plant_a.roc_auc:.3f--> [0.855–0.909] |
 | Lift over base rate | 10.2× |
-| Precision at operating threshold | 35% |
-| Recall at operating threshold | 28% |
-| Alerts per shift | 8.5 (budget 6) |
-| Bottleneck detection accuracy | 85.9% (plant A), 90.2% (plant B) |
-| Bottleneck forecast skill vs persistence | +0.136 / +0.205 |
+| Precision at operating threshold | 35% <!--metric:plant_a.precision_at_budget:.0%--> |
+| Recall at operating threshold | 28% <!--metric:plant_a.recall_at_budget:.0%--> |
+| Alerts per shift | 8.5 <!--metric:plant_a.alerts_per_shift:.1f--> (budget 6) |
+| Bottleneck detection accuracy (self-consistency, NOT independent — see below) | 85.9% <!--metric:plant_a.bottleneck_detection_accuracy:.1%--> (plant A), 90.2% <!--metric:plant_b.bottleneck_detection_accuracy:.1%--> (plant B) |
+| Bottleneck forecast skill vs persistence | +0.136 <!--metric:plant_a.forecast_skill_vs_persistence:.3f--> / +0.205 <!--metric:plant_b.forecast_skill_vs_persistence:.3f--> |
 | Soft sensor, ambient-driven signals | **R² 0.965–0.996** |
 | Soft sensor, tool-wear-driven signals | **R² −0.55 to −0.07** (unrecoverable — see below) |
-| Value of unsensored-station evidence | **+0.060 PR-AUC** (23% relative) — but the confidence intervals overlap, so the artifact itself records it as "improvement is within confidence intervals, reported as measured" |
+| Value of unsensored-station evidence | **+0.060 <!--metric:plant_a.soft_sensor_ablation_delta:.3f--> PR-AUC** (23% relative) — but the confidence intervals overlap, so the artifact itself records it as "improvement is within confidence intervals, reported as measured" |
 | Fallback (SPC) shadow precision / recall | 3.0% / 100% — published as measured, see ADR-035 |
 
 Every figure above is read from `artifacts/pulsetwin.db` (`metrics`, `metrics_json`,
-`plant_meta`), not transcribed by hand. If you rebuild the artifact, these move — update
-this table, `docs/MODEL_CARD.md`, `docs/STATE.md` and `docs/ASSUMPTIONS.md` together.
+`plant_meta`), not transcribed by hand. The numbers carrying an invisible
+`<!--metric:...-->` marker are **machine-checked** against `artifacts/metrics_summary.json`
+by `python tools/metrics_summary.py --check`, which CI runs — a README number that drifts
+from its artifact fails the build.
+
+### Independent bottleneck validation
+
+The 85.9% / 90.2% row above is a **self-consistency** figure, not an accuracy: its
+reference is the same active-share matrix the detector consumes, smoothed over a longer
+window (`offline/ml/bottleneck.py::ground_truth`). Detector and reference share any bias in
+the statistic.
+
+An independent ground truth now exists. For each station, slow its cycle time by 10% under
+Common Random Numbers, rerun the line across 30 seeds, and measure the throughput lost —
+the constraint is the station that costs the most. Plant A, `baseline` scenario, 5-day
+horizon, bootstrap 95% CIs:
+
+| Detector | top-1 | top-3 | MRR | Mean station distance |
+|---|---|---|---|---|
+| **Active Share** (shipped) | **0.93** | 1.00 | 0.967 | 0.5 |
+| Utilization | 0.93 | 1.00 | 0.967 | 0.5 |
+| Active Period (Roser) | 0.70 | 1.00 | 0.850 | 2.1 |
+| Turning Point (adapted) | 0.00 | 1.00 | 0.500 | 7.0 |
+| Arrow blocked/starved (adapted) | 0.00 | 1.00 | 0.500 | 7.0 |
+| Average Queue Length | 0.00 | 0.00 | 0.078 | 9.0 |
+| Busy Ratio | 0.00 | 0.00 | 0.069 | 18.0 |
+
+Ground truth S19, runner-up S12, margin 5.01 UPH per unit relative slowdown, CIs
+non-overlapping. Plain utilisation **ties** the shipped detector here, so this evidence
+does not justify preferring active share. Source: `artifacts/benchmarks/`. Method and
+limitations — including the six scenarios still **NOT RUN** — in
+`docs/BOTTLENECK_BENCHMARK.md`.
+
+### Within-alert discrimination — a negative result
+
+Plant A's 113 alerts share **one** score. Unique ratio 0.9%, normalised entropy 0.000,
+within-cohort ranking AUC **0.500** — literally random ordering. The model identifies the
+at-risk set and cannot rank it. Plant B does not collapse (28 alerts, 28 unique scores,
+AUC 0.788), so the pathology is plant-A-specific rather than inherent.
+
+Measured by `python -m offline.benchmarks.score_diversity` →
+`artifacts/benchmarks/score_diversity.json`. **Not fixed** — see `docs/REQUIREMENTS.md`.
+
+### Live simulation
+
+`docs/LIVE_SIMULATION.md` distinguishes three sources: Recorded Replay, Scenario Injection
+(which writes risk directly and is kept as a scripted demo), and **true Live Simulation** —
+a stepped discrete-event run where an incident changes a physical condition and the trained
+model reacts, or does not. In a 12-day plant A run the twin produced 0 alerts through
+simulated hour 22.8, then 5 → 27 → 15 → 9 as the week reached its EV-heavy, high-humidity
+days, at a 2.974% defect rate against ~3% configured. No risk value is written by hand, and
+an AST guard in the test suite enforces it.
+
+If you rebuild the artifact, these move — update this table, `docs/MODEL_CARD.md`,
+`docs/CLAIMS.md`, `docs/STATE.md` and `docs/ASSUMPTIONS.md` together, then run
+`python tools/metrics_summary.py --write` and `python tools/verify_artifacts.py --write`.
 
 ### Why we report an oracle instead of chasing 0.85
 

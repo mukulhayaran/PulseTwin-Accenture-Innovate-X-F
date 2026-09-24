@@ -26,11 +26,12 @@ export default function LeadershipPage() {
   const [lastKnownAt, setLastKnownAt] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
 
-  // Gates entry on whatever role /login left in place, THEN locks this page to its own
-  // fixed persona once granted -- see lib/usePersonaAccess.ts. Identifies this view to
-  // the backend RBAC (serve/middleware/auth.py) instead of relying on lib/api.ts's
-  // global "leadership" default.
+  // Requires a live `leadership` session, THEN locks this page to its own fixed persona
+  // -- see lib/usePersonaAccess.ts and the exact-match policy in lib/routeAccess.ts. Not
+  // a rank check: `system` outranks leadership in the API hierarchy and is still refused
+  // here, because these views are separations of duty, not privilege levels.
   const access = usePersonaAccess("leadership");
+  const granted = access.status === "granted";
 
   useEffect(() => {
     let cancelled = false;
@@ -45,11 +46,11 @@ export default function LeadershipPage() {
   }, [retryNonce]);
 
   useEffect(() => {
-    if (access !== true) return;
+    if (!granted) return;
     getRoi(plant, scenario).then(setRoi).catch(() => setRoi(null));
     getInstrumentationPlan(plant).then(setPlan).catch(() => setPlan(null));
     getMetrics(plant).then(setMetrics).catch(() => setMetrics(null));
-  }, [plant, scenario, access]);
+  }, [plant, scenario, granted]);
 
   // Waterfall from a stacked bar with a transparent base — Recharts has no native one.
   const bridge = useMemo(() => {
@@ -76,7 +77,7 @@ export default function LeadershipPage() {
       key: "station", header: "Station",
       cell: (r) => (
         <span className="flex min-w-0 items-center gap-1.5">
-          <span className="text-numeric font-medium text-ink">S{r.station_id}</span>
+          <span className="text-numeric font-bold text-ink">S{r.station_id}</span>
           <span className="truncate text-ink-faint">{r.station_name}</span>
         </span>
       ),
@@ -116,8 +117,10 @@ export default function LeadershipPage() {
     },
   ];
 
-  if (access === null) return null;
-  if (access === false) return <AccessRestricted minRole="leadership" />;
+  if (access.status === "pending" || access.status === "anonymous") return null;
+  if (access.status === "denied") {
+    return <AccessRestricted required={["leadership"]} current={access.role} />;
+  }
 
   return (
     <AppShell
@@ -246,11 +249,11 @@ export default function LeadershipPage() {
                           const row: any = p[0]?.payload ?? {};
                           return (
                             <div className="flex items-center justify-between gap-4 text-xs">
-                              <span className="text-ink-dim">Contribution</span>
+                              <span className="text-on-dark-soft">Contribution</span>
                               <span
                                 className={cn(
-                                  "text-numeric font-semibold",
-                                  row.value >= 0 ? "text-ok-fg" : "text-danger-fg"
+                                  "text-numeric font-bold",
+                                  row.value >= 0 ? "text-ok-on-dark" : "text-danger-on-dark"
                                 )}
                               >
                                 {money(row.value ?? 0)}
@@ -332,7 +335,7 @@ export default function LeadershipPage() {
                   rowKey={(r) => String(r.station_id)}
                   footer={
                     <>
-                      <td className="py-2 text-xs font-semibold text-ink">Total</td>
+                      <td className="py-2 text-xs font-bold text-ink">Total</td>
                       <td />
                       <td className="text-numeric py-2 pr-3 text-right text-xs text-ink">
                         ${plan.total_investment.toLocaleString()}
@@ -359,16 +362,16 @@ export default function LeadershipPage() {
                 ].map((ph, i) => (
                   <div
                     key={ph.p}
-                    className="relative rounded-lg border border-line bg-surface-2/50 p-3.5 transition-colors hover:border-line-strong"
+                    className="relative rounded-lg border border-line bg-surface-2 p-3.5 transition-colors hover:border-line-strong"
                   >
                     <span
                       aria-hidden
                       className="absolute inset-x-3.5 top-0 h-0.5 rounded-b-full bg-ai"
                       style={{ opacity: 1 - i * 0.2 }}
                     />
-                    <div className="text-xs font-semibold text-ai-fg">{ph.p}</div>
+                    <div className="text-xs font-bold text-ai-fg">{ph.p}</div>
                     <div className="text-numeric text-2xs text-ink-faint">{ph.w}</div>
-                    <div className="mb-2.5 mt-1.5 text-xs font-medium text-ink">{ph.t}</div>
+                    <div className="mb-2.5 mt-1.5 text-xs font-bold text-ink">{ph.t}</div>
                     <ul className="space-y-1">
                       {ph.items.map((it) => (
                         <li key={it} className="flex gap-1.5 text-2xs leading-relaxed text-ink-faint">
@@ -387,7 +390,7 @@ export default function LeadershipPage() {
               title={
                 <button
                   onClick={() => setShowMetrics((s) => !s)}
-                  className="flex items-center gap-1.5 rounded text-2xs font-semibold uppercase tracking-[0.14em] text-ink-faint"
+                  className="flex items-center gap-1.5 rounded text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint"
                   aria-expanded={showMetrics}
                 >
                   <span className={cn("transition-transform duration-200", showMetrics && "rotate-90")}>
@@ -450,17 +453,17 @@ function ThresholdCard({
 }) {
   const TONE = {
     ok: { text: "text-ok-fg", ring: "border-ok/40 bg-ok/[0.07]" },
-    warn: { text: "text-warn-fg", ring: "border-line bg-surface-2/50" },
-    info: { text: "text-info-fg", ring: "border-line bg-surface-2/50" },
+    warn: { text: "text-warn-fg", ring: "border-line bg-surface-2" },
+    info: { text: "text-info-fg", ring: "border-line bg-surface-2" },
   }[tone];
 
   return (
     <div className={cn("relative rounded-lg border p-3.5", TONE.ring)}>
       <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">{label}</span>
+        <span className="text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">{label}</span>
         {selected && <Badge variant="ok">Active</Badge>}
       </div>
-      <div className={cn("text-numeric text-xl font-semibold", TONE.text)}>{value}</div>
+      <div className={cn("text-numeric text-xl font-bold", TONE.text)}>{value}</div>
       <p className="mt-2 text-2xs leading-relaxed text-ink-faint">{body}</p>
     </div>
   );

@@ -1,0 +1,108 @@
+[project]
+name = "pulsetwin"
+version = "2.0.0"
+description = "PulseTwin — digital twin and manufacturing intelligence for mixed-model vehicle assembly"
+requires-python = ">=3.11"
+readme = "README.md"
+
+# ---------------------------------------------------------------------------------------
+# WHAT THIS FILE IS, AND WHAT IT IS NOT
+#
+# This is the RESOLUTION SOURCE OF TRUTH: `uv lock` reads it and writes uv.lock, which
+# pins the exact version of every direct and transitive dependency with hashes. That lock
+# is what CI installs, so a green CI run means a specific, reproducible dependency graph
+# and not "whatever PyPI served that morning".
+#
+# The per-deployable requirements*.txt files ARE STILL THE BUILD INPUTS FOR DOCKER and
+# they are deliberately kept. serve/Dockerfile installs serve/requirements.txt, and that
+# is the mechanism enforcing the import wall (CLAUDE.md section 2) at the image level:
+# pandas and sklearn are not merely unimported in the runtime image, they are NOT
+# INSTALLED. Collapsing everything into one environment would silently delete that
+# guarantee, which is why this file mirrors the groups rather than replacing the files.
+#
+# The two are kept honest by tests/test_dependency_manifest.py, which fails if a package
+# appears in a requirements file but not in the matching group here.
+#
+#   uv sync --group dev --group ml     # local development, everything offline needs
+#   uv lock                            # regenerate uv.lock after editing this file
+#   uv run pytest tests/ -q            # run the suite inside the locked environment
+# ---------------------------------------------------------------------------------------
+
+# The API runtime. MIRRORS serve/requirements.txt -- the import-wall allowlist only.
+# Never add pandas, scikit-learn, scipy, xgboost, shap, simpy or a provider SDK here.
+dependencies = [
+    "fastapi==0.139.0",
+    "uvicorn==0.51.0",
+    "pydantic==2.13.4",
+    "numpy>=2.1",
+    "orjson==3.10.0",
+    "psycopg[binary,pool]==3.2.3",
+    "prometheus-client==0.21.0",
+    "prometheus-fastapi-instrumentator==8.1.0",
+    # ADR-049: OIDC/JWT verification. Lazy-imported, so dev mode needs nothing.
+    "python-jose[cryptography]>=3.3",
+]
+
+[dependency-groups]
+# Test and lint tooling. Installed in CI and locally, never in a runtime image.
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+    "ruff>=0.6",
+]
+
+# The offline pipeline: simulator, featurisation, training, benchmarks. MIRRORS
+# requirements-dev.txt and serve/requirements-jobs.txt. Heavy, and never shipped in the
+# serving image -- "precompute heavy, serve thin".
+ml = [
+    "pandas>=2.2",
+    "scipy>=1.14",
+    "scikit-learn>=1.5",
+    "pyarrow>=17",
+    "PyYAML>=6.0",
+]
+
+# The GenAI tier's only third-party dependency. MIRRORS genai/requirements.txt.
+# ADR-037/038/040: exactly one client, speaking the OpenAI wire protocol, so a provider
+# swap changes a base_url and not this list. Never add anthropic/groq/openrouter SDKs.
+genai = [
+    "openai>=1.60",
+]
+
+# MQTT ingestion, a separate deployable. MIRRORS ingestion/requirements.txt.
+ingestion = [
+    "paho-mqtt==2.1.0",
+    "redis==5.0.8",
+    "PyYAML>=6.0",
+]
+
+# The external public-dataset benchmark (benchmark/, AI4I 2020). Separated because it is
+# the only thing in the repo that touches data PulseTwin did not generate, and because it
+# must never be a prerequisite for running or testing the product.
+benchmark-external = [
+    "pandas>=2.2",
+    "scikit-learn>=1.5",
+    "requests>=2.32",
+]
+
+[tool.uv]
+default-groups = ["dev", "ml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The suite trains and scores real models rather than mocking them; a hung test should
+# fail loudly instead of holding CI for its full timeout budget.
+timeout = 900
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["frontend", ".next", "node_modules", "artifacts", "data"]
+
+[tool.ruff.lint]
+# Deliberately narrow. This repository is finished code with a house style; a broad rule
+# set would produce hundreds of findings that nobody triages, which is worse than no lint
+# at all. These four catch the things that are actually bugs: undefined names, unused
+# imports, mutable default arguments, bare excepts.
+select = ["E9", "F", "B006", "B008", "E722"]

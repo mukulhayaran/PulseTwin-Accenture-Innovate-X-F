@@ -1472,3 +1472,271 @@ insufficient on its own for the things this module CAN mechanically check.
 call no LLM and produce no `knowledge_citations` — `Finding.knowledge_citations` defaults
 to `[]`, so the offline path and every Finding produced before this ADR parse and verify
 exactly as before (`test_absent_knowledge_citations_is_unaffected`).
+
+---
+
+### ADR-047 — The frontend moves to BMW's corporate-automotive language, light
+**Audit:** frontend design direction, 2026-09-23 · **Status:** ACCEPTED
+
+Two references arrived together and disagreed: a set of dashboard mockups carrying a new
+information architecture (a persistent left rail, a global top bar, and an Overview page
+that did not exist), and a written BMW corporate design system — light `#ffffff` canvas,
+BMW blue `#1c69d4` as the single action colour, 0px corners, no drop shadow on cards, and
+a 700/300 weight pair with 500 deliberately absent. The mockups were dark. The system is
+light. Taken literally, both cannot hold.
+
+**Decision.** Take the STRUCTURE from the mockups and the LANGUAGE from BMW, and resolve
+the palette conflict in BMW's favour. `CLAUDE.md` §7 previously pinned this frontend to a
+dark control-room palette; that section is rewritten rather than quietly contradicted, and
+this ADR is the record of why. The dark surface is not deleted — it is demoted from "the
+theme" to **one band** (`--color-surface-dark`, warm navy `#1a2129`), which is what BMW
+actually specifies, and it now carries the sidebar rail, the hero and CTA bands, the
+tooltip and the chart tip. BMW's own rule that no two consecutive bands share a surface
+mode is what makes a white-on-white dashboard read as a product rather than a document.
+
+**Why the swap was cheap.** `grep` for a hex literal across `app/` and `components/`
+returned two matches, both inside comments, and for `bg-black`/`text-white`, zero. Every
+colour already resolved through the `@theme` block in `app/globals.css` and its hand-kept
+mirror in `lib/theme.ts`. Inverting the palette therefore meant editing two files and
+letting ~9,000 lines of view code inherit it. The token NAMES are unchanged, including the
+four `--radius-*` steps, which now all resolve to 0 — so no call site had to be touched to
+square a corner, and a future change to the radius scale still reaches everything.
+
+The one token pair whose MEANING inverted is `-fg`: on the dark build it was the
+*brightened* variant for text on black, and it is now the *darkened* variant for text on
+white. `ink-faint` is pinned at `#757575` for the same reason it was pinned before — it
+carries every panel title, axis label and table header, and it must clear WCAG AA (4.6:1)
+rather than be chosen by eye. A new `-on-dark` set (`--color-ok-on-dark` and four
+siblings) exists because the darkened `-fg` values go muddy on navy and the dark band is a
+real surface with real signal text on it.
+
+**The three contracts are untouched.** The signal hues keep their contract meanings
+exactly (ok = measured, warn = inferred, danger = alert, ai = prediction); only their
+values moved. `hatch-inferred` had its alpha raised from 28% to 42% because an amber hatch
+tuned against `#111419` nearly vanishes against `#ffffff` — a provenance marker that
+cannot be seen is a broken contract, not a styling preference.
+
+**Structure.** `AppShell` was rebuilt as a dark rail plus a light top bar **without
+changing its prop contract**, so all four persona pages mount it unedited. The top bar's
+two additions are real, not decorative: the notification tray is derived from
+`/api/shift/summary` and its badge counts conditions the API actually reported — a bell
+that reads "3" when nothing is wrong teaches an operator to ignore it — and the search box
+has exactly two destinations that exist (`^U\d{4,8}$` opens that unit on `/supervisor`
+via `#unit=`, everything else becomes a DRAFT on `/copilot` via `#q=`, which the composer
+seeds but does not send). There is deliberately no station branch: a station has no detail
+view to land on, and a search box that silently does nothing is worse than one that hands
+the query to something that can answer it.
+
+**`/overview` is not gated by `usePersonaAccess`.** The other four views each pin
+themselves to one persona; this is the page you arrive on before choosing. It keeps
+whatever role `/login` left in place and degrades panel by panel, naming the role each
+blocked panel needs — the same honesty rule `RoleGate` follows, applied to a whole page.
+Its station heatmap bands RELATIVELY, by position within the plant's own measured
+distribution, not against a fixed uph cut point: the first absolute threshold tried
+painted 24 of 30 stations red, and a relative band also survives the `plant_a.yaml` →
+`plant_b.yaml` swap §1 requires. Unsensored stations take no band at all and are excluded
+from the ranked loss table, because `/api/stations/stats` reports them with no confidence
+interval (the contract-#1 violation already noted in CLAUDE.md §8) and ranking an
+unbounded estimate against measured rows is the laundering `genai/offline_triage.py`
+already refuses to do.
+
+**Deviations from the BMW document, stated.** Panel body padding is 20px, not the
+specified 24px: these are dense dashboard panels — BMW's own "configurator inventory"
+density tier — so this takes the step below on the same 8px scale rather than inventing a
+value off it. Drop shadow survives for elements that genuinely float free of the document
+(popover, tooltip, toast, dock), which BMW's card rule does not cover and its own Known
+Gaps leaves unextracted. `.text-2xs` and `.text-xs` sit at weight 400 rather than Light
+300, which is the same lane BMW gives `caption` and `nav-link`: below ~13px, 300 is hinted
+away to almost nothing on a white ground.
+
+**One trap worth the ADR.** Tailwind v4 emits its utilities inside `@layer utilities`, and
+an UNLAYERED rule beats any layered one regardless of specificity. The first cut of the
+base rules was unlayered, so `h2 { color: var(--color-ink) }` silently overrode
+`text-on-dark` and rendered every heading in every dark band invisible, and
+`.text-2xs { font-weight: 400 }` overrode `font-bold` on every badge, panel title and
+table header in the product. Both shipped for exactly one screenshot. The base block is
+now wrapped in `@layer base`, and the computed styles are checked directly in the browser
+rather than by grepping the stylesheet — Next's dev server injects CSS through JS, so a
+response-body grep measures nothing and cheerfully reports every class as missing.
+
+---
+
+### ADR-048 — Persona views become separations of duty behind a real session
+
+**Status:** accepted, 2026-09-23.
+
+**Context.** `/login` (ADR shipped with commit `847b594`) checked a credential
+server-side and then returned a role *string*, which `lib/api.ts` echoed back in
+`X-PulseTwin-Role` on every later request. Two things followed, and both were wrong in
+the same way — the client was the only party asserting who it was:
+
+1. **Signing in was optional.** `currentRole` defaulted to `"leadership"`, so a visitor
+   who never opened `/login` at all reached `/manager`, `/leadership` and the leadership
+   panels on `/overview`. The default was chosen when the header was a demo affordance
+   and nothing gated on it; once `/login` existed it was a hole.
+2. **Entry was a rank comparison.** `usePersonaAccess` granted entry via
+   `roleAtLeast(entryRole, minRole)`, mirroring `serve/middleware/auth.py`'s hierarchy.
+   A leadership login therefore walked into `/manager`, and `system` walked into all
+   four. A hierarchy can express "leadership may call a manager endpoint"; it cannot
+   express "the manager's view and leadership's view are different jobs."
+
+**Decision.** Three changes, one per layer.
+
+**A session the server issues.** `serve/session_store.py` holds opaque 256-bit tokens
+with an 8-hour TTL; `POST /api/auth/login` mints one, `GET /api/auth/session` validates
+it, `POST /api/auth/logout` revokes it. `get_role` resolves `X-PulseTwin-Token` when
+present and the session's role then outranks the declared header — a declared role at or
+below the session's is honoured (the deliberate privilege drop `/ops`'s "Viewing as"
+selector performs), and anything above it is ignored. An unknown or expired token is a
+401, never a quiet fall-back to the header, because falling back would make sign-out and
+expiry advisory. `get_user` reads the session's user, so a caller holding a token cannot
+relabel who acted in the audit trail.
+
+This does **not** close the header seam `docs/SECURITY.md` documents, and is not meant
+to: a caller that presents no token and sets `X-PulseTwin-Role` by hand behaves exactly
+as before, which is what keeps every existing test and that document's honest description
+true. What it closes is the UI's own path — the role on that path is now one the server
+issued and can revoke. The store is process-local, which is correct for a single-worker
+deployment and is the wrong answer for several; the fix there is the shared store or the
+stateless JWT SECURITY.md already prescribes, not a bigger dict.
+
+**An exact-match route policy, not a rank check.** `frontend/lib/routeAccess.ts` is the
+one table naming which role may OPEN which view, and both the route guard and the rail's
+navigation read it, so a lock icon can never appear on a link that still works.
+`/supervisor` and `/overview` are public — the floor view is what the line is for, it is
+where an unauthenticated visitor lands, and every endpoint it calls is already at the
+API's own default role. `/manager`, `/leadership` and `/ops` each require exactly one
+role. `/copilot` takes the three roles whose sessions its endpoints actually accept.
+`system` is refused on `/manager` and `/leadership` despite outranking both, because
+these are separations of duty and not privilege levels.
+
+Anonymous now resolves to `"supervisor"`, not `"leadership"` — matching
+`serve/middleware/auth.py`'s own default, so an unauthenticated visitor gets the least
+access this API grants rather than the most. `/overview` therefore degrades for a
+signed-out visitor, which is the page working as ADR-047 designed it rather than a
+regression. `setRole()` survives as the per-page persona pin, but is now clamped to the
+session's role: pinning can no longer be the thing that grants privilege, which is
+precisely how an anonymous visitor used to reach leadership data.
+
+**Consequences, including one rule bent on purpose.** The session is persisted in
+`sessionStorage`, read and written only in `lib/api.ts`. CLAUDE.md §7 bans browser
+storage in React components, and the RBAC role was explicitly named as following that
+rule. That rule is about UI state that must be **derived** rather than remembered — the
+alert budget and shift counters come off the replay clock — and a sign-in is not derived
+state. Without persistence the module variable resets on every reload, and because this
+ships as a static export, typing `/manager` into the address bar *is* a reload: every
+hard navigation would sign the user out. `sessionStorage` rather than `localStorage` so
+the session dies with the tab, and what is stored is a server-issued token the server
+re-validates on load (`restoreSession`), not a role string the client can edit into
+anything it likes. Every read and write is wrapped — blocked storage degrades to an
+in-memory session for that page view rather than throwing.
+
+`AccessRestricted` is now reached only by a signed-in role on the wrong view; signed-out
+visitors are redirected to `/login?next=<path>` instead, because "sign in" is a clearer
+instruction than "you need a role you have no way to acquire from here". `safeNext()`
+rejects anything that is not a same-origin absolute path, which is the one genuinely
+exploitable bug a `next` parameter invites.
+
+**Measured, in a browser, against a live backend.** Signed out: `/supervisor` and
+`/overview` render, the other four redirect carrying `next`. Signed in as manager from a
+`/copilot` bounce: lands on `/copilot`, `/leadership` and `/ops` show the refusal,
+`/manager` opens and survives a reload. Sign out returns to `/login` and `/manager`
+bounces again. Signed in as leadership: `/manager` is refused. The only 4xx on a
+signed-out page is `/api/shift/summary` (manager-gated), already caught and degraded by
+`AppShell`. `tests/test_auth_session.py` pins the seam — 17 cases including "a declared
+role cannot climb above the session" and "no token behaves exactly as before".
+
+---
+
+### ADR-049 — Authentication becomes a posture, not a comment
+
+**Context.** RBAC was enforced from `X-PulseTwin-Role`, a header the caller writes. That is
+the right posture for a judged demo and an unacceptable one for anything reachable by
+someone else, and the only thing separating the two was a docstring promising the swap
+would be small. `docs/SECURITY.md` described an OIDC upgrade path that no code implemented.
+CORS was `allow_origins=["*"]`.
+
+**Decision.** `PULSETWIN_AUTH_MODE` selects the posture explicitly, with exactly two states
+and no silent third — any value other than `jwt` is `dev`.
+
+* `dev` (default) — unchanged. The header is honoured. Local development, the docker demo
+  and the whole test suite run here, which is what keeps this change from being a
+  behavioural break.
+* `jwt` — the header alone grants nothing. A caller presents a server-issued session token
+  or a signed JWT in `Authorization: Bearer`. A bare role header is 401. A role header
+  *below* the verified role is still honoured, because dropping privilege deliberately is
+  what `/ops`'s "Viewing as" selector does and a verified caller must be allowed to ask for
+  less than it holds — never more.
+
+`serve/middleware/jwt_auth.py` verifies signature, issuer, audience and expiry, supports
+HS256 via shared secret and RS256/ES256 via a JWKS endpoint with a 10-minute key cache,
+reads a configurable role claim, and maps claim values onto PulseTwin's four roles through
+`PULSETWIN_ROLE_MAP`. When several claims map, the **highest** role wins — providers do not
+guarantee claim ordering, so first-match would be a coin flip. An unmapped group is ignored
+rather than guessed, and a token mapping to nothing is 403, not a default role.
+
+**Fail closed at boot.** `validate_config()` runs in `serve/main.py`'s lifespan and *raises*
+if `jwt` mode cannot verify a signature, or if `python-jose` is absent, or if
+`PULSETWIN_CORS_ORIGINS` is unset or wildcard. The process does not start. An auth system
+that degrades to "allow" under misconfiguration is worse than none, because it is trusted.
+
+**Why no vendor SDK.** The import wall (CLAUDE.md §2) permits `jose`, and ADR-033 already
+allowlisted it for exactly this. Everything a provider needs is configuration: an issuer, an
+audience, a JWKS URL, a claim name, a mapping table. Entra, Okta, Auth0, Keycloak and
+Cognito all fit that shape. `tests/test_jwt_auth.py::test_no_vendor_is_hardcoded` parses the
+module's AST, strips every docstring, and asserts no provider name survives into executable
+code — providers are named in prose, deliberately, and nowhere else.
+
+**`python-jose` is now a real runtime dependency**, added to `serve/requirements.txt` and to
+`pyproject.toml`'s runtime group. The import is lazy so dev mode needs nothing, but the
+image ships it: a production deployment must not be one `pip install` away from failing
+closed at boot. `[cryptography]` is required because real providers sign with RS256.
+
+**Consequences.** 30 tests in `tests/test_jwt_auth.py`, including the one that matters —
+`test_production_mode_refuses_a_bare_role_header`. The demo is unaffected. `docs/SECURITY.md`'s
+upgrade path stops being aspirational.
+
+---
+
+### ADR-050 — Bottleneck ground truth moves off the detector's own statistic
+
+**Context.** `offline/ml/bottleneck.py` scored its active-share detector against a reference
+built by smoothing *the same active-share matrix* over eight buckets. The module's docstring
+is candid about why (an argmax scored against itself returns 100%, which invites doubt about
+everything else) and the reasoning is right — but both quantities remain functions of one
+statistic. If active share is a biased estimate of the constraint, detector and reference are
+wrong together, and their agreement is high *because* they share the bias. 85.9% / 90.2% is
+self-consistency, not accuracy.
+
+**Decision.** Ground truth becomes **throughput sensitivity**, which owes nothing to any
+detector: slow station *i*'s cycle time by 10%, rerun the line, and measure the UPH lost.
+The constraint is the station that costs the most. Repeat under Common Random Numbers across
+30+ seeds; bootstrap a 95% CI over the paired differences.
+
+CRN matters because a 5-day run's throughput varies by ~1 UPH across seeds and the effect
+being measured is of the same order — differencing independently seeded runs would measure
+mostly noise. It is also *approximate* in a DES, because perturbing a cycle time changes
+event ordering and the streams decouple over the horizon; that is the accepted limitation,
+it is documented, and it is why the method still averages over many seeds.
+
+**No simulator was duplicated.** `LineSimulator.run()` was split into
+`start()` / `step()` / `finish()`, with `run()` now composed of the three. A fingerprint over
+`state_seconds`, `visits` and `completed_units` across three plant/seed combinations is
+byte-identical before and after. `offline/benchmarks/simrun.py` is a thin CRN wrapper; the
+perturbation scales `nominal_cycle_s` on a config deep copy so variant multipliers, tool
+wear and cycle CV all still apply and a perturbed config remains schema-valid.
+
+Two of the seven benchmarked detectors needed measurements the simulator did not take, so
+`LineSimulator` gained an **opt-in** `instrument=True` recording buffer occupancy and
+active-period spans. Off by default; proven inert by test.
+
+**Result.** The shipped detector scores **top-1 0.93** against the independent reference on
+plant A's baseline scenario — a better-founded claim than the 85.9% it replaces, even though
+the number is higher. Plain utilisation ties it exactly, which is reported rather than
+buried. The 85.9% figure stays in README, **relabelled**: deleting a published number is
+worse than explaining it.
+
+**Naming discipline.** Three detectors are faithful implementations and are named for their
+criterion; two are operationalised adaptations and carry `_adapted` in the key, with a test
+asserting the key and the provenance string agree. We do not claim to reproduce a published
+algorithm we have adapted.

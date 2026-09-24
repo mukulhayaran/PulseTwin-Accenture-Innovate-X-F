@@ -37,7 +37,7 @@ export default function RoleGate({ allowed, children, fallback }: RoleGateProps)
         </svg>
       </span>
       <p className="text-2xs text-ink-faint">
-        Requires <span className="font-medium text-ink-dim">{allowed.join(" or ")}</span> role
+        Requires <span className="font-bold text-ink-dim">{allowed.join(" or ")}</span> role
       </p>
     </div>
   );

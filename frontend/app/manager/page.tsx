@@ -41,11 +41,12 @@ export default function ManagerPage() {
   const [retryNonce, setRetryNonce] = useState(0);
   const { show, ToastElement } = useAuditToast();
 
-  // Gates entry on whatever role /login left in place, THEN locks this page to its own
-  // fixed persona once granted -- see lib/usePersonaAccess.ts. Identifies this view to
-  // the backend RBAC (serve/middleware/auth.py) instead of relying on lib/api.ts's
-  // global "leadership" default.
+  // Requires a live `manager` session, THEN locks this page to its own fixed persona --
+  // see lib/usePersonaAccess.ts and the exact-match policy in lib/routeAccess.ts. Not a
+  // rank check: a leadership login is refused here, the same way a manager is refused on
+  // /leadership. Signed-out visitors are redirected to /login by the hook.
   const access = usePersonaAccess("manager");
+  const granted = access.status === "granted";
 
   // Connectivity poll -- independent of the plant-scoped data fetches below, so a
   // dropped connection is visible (OfflineBanner) even between plant switches.
@@ -65,7 +66,7 @@ export default function ManagerPage() {
     // Access not yet resolved, or this role was refused entry -- these all 403 at
     // "supervisor" and below (require_role("manager")), and an uncaught rejection from
     // any of them is an unhandled-promise crash in dev, not just a wasted call.
-    if (access !== true) return;
+    if (!granted) return;
     getStations(plant).then((r) => setStations(r.stations));
     getStationStats(plant).then(setStats);
     getBottleneck(plant).then(setBn).catch(() => setBn(null));
@@ -75,7 +76,7 @@ export default function ManagerPage() {
       setWfStations(s);
       setWfStation(s[0]?.station_id ?? null);
     });
-  }, [plant, access]);
+  }, [plant, granted]);
 
   async function fetchHistory(p: string) {
     const { apiBase } = await import("@/lib/api");
@@ -86,7 +87,7 @@ export default function ManagerPage() {
 
   // Debounced: sliders fire on every drag, and each call is a grid interpolation.
   useEffect(() => {
-    if (wfStation === null || access !== true) return;
+    if (wfStation === null || !granted) return;
     const t = setTimeout(async () => {
       setWfBusy(true);
       try { setWf(await getWhatIf(plant, wfStation, buffer, cycle)); show("Action logged"); }
@@ -94,7 +95,7 @@ export default function ManagerPage() {
       finally { setWfBusy(false); }
     }, 220);
     return () => clearTimeout(t);
-  }, [plant, wfStation, buffer, cycle, access]);
+  }, [plant, wfStation, buffer, cycle, granted]);
 
   const nameOf = useMemo(() => {
     const m = new Map(stations.map((s) => [s.station_id, s]));
@@ -142,7 +143,7 @@ export default function ManagerPage() {
         const inferred = s.provenance === "inferred";
         return (
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className={cn("text-numeric font-medium", inferred && "text-warn-fg")}>
+            <span className={cn("text-numeric font-bold", inferred && "text-warn-fg")}>
               S{s.station_id}
             </span>
             <span className="truncate text-ink-faint">{nameOf(s.station_id).slice(0, 20)}</span>
@@ -167,8 +168,10 @@ export default function ManagerPage() {
     { key: "lost", header: "Lost UPH", align: "right", cell: (s) => <Num>{s.lost_uph.toFixed(1)}</Num> },
   ];
 
-  if (access === null) return null;
-  if (access === false) return <AccessRestricted minRole="manager" />;
+  if (access.status === "pending" || access.status === "anonymous") return null;
+  if (access.status === "denied") {
+    return <AccessRestricted required={["manager"]} current={access.role} />;
+  }
 
   return (
     <AppShell
@@ -231,10 +234,10 @@ export default function ManagerPage() {
                           <div className="space-y-0.5">
                             {p.map((r, i) => (
                               <div key={i} className="flex items-center justify-between gap-4 text-xs">
-                                <span className="text-ink-dim">
+                                <span className="text-on-dark-soft">
                                   {r.dataKey === "station" ? "detected" : "sustained truth"}
                                 </span>
-                                <span className="text-numeric font-semibold text-ink">S{r.value}</span>
+                                <span className="text-numeric font-bold text-on-dark">S{r.value}</span>
                               </div>
                             ))}
                           </div>
@@ -296,8 +299,8 @@ export default function ManagerPage() {
                       <ChartTooltip
                         rows={(p) => (
                           <div className="flex items-center justify-between gap-4 text-xs">
-                            <span className="text-ink-dim">Δ PR-AUC</span>
-                            <span className="text-numeric font-semibold text-ink">
+                            <span className="text-on-dark-soft">Δ PR-AUC</span>
+                            <span className="text-numeric font-bold text-on-dark">
                               {Number(p[0]?.value).toFixed(4)}
                             </span>
                           </div>
@@ -329,7 +332,7 @@ export default function ManagerPage() {
           <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
             <div className="space-y-5">
               <div>
-                <div className="mb-2 text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+                <div className="mb-2 text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
                   Station
                 </div>
                 {wfStations.length === 0 ? (
@@ -357,9 +360,9 @@ export default function ManagerPage() {
                 display={`${cycle >= 0 ? "+" : ""}${cycle}%`} onChange={setCycle}
               />
 
-              <div className="space-y-2.5 rounded-lg border border-line bg-surface-2/60 p-3">
+              <div className="space-y-2.5 rounded-lg border border-line bg-surface-2 p-3">
                 <p className="text-2xs leading-relaxed text-ink-faint">
-                  <span className="font-medium text-warn-fg">Feed buffer</span> is capacity{" "}
+                  <span className="font-bold text-warn-fg">Feed buffer</span> is capacity{" "}
                   <em>upstream</em> of the selected station. Adding capacity downstream of a
                   constraint does nothing — a bottleneck is never blocked by what follows it.
                 </p>
@@ -406,7 +409,7 @@ export default function ManagerPage() {
                   />
                 </div>
 
-                <div className="space-y-1 rounded-lg border border-line bg-surface-2/60 p-3 text-2xs leading-relaxed text-ink-faint">
+                <div className="space-y-1 rounded-lg border border-line bg-surface-2 p-3 text-2xs leading-relaxed text-ink-faint">
                   <div>
                     Mode <span className="text-warn-fg">{wf.mode}</span> · bottleneck resolved by{" "}
                     <span className="text-warn-fg">{wf.bottleneck_mode}</span> — a station ID is
@@ -462,17 +465,17 @@ function ScenarioBox({
     <div
       className={cn(
         "rounded-lg border p-3",
-        highlight ? "border-info/40 bg-info/[0.07]" : "border-line bg-surface-2/50"
+        highlight ? "border-info/40 bg-info/[0.07]" : "border-line bg-surface-2"
       )}
     >
-      <div className="mb-2 text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+      <div className="mb-2 text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
         {title}
       </div>
       <div className="space-y-1">
         {rows.map(([k, v]) => (
           <div key={k} className="flex items-baseline justify-between gap-2 text-xs">
             <span className="text-ink-faint">{k}</span>
-            <span className="text-numeric font-medium text-ink">{v}</span>
+            <span className="text-numeric font-bold text-ink">{v}</span>
           </div>
         ))}
       </div>
@@ -483,8 +486,8 @@ function ScenarioBox({
 function DeltaStat({ label, value, positive }: { label: string; value: string; positive: boolean }) {
   return (
     <div>
-      <div className="text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">{label}</div>
-      <div className={cn("text-numeric text-lg font-semibold", positive ? "text-ok-fg" : "text-danger-fg")}>
+      <div className="text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">{label}</div>
+      <div className={cn("text-numeric text-lg font-bold", positive ? "text-ok-fg" : "text-danger-fg")}>
         {value}
       </div>
     </div>

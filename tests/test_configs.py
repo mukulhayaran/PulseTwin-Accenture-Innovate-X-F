@@ -6,7 +6,6 @@ surface as nonsense numbers in Phase 5. Each test names the ADR it protects.
 
 from __future__ import annotations
 
-import copy
 
 import pytest
 import yaml

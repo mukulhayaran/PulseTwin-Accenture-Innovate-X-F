@@ -61,8 +61,8 @@ export function ChartTooltip({
   if (!active || !payload?.length) return null;
 
   return (
-    <div className="pointer-events-none min-w-36 max-w-72 rounded-lg border border-line-strong bg-surface/95 px-2.5 py-2 shadow-pop backdrop-blur-sm">
-      <div className="mb-1.5 text-2xs font-medium uppercase tracking-[0.12em] text-ink-faint">
+    <div className="pointer-events-none min-w-36 max-w-72 border border-surface-dark bg-surface-dark px-3 py-2 shadow-pop">
+      <div className="mb-1.5 text-2xs font-bold uppercase tracking-[0.115em] text-on-dark-soft">
         {title ? title(label, payload) : label}
       </div>
       {rows ? (
@@ -71,20 +71,20 @@ export function ChartTooltip({
         <div className="space-y-0.5">
           {payload.map((p, i) => (
             <div key={i} className="flex items-center justify-between gap-4 text-xs">
-              <span className="flex items-center gap-1.5 text-ink-dim">
+              <span className="flex items-center gap-1.5 text-on-dark-soft">
                 <span
                   className="size-1.5 shrink-0 rounded-full"
-                  style={{ background: p.color ?? theme.inkDim }}
+                  style={{ background: p.color ?? theme.onDarkSoft }}
                 />
                 {p.name}
               </span>
-              <span className="text-numeric font-semibold text-ink">{p.value}</span>
+              <span className="text-numeric font-bold text-on-dark">{p.value}</span>
             </div>
           ))}
         </div>
       )}
       {footer && (
-        <div className="mt-1.5 border-t border-line pt-1.5 text-2xs leading-relaxed text-ink-faint">
+        <div className="mt-1.5 border-t border-line-on-dark pt-1.5 text-2xs leading-relaxed text-on-dark-soft">
           {footer(payload)}
         </div>
       )}

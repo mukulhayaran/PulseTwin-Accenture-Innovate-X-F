@@ -45,13 +45,13 @@ export default function DriftMonitor({ psiSummary, calibration, sensorCoverage }
       <div className="mb-4">
         <div className="mb-2 flex items-baseline justify-between gap-2">
           <Tooltip content="Population Stability Index per feature. Warning band > 0.1, alert > 0.2 — both counted here, matching the detector's own verdict.">
-            <span className="cursor-help text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+            <span className="cursor-help text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
               Features shifted
             </span>
           </Tooltip>
           <span
             className={cn(
-              "text-numeric text-xs font-semibold",
+              "text-numeric text-xs font-bold",
               shifted > 0 ? "text-warn-fg" : "text-ok-fg"
             )}
           >
@@ -72,10 +72,10 @@ export default function DriftMonitor({ psiSummary, calibration, sensorCoverage }
       </div>
 
       {worst && band ? (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-surface-2/50 px-3 py-2">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2">
           <span className="text-numeric min-w-0 truncate text-xs text-ink">{worst.name}</span>
           <span className="flex items-center gap-2">
-            <span className={cn("text-numeric text-xs font-semibold", band.text)}>
+            <span className={cn("text-numeric text-xs font-bold", band.text)}>
               PSI {worst.psi.toFixed(3)}
             </span>
             <Badge variant={band.variant}>{worst.status}</Badge>

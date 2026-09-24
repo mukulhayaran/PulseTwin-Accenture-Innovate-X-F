@@ -227,3 +227,121 @@ Still plan, not built:
 Seed 42 (plant A) / 43 (plant B). `OMP_NUM_THREADS=1` is exported by the Makefile before
 any sklearn import: OpenMP reduction order is not deterministic and without it the
 byte-for-byte claim would be false.
+
+---
+
+## Within-alert discrimination — measured, and bad on plant A
+
+PR-AUC describes separation across the whole population. It says nothing about the question
+a supervisor actually faces: *forty units are flagged and I have time for six — which six?*
+
+Measured by `python -m offline.benchmarks.score_diversity` →
+`artifacts/benchmarks/score_diversity.json`.
+
+| Cohort | n | Unique scores | Unique ratio | Entropy | SD | IQR | Within-cohort rank-AUC |
+|---|---|---|---|---|---|---|---|
+| **plant A** — all scored units | 1,423 | 1,293 | 90.9% | 0.945 | 0.1286 | 0.0699 | 0.888 |
+| **plant A** — alerted only | 113 | **1** | **0.9%** | **0.000** | **0.0000** | **0.0000** | **0.500** |
+| **plant B** — all scored units | 1,205 | 1,204 | 99.9% | 1.000 | 0.0229 | 0.0215 | 0.617 |
+| **plant B** — alerted only | 28 | 28 | 100.0% | 1.000 | 0.0120 | 0.0126 | 0.788 |
+
+**Plant A's entire alert cohort carries one score** — calibrated 0.406079, raw 0.880117 —
+and its within-cohort ranking AUC is exactly 0.500, which is what random ordering scores.
+The model identifies the at-risk set correctly and **cannot order it**.
+
+Cause, measured rather than guessed: every tree in the ensemble splits on
+`paint_buffer_dwell_s` at the root. Once a unit is past the dwell threshold and under the
+checklist threshold, no later split discriminates, so every such unit reaches the same leaf
+in every tree and the ensemble sum is identical.
+
+**Plant B does not collapse.** Its 28 alerts carry 28 distinct scores and rank at AUC 0.788.
+The pathology is plant-A-specific, not inherent to the architecture — which is new
+information: previous documentation described it only for plant A and did not establish
+whether it generalised.
+
+This is **not fixed**. Fixing it means richer features (temporal, local station-context,
+lot-level, upstream-trajectory) and a retrain, which was not undertaken. It must never be
+fixed by jittering scores: `ranking_lift_auc` is insensitive to monotone transformations
+precisely so that jitter cannot move it, and `unique_ratio` rising without `ranking_lift_auc`
+rising would be a metric being gamed.
+
+Collapse thresholds that trip the warning: `unique_ratio < 0.25`, normalised entropy
+`< 0.50`, modal share `> 0.5`, or `|rank-AUC − 0.5| < 0.05`.
+
+## Bottleneck detection — independent validation
+
+The 85.9% (plant A) / 90.2% (plant B) figure elsewhere in this card is a **self-consistency**
+measure: its reference is the same active-share matrix the detector consumes, smoothed over
+eight buckets. It is retained, relabelled.
+
+An independent throughput-sensitivity ground truth now exists (ADR-050,
+`docs/BOTTLENECK_BENCHMARK.md`). Plant A, `baseline` scenario, 30 seeds, 5-day horizon,
++10% perturbation under Common Random Numbers, percentile-bootstrap CIs:
+
+| Detector | top-1 | top-3 | MRR | Mean station distance |
+|---|---|---|---|---|
+| **Active Share** (this model's detector) | **0.93** | 1.00 | 0.967 | 0.5 |
+| Utilization | 0.93 | 1.00 | 0.967 | 0.5 |
+| Active Period (Roser) | 0.70 | 1.00 | 0.850 | 2.1 |
+| Turning Point (adapted) | 0.00 | 1.00 | 0.500 | 7.0 |
+| Arrow blocked/starved (adapted) | 0.00 | 1.00 | 0.500 | 7.0 |
+| Average Queue Length | 0.00 | 0.00 | 0.078 | 9.0 |
+| Busy Ratio | 0.00 | 0.00 | 0.069 | 18.0 |
+
+Ground truth S19 (sensitivity −40.63 UPH per unit relative slowdown, CI [−41.59, −39.63]),
+runner-up S12 (−35.62, CI [−36.12, −35.09]), non-overlapping. The three least-constraining
+stations sit at ≈ −0.15 with CIs straddling zero, which is the sanity check the method had
+to pass.
+
+Plain utilisation **ties** the shipped detector on this scenario; this evidence does not
+justify preferring active share. Six of seven planned scenarios and all of plant B are
+**NOT RUN**.
+
+## Live-simulation behaviour
+
+The same committed model, scored in a stepped discrete-event live twin
+(`docs/LIVE_SIMULATION.md`), plant A, seed 42, 12-day horizon:
+
+| | Live twin | Offline artifact |
+|---|---|---|
+| Realised defect rate | 2.974% | ~3.0% configured |
+| Throughput | 52.1 UPH | 53.7 UPH |
+| `paint_buffer_dwell_s` p95 | 646 s | 617 s |
+| Units scored | 3,753 | — |
+| Alerts | 138 (3.7%) | — |
+| Unique risk values | 3,185 / 3,753 (84.9%) | — |
+| Feature coverage at scoring time | **253 / 253** | 253 |
+
+Alerts appear only once the run reaches the EV-heavy, high-humidity days: zero through
+simulated hour 22.8, then 5 → 27 → 15 → 9. The score collapse reproduces — `risk max` is
+exactly 0.4061 in every block after the first alert.
+
+## Alert budget — the overshoot is real
+
+Threshold 0.4061 was selected for a budget of **6 alerts/shift** and delivers **8.5** on
+held-out data, a 42% overshoot. Rolling recalibration against a trailing score distribution
+is **NOT IMPLEMENTED**; the threshold is static.
+
+## Segment results
+
+**NOT IMPLEMENTED.** Drift and quality monitoring produce a single global score
+(`mlops/drift_detector.py`). No per-plant, variant, shift, zone, humidity-regime,
+station-group or sensor-coverage-tier breakdown exists, and no minimum-sample gating.
+
+## Sensor degradation
+
+**NOT RUN.** A progressive sensor-loss sweep (coverage 100%→40%, ≥30 deterministic masks
+per level, per-signal MAE/RMSE/R²/PI coverage against four baselines) is registered in
+`tools/verify_artifacts.py` as an expected artifact so its absence is visible, but it is not
+implemented. The existing masked-station soft-sensor validation (three stations, one
+coverage level) is reported above and is a much weaker claim.
+
+## External benchmark — reported separately, on purpose
+
+AI4I 2020 Predictive Maintenance, 10,000 rows, 3.4% failure rate: **PR-AUC 0.773**
+[0.657, 0.873], ROC-AUC 0.988. This validates that the training and evaluation *pipeline*
+behaves correctly on data PulseTwin did not generate. It is **not** a result about
+automotive assembly defect prediction, and it must never be presented alongside the 0.256
+figure without that distinction being unmissable. AI4I's failure modes are directly
+observable in its features; PulseTwin's simulator deliberately hides its dominant causes.
+See `docs/CLAIMS.md` §5.

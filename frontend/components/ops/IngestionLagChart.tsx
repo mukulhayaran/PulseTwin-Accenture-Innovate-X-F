@@ -79,8 +79,8 @@ export default function IngestionLagChart({ lag }: Props) {
                 <ChartTooltip
                   rows={(p) => (
                     <div className="flex items-center justify-between gap-4 text-xs">
-                      <span className="text-ink-dim">Lag</span>
-                      <span className="text-numeric font-semibold text-ink">
+                      <span className="text-on-dark-soft">Lag</span>
+                      <span className="text-numeric font-bold text-on-dark">
                         {Number(p[0]?.value).toFixed(2)}s
                       </span>
                     </div>
@@ -117,7 +117,7 @@ function Reading({
       <span className="text-2xs uppercase tracking-[0.14em] text-ink-faint">{label}</span>
       <span
         className={cn(
-          "text-numeric text-xs font-semibold",
+          "text-numeric text-xs font-bold",
           tone === "warn" ? "text-warn-fg" : tone === "ok" ? "text-ok-fg" : "text-ink-dim"
         )}
       >

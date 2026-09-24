@@ -1,0 +1,165 @@
+# PULL-REQUEST CI: fast, deterministic, no experiments.
+#
+# Everything here runs against COMMITTED ARTIFACTS. Nothing in this workflow regenerates
+# the simulator output, retrains a model, or runs a benchmark -- those take hours and live
+# in nightly.yml. A pull request gets lint, the test suite, the artifact-provenance gates,
+# and a frontend build.
+#
+# Determinism: OMP_NUM_THREADS=1 everywhere (ADR-016). Without it OpenMP's reduction order
+# varies between runs and the "reproduces byte-for-byte" claim is false.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  OMP_NUM_THREADS: "1"
+  PYTHONHASHSEED: "0"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------- python: lint + tests
+  backend:
+    name: Backend (ubuntu, py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync the locked environment
+        # --frozen: fail if uv.lock disagrees with pyproject.toml rather than silently
+        # re-resolving, which would make a green run say nothing about reproducibility.
+        run: uv sync --frozen --group dev --group ml --python ${{ matrix.python }}
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Import wall
+        # The single most load-bearing structural test in the repo (CLAUDE.md section 2).
+        # Run it on its own so a violation is unmistakable in the job list.
+        run: uv run pytest tests/test_serve_imports.py -q
+
+      - name: Unit and API tests
+        run: uv run pytest tests/ -q --timeout=900
+
+  # ------------------------------------------------- provenance: artifacts vs sources
+  provenance:
+    name: Artifact + metric provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen --group dev --group ml
+
+      - name: Artifacts are not stale relative to their sources
+        # Fails when the simulator, label generator, feature code, trainer, detector or a
+        # plant config changed but the artifact was not rebuilt. Content hashes, not
+        # mtimes -- see tools/verify_artifacts.py.
+        run: uv run python tools/verify_artifacts.py
+
+      - name: Documented metrics match the artifact
+        # Fails when README.md says PR-AUC 0.256 and artifacts/metrics_summary.json says
+        # something else. This is the gate that stops a stale number reaching a demo.
+        run: |
+          uv run python tools/metrics_summary.py --write
+          uv run python tools/metrics_summary.py --check
+
+      - name: metrics_summary.json is reproducible from the artifacts
+        # --write above regenerated it. If that produced a different file than the one
+        # committed, the committed summary was hand-edited or built from other artifacts.
+        run: |
+          if ! git diff --quiet -- artifacts/metrics_summary.json; then
+            echo "::error::artifacts/metrics_summary.json is not reproducible from the committed artifacts."
+            git diff -- artifacts/metrics_summary.json | head -60
+            exit 1
+          fi
+
+  # ------------------------------------------------------- python core on windows
+  backend-windows:
+    name: Backend core (windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen --group dev --group ml
+
+      - name: Core tests
+        # A SUBSET on purpose. Windows is a supported development platform for this repo
+        # (it is where it was built), and two of its quirks have cost real debugging
+        # sessions: CRLF corrupting stream byte offsets, and text-mode seek. Those live in
+        # the simulator, scorer and artifact seams, so those are what is worth the runner
+        # minutes. The full suite runs on ubuntu.
+        run: >
+          uv run pytest -q --timeout=900
+          tests/test_simulator.py
+          tests/test_scorer_parity.py
+          tests/test_configs.py
+          tests/test_serve_imports.py
+          tests/test_dependency_manifest.py
+          tests/test_bottleneck_benchmark.py
+
+  # ------------------------------------------------------------------------- frontend
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        # `npx tsc --noEmit -p .` is this project's whole-frontend gate and it currently
+        # passes clean. NOTE: ESLint is deliberately NOT configured in this repository --
+        # adding it is tracked as a known limitation in docs/REQUIREMENTS.md rather than
+        # bolted on here, where it would either no-op or flood a passing build.
+        run: npm run typecheck
+
+      - name: Build (static export)
+        run: npm run build
+
+      - name: Export produced the expected routes
+        # A build can succeed while a route silently fails to prerender. The personas are
+        # the product; assert they exist.
+        run: |
+          for route in index overview supervisor manager leadership ops copilot login; do
+            test -f "out/$route.html" || { echo "::error::out/$route.html missing from the static export"; exit 1; }
+          done
+          echo "all persona routes exported"

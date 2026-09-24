@@ -23,7 +23,6 @@ import os
 from dataclasses import dataclass
 
 import numpy as np
-import pandas as pd
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 

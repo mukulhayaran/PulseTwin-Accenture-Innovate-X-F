@@ -202,7 +202,7 @@ export default function EvidenceGraph({ graph }: { graph: Graph }) {
       </div>
 
       {/* the hovered edge's evidence, in full */}
-      <div className="mt-2 min-h-[2.75rem] rounded-md border border-line bg-surface-2/50 px-2.5 py-1.5">
+      <div className="mt-2 min-h-[2.75rem] rounded-md border border-line bg-surface-2 px-2.5 py-1.5">
         {hovered ? (
           <div className="space-y-0.5">
             <p className="text-2xs text-ink">

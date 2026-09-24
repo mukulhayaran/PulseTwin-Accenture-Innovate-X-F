@@ -12,9 +12,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import socket
-import sqlite3
 import time
 import urllib.error
 import urllib.parse
@@ -50,6 +50,7 @@ from serve.schemas import (
 from serve.fallback_scorer import FallbackScorer
 from serve.middleware.audit import log_action
 from serve.middleware.auth import get_role, get_user, require_role
+from serve.middleware import jwt_auth
 from serve.middleware.rate_limit import RateLimitMiddleware
 from serve.privacy import contains_operator_identity
 from serve.routers import (
@@ -180,6 +181,14 @@ def _bootstrap_registry_fallback(plant_id: str, artifact_path: Path) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ADR-049. FAIL CLOSED: a production auth posture that cannot verify a signature
+    # raises here and the process does not start. An auth system that degrades to
+    # "allow" under misconfiguration is worse than none, because it is trusted.
+    for warning in jwt_auth.validate_config():
+        logging.getLogger("pulsetwin.auth").warning(warning)
+    logging.getLogger("pulsetwin.auth").info(
+        "auth mode=%s, cors origins=%s", jwt_auth.auth_mode(), jwt_auth.cors_origins()
+    )
     STATE["started"] = time.time()
     STATE["con"], STATE["ops"], STATE["backend"] = db.open_database(ARTIFACTS / "pulsetwin.db")
     STATE["feedback"] = db.open_feedback_db()
@@ -257,9 +266,13 @@ app = FastAPI(title="PulseTwin API", default_response_class=ORJSONResponse, life
 # explain. CORS is added last here so it stays outermost and decorates every response,
 # including the rejections.
 app.add_middleware(RateLimitMiddleware)
+# ADR-049: origins come from PULSETWIN_CORS_ORIGINS. Unset means "*" in dev mode (what a
+# local demo needs) and is REFUSED in jwt mode, where an API echoing every origin would
+# undo the authentication in front of it.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # demo posture -- see docs/ARCHITECTURE.md
+    allow_origins=jwt_auth.cors_origins(),
+    allow_credentials=jwt_auth.is_production_auth(),
     allow_methods=["*"],
     allow_headers=["*"],      # covers X-PulseTwin-Role (serve/middleware/auth.py)
 )

@@ -22,6 +22,14 @@ prometheus-client==0.21.0
 # wiring Instrumentator().instrument(app) in serve/main.py and running the test suite,
 # not by inspection.
 prometheus-fastapi-instrumentator==8.1.0
-# redis and python-jose are on the import-wall ALLOWLIST (ADR-033) for the documented
-# Redis-backed degraded-read cache and JWT/OIDC upgrade paths (docs/SECURITY.md), but
-# nothing in serve/ imports them yet -- not installed until something does.
+# redis is on the import-wall ALLOWLIST (ADR-033) for the documented Redis-backed
+# degraded-read cache, but nothing in serve/ imports it yet -- not installed until
+# something does.
+#
+# python-jose IS now imported: serve/middleware/jwt_auth.py verifies OIDC/JWT bearer
+# tokens under PULSETWIN_AUTH_MODE=jwt (ADR-049). The import is lazy, so dev mode -- the
+# default, and what the demo and the test suite run -- works without it; but the image
+# ships it so a production deployment cannot be one pip install away from failing closed
+# at boot. [cryptography] is required for RS256/ES256, which is what real providers sign
+# with; HS256 alone would only cover the shared-secret case.
+python-jose[cryptography]>=3.3

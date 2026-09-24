@@ -158,13 +158,13 @@ export default function SupervisorPage() {
     show("Alert closed");
   };
 
-  // Gates entry on whatever role /login left in place, THEN locks this page to its own
-  // fixed persona once granted -- see lib/usePersonaAccess.ts. "supervisor" is the floor
-  // of the hierarchy, so this never actually blocks anyone; it stays for symmetry with
-  // /manager and /leadership rather than being a special case. Identifies this view to
-  // the backend RBAC (serve/middleware/auth.py) instead of relying on lib/api.ts's
-  // global "leadership" default.
+  // The floor view is PUBLIC (lib/routeAccess.ts): no session required, because this is
+  // the page an unauthenticated visitor lands on and every endpoint it calls is already
+  // at the API's own default role. The hook still runs, and still pins the page to
+  // `supervisor`, so a manager or leadership session that walks in here sees exactly the
+  // floor view rather than its own privileges leaking into it.
   const access = usePersonaAccess("supervisor");
+  const granted = access.status === "granted";
 
   // Sensor dropouts -- real infra state, not simulated -- polled independently of the
   // replay clock so a dropout is visible even if the stream itself is paused.
@@ -446,6 +446,21 @@ export default function SupervisorPage() {
     }
   };
 
+  // The shell's search box opens a unit here via `/supervisor#unit=U029629` (ADR-047).
+  // Consumed once, on mount, and then cleared from the URL: leaving it in place would
+  // re-open the same unit on every reload, and the drawer is a transient inspection,
+  // not page state worth restoring.
+  useEffect(() => {
+    if (!granted || typeof window === "undefined") return;
+    const m = window.location.hash.match(/(?:^|[#&])unit=(U\d{4,8})/i);
+    if (!m) return;
+    window.history.replaceState(null, "", window.location.pathname);
+    openUnit(m[1].toUpperCase()).catch(() => undefined);
+    // Mount-only: `openUnit` closes over the replay clock, and re-running this when the
+    // clock ticks would re-open the drawer after the user closed it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [granted]);
+
   const vote = async (unitId: string, verdict: string) => {
     setVoted((v) => ({ ...v, [unitId]: verdict }));
     await postFeedback(plant, unitId, verdict);
@@ -527,7 +542,7 @@ export default function SupervisorPage() {
     {
       key: "risk", header: "Risk", align: "right",
       cell: (u) => (
-        <span className={cn("text-numeric font-semibold", u.risk > 0.5 ? "text-danger-fg" : "text-warn-fg")}>
+        <span className={cn("text-numeric font-bold", u.risk > 0.5 ? "text-danger-fg" : "text-warn-fg")}>
           {(u.risk * 100).toFixed(0)}%
         </span>
       ),
@@ -573,8 +588,10 @@ export default function SupervisorPage() {
     },
   ];
 
-  if (access === null) return null;
-  if (access === false) return <AccessRestricted minRole="supervisor" />;
+  if (access.status === "pending" || access.status === "anonymous") return null;
+  if (access.status === "denied") {
+    return <AccessRestricted required={["supervisor"]} current={access.role} />;
+  }
 
   return (
     <AppShell
@@ -719,12 +736,12 @@ export default function SupervisorPage() {
               which client-side accumulation could not, since localStorage is banned. */}
           <Tooltip content="Alerts raised this shift against the human-attention budget. Derived server-side from the replay clock.">
             <div className="flex shrink-0 items-center gap-2 rounded-lg border border-line bg-surface px-2.5 py-1">
-              <span className="text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+              <span className="text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
                 Alerts
               </span>
               <span
                 className={cn(
-                  "text-numeric text-xs font-semibold",
+                  "text-numeric text-xs font-bold",
                   budgetTone === "danger" ? "text-danger-fg" : budgetTone === "warn" ? "text-warn-fg" : "text-ok-fg"
                 )}
               >
@@ -777,7 +794,7 @@ export default function SupervisorPage() {
           ? "border-ai/35 bg-ai/10 text-ai-fg"
           : "border-info/30 bg-info/10 text-info-fg"
       )}>
-        <span className="font-semibold uppercase tracking-[0.12em]">
+        <span className="font-bold uppercase tracking-[0.12em]">
           {mode === "live_synthetic"
             ? "Live synthetic simulation — no real factory data connected"
             : "Recorded replay — committed synthetic shift"}
@@ -834,7 +851,7 @@ export default function SupervisorPage() {
                 {zones.map((z) => (
                   <div key={z.id}>
                     <div className="mb-2 flex items-center gap-2">
-                      <span className="text-2xs font-medium uppercase tracking-[0.16em] text-ink-faint">
+                      <span className="text-2xs font-bold uppercase tracking-[0.16em] text-ink-faint">
                         {z.name}
                       </span>
                       <span className="h-px flex-1 bg-line" />
@@ -892,7 +909,7 @@ export default function SupervisorPage() {
                                   <span aria-hidden className="hatch-inferred absolute inset-0 opacity-70" />
                                 )}
                                 <span className="relative flex items-start justify-between">
-                                  <span className="text-numeric text-xs font-semibold">S{s.station_id}</span>
+                                  <span className="text-numeric text-xs font-bold">S{s.station_id}</span>
                                   <span className={cn("mt-1 size-1.5 shrink-0 rounded-full", STATE_DOT[state])} />
                                 </span>
                                 <span className="relative mt-0.5 block truncate text-2xs leading-tight opacity-70">
@@ -1021,7 +1038,7 @@ export default function SupervisorPage() {
                     <div className="mt-5 border-t border-line pt-4">
                       <div className="mb-1.5 flex items-center gap-2">
                         <Badge variant="ai">AI</Badge>
-                        <span className="text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+                        <span className="text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
                           Auto-investigated before this alert was even opened here
                         </span>
                       </div>
@@ -1057,7 +1074,7 @@ export default function SupervisorPage() {
                     <div className="mt-3 rounded-md border border-line-strong bg-surface-2 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
-                          <div className="text-xs font-semibold text-ink">
+                          <div className="text-xs font-bold text-ink">
                             Manual decision for {decisionDraft.unit.unit_id}
                           </div>
                           <div className="mt-0.5 text-2xs text-ink-faint">
@@ -1080,7 +1097,7 @@ export default function SupervisorPage() {
                           ))}
                         </div>
                       </div>
-                      <label htmlFor="containment-decision-message" className="mt-3 block text-2xs font-medium text-ink-dim">
+                      <label htmlFor="containment-decision-message" className="mt-3 block text-2xs font-bold text-ink-dim">
                         Message for later validation
                       </label>
                       <textarea
@@ -1093,7 +1110,7 @@ export default function SupervisorPage() {
                         className="mt-1 w-full resize-y rounded-md border border-line-strong bg-surface px-2.5 py-2 text-xs text-ink outline-none placeholder:text-ink-faint focus:border-info"
                       />
                       <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                        <label className="text-2xs font-medium text-ink-dim">
+                        <label className="text-2xs font-bold text-ink-dim">
                           Owner
                           <input
                             value={decisionOwner}
@@ -1102,7 +1119,7 @@ export default function SupervisorPage() {
                             className="mt-1 w-full rounded-md border border-line-strong bg-surface px-2 py-1.5 text-xs text-ink outline-none focus:border-info"
                           />
                         </label>
-                        <label className="text-2xs font-medium text-ink-dim">
+                        <label className="text-2xs font-bold text-ink-dim">
                           Due station
                           <input
                             type="number"
@@ -1112,7 +1129,7 @@ export default function SupervisorPage() {
                             className="mt-1 w-full rounded-md border border-line-strong bg-surface px-2 py-1.5 text-xs text-ink outline-none focus:border-info"
                           />
                         </label>
-                        <label className="text-2xs font-medium text-ink-dim">
+                        <label className="text-2xs font-bold text-ink-dim">
                           Due time
                           <input
                             type="datetime-local"
@@ -1269,7 +1286,7 @@ export default function SupervisorPage() {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mb-2 text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+    <div className="mb-2 text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
       {children}
     </div>
   );
@@ -1297,7 +1314,7 @@ function FactorBar({
     <div>
       <div className="flex items-baseline justify-between gap-3 text-xs">
         <span className="min-w-0 truncate text-ink-dim">{f.plain_language}</span>
-        <span className={cn("text-numeric shrink-0 font-medium", up ? "text-danger-fg" : "text-info-fg")}>
+        <span className={cn("text-numeric shrink-0 font-bold", up ? "text-danger-fg" : "text-info-fg")}>
           {up ? "▲" : "▼"} {f.contribution.toFixed(3)}
         </span>
       </div>

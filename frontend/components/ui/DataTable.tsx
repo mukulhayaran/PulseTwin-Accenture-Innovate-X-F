@@ -56,7 +56,7 @@ export default function DataTable<Row>({
                 scope="col"
                 style={c.width ? { width: c.width } : undefined}
                 className={cn(
-                  "whitespace-nowrap pb-2 pr-3 font-medium uppercase tracking-[0.12em]",
+                  "whitespace-nowrap pb-2 pr-3 font-bold uppercase tracking-[0.12em]",
                   "text-2xs text-ink-faint",
                   maxHeight && "sticky top-0 z-10 bg-surface",
                   c.align === "right" ? "text-right" : "text-left"
@@ -96,7 +96,7 @@ export default function DataTable<Row>({
         </tbody>
         {footer && (
           <tfoot>
-            <tr className="border-t border-line-strong font-semibold">{footer}</tr>
+            <tr className="border-t border-line-strong font-bold">{footer}</tr>
           </tfoot>
         )}
       </table>

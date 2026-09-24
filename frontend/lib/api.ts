@@ -180,48 +180,192 @@ export interface Metrics {
 
 let cachedBase: string | null = null;
 
-// ------------------------------------------------------------------------------ role
+// --------------------------------------------------------------------- role + session
 //
 // Finals brief Phase F4: a lightweight RBAC header, not full OAuth (docs/SECURITY.md has
-// the OIDC upgrade path). Kept in-memory only -- CLAUDE.md's "no localStorage/
-// sessionStorage in React components" rule extends here, so the role resets to its
-// per-view default on reload rather than persisting client-side.
+// the OIDC upgrade path). Two separate things live here and conflating them is the bug
+// this split exists to prevent:
 //
-// Default is "leadership": every existing view's calls (built before this header
-// existed) must keep working without each one explicitly setting a role, and leadership
-// sits at the top of the read hierarchy (supervisor < manager < leadership < system) --
-// see serve/middleware/auth.py. The navbar role selector (RoleGate.tsx /
-// SystemStatusBar.tsx) lets a demo deliberately DROP to "supervisor" to show the 403 a
-// real floor-level credential would get on a leadership-only endpoint.
+//   session  -- WHO the server says you are. Established only by /api/auth/login, which
+//               returns an opaque token (serve/session_store.py). Null means anonymous.
+//   viewRole -- WHICH persona the mounted page is speaking as. A page pins its own
+//               (usePersonaAccess), and /ops lets a demo drop it live. It can never
+//               exceed the session's role -- see setRole() below.
+//
+// Anonymous resolves to "supervisor", never to "leadership" as it did before sessions
+// existed: an unauthenticated visitor must get the LEAST access this API grants, matching
+// serve/middleware/auth.py's own default. That is what makes /overview degrade for a
+// signed-out visitor instead of quietly handing them the leadership panels.
 export type Role = "supervisor" | "manager" | "leadership" | "system";
-let currentRole: Role = "leadership";
-export function setRole(role: Role): void { currentRole = role; }
-export function getRole(): Role { return currentRole; }
 
 // Mirrors serve/middleware/auth.py's ROLE_ORDER hierarchy -- each role can do everything
-// the one before it can. Used to gate client-side NAVIGATION (a /login choice of
-// "supervisor" cannot reach /manager or /leadership), which is a different question from
-// what a fixed page DISPLAYS once entry is granted -- that still always locks to the
-// page's own persona (CLAUDE.md SS7: "the four views are not symmetric"). Like the rest
-// of this role system, this is a demo convenience, not enforcement: the API rejects a
-// disallowed request regardless of what this lets the UI navigate to.
+// the one before it can. That hierarchy governs what the API ALLOWS; it is no longer what
+// governs which page you may open, because a hierarchy cannot express "manager and
+// leadership are peers who do not see each other's view" -- lib/routeAccess.ts owns that
+// and it is an exact-match policy, not a rank comparison.
+//
+// Declared before the session block below because readStoredSession() validates against
+// it at module-init time, and a `const` referenced before its own initialiser is a
+// temporal-dead-zone throw, not a hoist.
 export const ROLE_ORDER: Role[] = ["supervisor", "manager", "leadership", "system"];
 export function roleAtLeast(role: Role, min: Role): boolean {
   return ROLE_ORDER.indexOf(role) >= ROLE_ORDER.indexOf(min);
 }
 
+export interface Session {
+  role: Role;
+  token: string;
+  user: string;
+  /** Unix seconds, from the server -- not a client clock reading. */
+  expires_at: number;
+}
+
+// Persisted in sessionStorage, which is a deliberate and narrow exception to CLAUDE.md
+// §7's "no localStorage/sessionStorage" rule (ADR-048). That rule is about UI state that
+// must be DERIVED rather than remembered; a sign-in is not derived state. Without it the
+// module variable resets on every reload, and since this ships as a static export, typing
+// /manager into the address bar is a reload -- so every hard navigation would sign the
+// user out and bounce them to /login. sessionStorage rather than localStorage so the
+// session ends with the tab, and the value is a server-issued token that the server
+// re-validates (restoreSession) rather than a role string the client can edit into
+// whatever it likes.
+const SESSION_KEY = "pulsetwin.session";
+
+function readStoredSession(): Session | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as Session;
+    if (!s?.token || !ROLE_ORDER.includes(s.role)) return null;
+    if (typeof s.expires_at === "number" && s.expires_at * 1000 <= Date.now()) return null;
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredSession(s: Session | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (s) window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(s));
+    else window.sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* private-mode or blocked storage: the in-memory session below still works for
+       this page view, it just will not survive a reload. Never fatal. */
+  }
+}
+
+let session: Session | null = readStoredSession();
+let viewRole: Role | null = null;
+
+export function getSession(): Session | null {
+  return session;
+}
+
+/** The role every request declares: the page's pinned persona, else the session's. */
+export function getRole(): Role {
+  return viewRole ?? session?.role ?? "supervisor";
+}
+
+/**
+ * Pin the acting persona for the mounted page.
+ *
+ * Clamped to the session: a page may ask to speak as a role at or below what the server
+ * granted (that is /ops's "Viewing as" demo, and /copilot pinning `manager`), and a
+ * request for anything above it is ignored rather than honoured. Before sessions this
+ * function was the only thing deciding the role header, so calling it WAS the privilege
+ * grant -- which is exactly why an anonymous visitor could reach leadership data.
+ */
+export function setRole(role: Role): void {
+  const ceiling: Role = session?.role ?? "supervisor";
+  viewRole = roleAtLeast(role, ceiling) ? ceiling : role;
+}
+
+/** Drop the page-pinned persona and fall back to the session's own role. */
+export function clearViewRole(): void {
+  viewRole = null;
+}
+
 // serve/routers/auth_demo.py -- checked server-side (not a client-JS credential check
-// anyone could read out of the bundle), but still no session/token: a correct login just
-// tells the caller which role to setRole() into, same mechanism as before this existed.
-export interface LoginResult { ok: true; role: Role }
-export const login = (username: string, password: string) =>
-  post<LoginResult>("/api/auth/login", { username, password });
+// anyone could read out of the bundle) and now issuing a session token the API validates
+// on every request that carries it.
+export interface LoginResult {
+  ok: true;
+  role: Role;
+  token: string;
+  user: string;
+  expires_at: number;
+}
+
+export async function login(username: string, password: string): Promise<Session> {
+  const r = await post<LoginResult>("/api/auth/login", { username, password });
+  session = { role: r.role, token: r.token, user: r.user, expires_at: r.expires_at };
+  viewRole = null;
+  writeStoredSession(session);
+  return session;
+}
+
+/** End the session server-side too, so the token stops working, not just this tab. */
+export async function logout(): Promise<void> {
+  const token = session?.token;
+  session = null;
+  viewRole = null;
+  writeStoredSession(null);
+  if (!token) return;
+  try {
+    const base = await apiBase();
+    await fetch(`${base}/api/auth/logout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-PulseTwin-Token": token },
+    });
+  } catch {
+    /* Signed out locally regardless -- a token the server never heard about expires on
+       its own, and refusing to clear the client state on a network blip would strand the
+       user in a session they explicitly ended. */
+  }
+}
+
+/**
+ * Re-validate a restored token against the server. Returns the live session or null.
+ *
+ * This is what makes expiry and sign-out real rather than advisory: a token sitting in
+ * sessionStorage proves nothing until the server says it still resolves to a role.
+ */
+export async function restoreSession(): Promise<Session | null> {
+  const stored = session;
+  if (!stored) return null;
+  try {
+    const base = await apiBase();
+    const r = await fetch(`${base}/api/auth/session`, {
+      headers: { "X-PulseTwin-Token": stored.token },
+    });
+    if (!r.ok) {
+      session = null;
+      viewRole = null;
+      writeStoredSession(null);
+      return null;
+    }
+    const body = (await r.json()) as { role: Role; user: string; expires_at: number };
+    session = { ...stored, role: body.role, user: body.user, expires_at: body.expires_at };
+    writeStoredSession(session);
+    return session;
+  } catch {
+    // The API being unreachable is not proof the session is bad. Keep it and let the
+    // OfflineBanner say what is actually wrong, rather than signing the user out
+    // because the backend restarted.
+    return stored;
+  }
+}
 
 function authHeaders(): Record<string, string> {
-  return {
-    "X-PulseTwin-Role": currentRole,
-    "X-PulseTwin-User": `demo-${currentRole}`,
+  const role = getRole();
+  const headers: Record<string, string> = {
+    "X-PulseTwin-Role": role,
+    "X-PulseTwin-User": session?.user ?? `demo-${role}`,
   };
+  if (session) headers["X-PulseTwin-Token"] = session.token;
+  return headers;
 }
 
 // Runtime config, not build-time (ADR-028). Repointing the UI at a different backend

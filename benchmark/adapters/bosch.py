@@ -109,7 +109,6 @@ class BoschAdapter(DatasetAdapter):
         total = len(idr)
         pos_n = max(1, round(sample_size * len(pos) / total)) if len(pos) else 0
         neg_n = max(1, sample_size - pos_n)
-        rng = np.random.default_rng(seed)
         pos_ids = pos[EXPECTED_ID_COL].sample(
             n=min(pos_n, len(pos)), random_state=seed).tolist() if len(pos) else []
         neg_ids = neg[EXPECTED_ID_COL].sample(
@@ -157,7 +156,6 @@ class BoschAdapter(DatasetAdapter):
         # row granularity (a unit touches many stations, one per feature column) -- report
         # the line/station of the feature with the most non-null coverage as a
         # representative value, and say so plainly rather than picking one silently.
-        parsed = [parse_feature_name(c) for c in feature_cols]
         non_null_counts = df[feature_cols].notna().sum() if feature_cols else pd.Series(dtype=int)
         rep_col = non_null_counts.idxmax() if len(non_null_counts) else None
         rep = parse_feature_name(rep_col) if rep_col else None

@@ -246,7 +246,7 @@ function Turn({ turn, phases }: { turn: TriageRun; phases: string[] }) {
       </div>
 
       {/* the agent's turn */}
-      <div className="rounded-lg border border-line bg-surface/60 p-3">
+      <div className="rounded-lg border border-line bg-surface-2 p-3">
         {turn.intent === "incident" &&
           (turn.progress?.agents?.length || turn.agents_used?.length) && (
             <AgentTrail

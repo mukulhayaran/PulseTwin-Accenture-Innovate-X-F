@@ -38,7 +38,7 @@ export default function EscalationChain({
                   ? "border-danger/50 bg-danger/[0.09]"
                   : passed
                     ? "border-line-strong bg-surface-2"
-                    : "border-line bg-surface-2/40"
+                    : "border-line bg-surface-2"
               )}
             >
               <div
@@ -51,7 +51,7 @@ export default function EscalationChain({
               </div>
               <div
                 className={cn(
-                  "text-numeric text-xs font-medium",
+                  "text-numeric text-xs font-bold",
                   active ? "text-danger-fg" : "text-ink-dim"
                 )}
               >
@@ -59,7 +59,7 @@ export default function EscalationChain({
               </div>
             </div>
             {i < levels.length - 1 && (
-              <span aria-hidden className="text-ink-faint/60">
+              <span aria-hidden className="text-ink-disabled">
                 →
               </span>
             )}

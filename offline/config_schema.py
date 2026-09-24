@@ -202,7 +202,7 @@ class ModeB(StrictModel):
             )
         lo, hi = self.rush_units_after_unblock
         if lo > hi or lo < 1:
-            raise ValueError(f"rush_units_after_unblock must be [lo, hi] with 1 <= lo <= hi")
+            raise ValueError("rush_units_after_unblock must be [lo, hi] with 1 <= lo <= hi")
         return self
 
 

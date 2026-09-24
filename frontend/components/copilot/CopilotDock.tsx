@@ -12,8 +12,9 @@
 // job visibly, which is more useful in a demo than hiding the button.
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Role, StartTriageArgs, TriageRun, getRole } from "@/lib/api";
+import { Role, StartTriageArgs, TriageRun, getRole, getSession } from "@/lib/api";
 import { Badge, Button } from "@/components/ui";
 import CopilotComposer from "./CopilotComposer";
 import CopilotThread from "./CopilotThread";
@@ -30,13 +31,17 @@ export default function CopilotDock({
   const [open, setOpen] = useState(false);
   const [threadId, setThreadId] = useState<string | null>(null);
   const [role, setRoleState] = useState<Role | null>(null);
+  const [signedOut, setSignedOut] = useState(false);
   const [lastRun, setLastRun] = useState<TriageRun | null>(null);
   const reduce = useReducedMotion();
 
   // Read on mount rather than at module scope: the role lives in a module variable in
   // lib/api.ts and each persona page sets it in its own mount effect, so reading during
   // render can race that.
-  useEffect(() => setRoleState(getRole()), []);
+  useEffect(() => {
+    setRoleState(getRole());
+    setSignedOut(getSession() === null);
+  }, []);
 
   const permitted = role != null && ALLOWED.includes(role);
 
@@ -81,7 +86,7 @@ export default function CopilotDock({
           >
             <header className="flex items-center justify-between border-b border-line px-3 py-2">
               <div className="flex items-center gap-2">
-                <span className="text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+                <span className="text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
                   Copilot
                 </span>
                 <Badge variant="ai">read-only</Badge>
@@ -108,6 +113,16 @@ export default function CopilotDock({
                     server caps an agent&apos;s acting role at the caller&apos;s own, so a
                     run started here could not read anything you cannot.
                   </p>
+                  {/* The floor view is open to anyone, so this dock is the first place a
+                      signed-out visitor meets the gate. Pointing at /login is a shorter
+                      answer than explaining a role they have no way to acquire from here. */}
+                  {signedOut && (
+                    <Link href="/copilot" className="mt-3 inline-block">
+                      <Button variant="outline" size="xs">
+                        Sign in to use the copilot
+                      </Button>
+                    </Link>
+                  )}
                 </div>
               ) : (
                 <CopilotThread

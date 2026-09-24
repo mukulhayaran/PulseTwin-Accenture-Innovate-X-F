@@ -54,7 +54,7 @@ export default function ModelHealthPanel({
       actions={<Badge variant={variant} dot>{overall}</Badge>}
     >
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <span className="text-numeric min-w-0 truncate text-sm font-semibold text-ink">
+        <span className="text-numeric min-w-0 truncate text-sm font-bold text-ink">
           {cm.id ?? "no champion registered"}
         </span>
         {cm.status && <Badge variant="info">{cm.status}</Badge>}
@@ -74,7 +74,7 @@ export default function ModelHealthPanel({
         <MiniFact label="Training data" value={cm.training_data_range ?? "—"} />
       </div>
 
-      <div className="space-y-1.5 rounded-lg border border-line bg-surface-2/50 p-3 text-2xs">
+      <div className="space-y-1.5 rounded-lg border border-line bg-surface-2 p-3 text-2xs">
         <div className="flex items-center justify-between gap-2">
           <span className="uppercase tracking-[0.14em] text-ink-faint">Fallback</span>
           <span className="flex items-center gap-2">
@@ -124,7 +124,7 @@ function MiniFact({
       <div className="text-2xs uppercase tracking-[0.14em] text-ink-faint">{label}</div>
       <div
         className={cn(
-          "text-numeric truncate text-xs font-semibold",
+          "text-numeric truncate text-xs font-bold",
           tone === "danger" ? "text-danger-fg" : tone === "ok" ? "text-ok-fg" : "text-ink"
         )}
       >

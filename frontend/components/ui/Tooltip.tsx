@@ -51,13 +51,17 @@ export default function Tooltip({
           sideOffset={6}
           collisionPadding={8}
           className={cn(
-            "z-50 max-w-72 rounded-lg border border-line-strong bg-surface px-2.5 py-1.5",
-            "text-2xs leading-relaxed text-ink-dim shadow-pop",
+            // Dark navy, not a white plate: on a white page a white tooltip has to
+            // earn its edge from shadow alone. The dark band is already in the
+            // system (BMW `surface-dark`), so this reuses it rather than inventing
+            // a floating-surface colour.
+            "z-50 max-w-72 border border-surface-dark bg-surface-dark px-3 py-2",
+            "text-2xs leading-relaxed text-on-dark-soft shadow-pop",
             className
           )}
         >
           {content}
-          <RT.Arrow className="fill-surface" width={10} height={5} />
+          <RT.Arrow className="fill-surface-dark" width={10} height={5} />
         </RT.Content>
       </RT.Portal>
     </RT.Root>

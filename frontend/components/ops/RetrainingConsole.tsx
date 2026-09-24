@@ -217,15 +217,15 @@ function CompareTable({
     <table className="w-full border-collapse text-xs">
       <thead>
         <tr className="border-b border-line text-left">
-          <th className="pb-1.5 pr-3 text-2xs font-medium uppercase tracking-[0.12em] text-ink-faint" />
-          <th className="pb-1.5 pr-3 text-right text-2xs font-medium uppercase tracking-[0.12em] text-ink-faint">
+          <th className="pb-1.5 pr-3 text-2xs font-bold uppercase tracking-[0.12em] text-ink-faint" />
+          <th className="pb-1.5 pr-3 text-right text-2xs font-bold uppercase tracking-[0.12em] text-ink-faint">
             Champion
           </th>
-          <th className="pb-1.5 pr-3 text-right text-2xs font-medium uppercase tracking-[0.12em] text-ink-faint">
+          <th className="pb-1.5 pr-3 text-right text-2xs font-bold uppercase tracking-[0.12em] text-ink-faint">
             Challenger
           </th>
           {hasDelta && (
-            <th className="pb-1.5 text-right text-2xs font-medium uppercase tracking-[0.12em] text-ink-faint">
+            <th className="pb-1.5 text-right text-2xs font-bold uppercase tracking-[0.12em] text-ink-faint">
               Δ
             </th>
           )}

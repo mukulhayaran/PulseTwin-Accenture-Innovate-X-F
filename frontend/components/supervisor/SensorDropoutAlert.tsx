@@ -42,7 +42,7 @@ export default function SensorDropoutAlert({ dropouts }: { dropouts: Dropout[] }
                 animate={{ opacity: [1, 0.3, 1] }}
                 transition={{ duration: 1.5, repeat: Infinity }}
               />
-              <span className="text-xs font-semibold text-warn-fg">
+              <span className="text-xs font-bold text-warn-fg">
                 {dropouts.length} sensor dropout{dropouts.length > 1 ? "s" : ""} active
               </span>
               <span className="text-2xs text-ink-faint">

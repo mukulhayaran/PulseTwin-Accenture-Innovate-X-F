@@ -22,7 +22,6 @@ from pathlib import Path
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")  # ADR-016 -- before sklearn imports
 
-import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from offline.config_schema import load_economics_config, load_plant_config  # noqa: E402
@@ -146,9 +145,9 @@ def print_report(m: dict) -> bool:
     print(f"    budget-constrained p >= {t['budget_constrained']:.4f}"
           f"  -> {t['alerts_per_shift_at_budget']:.1f} alerts/shift, "
           f"recall {t['recall_at_budget']:.0%}, precision {t['precision_at_budget']:.0%}")
-    print(f"    NOTE: at p* the model flags ~every unit. 'recall 100%' is arithmetic,")
-    print(f"          not an operating policy -- nobody answers 431 alerts a shift.")
-    print(f"    The decision a manager CAN make -- double the alert budget:")
+    print("    NOTE: at p* the model flags ~every unit. 'recall 100%' is arithmetic,")
+    print("          not an operating policy -- nobody answers 431 alerts a shift.")
+    print("    The decision a manager CAN make -- double the alert budget:")
     print(f"      recall {t['recall_at_budget']:.0%} -> {t['doubled_budget_recall']:.0%}"
           f"   value +${t['marginal_value_of_doubling']:,.0f}/yr"
           f"   response cost +${t['marginal_cost_of_doubling']:,.0f}/yr")

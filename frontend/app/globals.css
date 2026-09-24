@@ -5,7 +5,11 @@
    Docker build in CLAUDE.md §5 still works with zero external requests. The
    @theme block below already named these as the intended faces; this is what
    makes that intent actually render instead of silently falling back to
-   whatever system font the OS substitutes. */
+   whatever system font the OS substitutes.
+
+   Inter is the documented open-source substitute for BMW Type Next Latin, which is
+   licensed to BMW and not published as a web font. The variable file carries the full
+   100-900 range, so both ends of the 700/300 pair below come from one download. */
 @font-face {
   font-family: "Inter";
   src: url("/fonts/Inter-Variable.woff2") format("woff2");
@@ -25,65 +29,110 @@
    PulseTwin design system  —  Tailwind v4, CSS-first.
    Replaces tailwind.config.ts (deleted; v4 has no JS config).
 
-   Dark control-room surfaces with SaaS-product polish. The signal hues keep
-   their CONTRACT meanings and must not be repurposed:
+   BMW corporate-automotive language (ADR-047): light canvas, dark navy reserved
+   for hero bands, BMW blue as the single primary action colour, 0px corners
+   everywhere, no drop shadow on cards, and a 700/300 weight pair with 500 absent.
+
+   The signal hues keep their CONTRACT meanings and must not be repurposed:
      ok/green  = measured, healthy       warn/amber  = inferred, warning
      danger/red = alert, defect          ai/purple   = model prediction
-   See CLAUDE.md §3 (the three contracts) before changing any of them.
+   See CLAUDE.md §3 (the three contracts) before changing any of them. What changed
+   in the light pass is only their VALUE, not their meaning: every `-fg` variant is
+   now DARKENED for AA on white, where the dark theme brightened it for AA on black.
 
    Every value here is mirrored in lib/theme.ts for Recharts, which takes
    hex strings and cannot read CSS custom properties.
    ========================================================================= */
 
 @theme {
-  /* ---- surfaces: five layers, cool-neutral rather than blue-black -------- */
-  --color-canvas: #0a0c11;
-  --color-surface: #111419;
-  --color-surface-2: #171b22;
-  --color-surface-3: #1e232c;
-  --color-line: #232834;
-  --color-line-strong: #2f3644;
+  /* ---- surfaces ---------------------------------------------------------
+         BMW builds depth from colour-block contrast, not elevation, so a panel
+         is white-on-white separated by a hairline rather than a lifted plate.
+         The greys below are BMW's: canvas #ffffff, card #fafafa, soft #f7f7f7,
+         strong #ebebeb. `surface` deliberately equals `canvas` -- the hairline
+         is what makes a panel a panel. */
+  --color-canvas: #ffffff;
+  --color-surface: #ffffff;
+  --color-surface-2: #fafafa;
+  --color-surface-3: #f0f0f0;
+  --color-line: #e6e6e6;
+  --color-line-strong: #cccccc;
 
-  /* ---- ink: three weights. The old palette had ONE muted value doing both
-         "secondary text" and "faint label", which is why body copy read as
-         disabled. -------------------------------------------------------- */
-  --color-ink: #e6e9ef;
-  --color-ink-dim: #a0a8b4;
-  /* #6b7482 looked right but measured 3.66:1 on surface-2 and 3.91:1 on surface --
-     below WCAG AA's 4.5:1, and this token carries every panel title, axis label and
-     table header in the product. #88919f clears AA on all three surfaces (5.42-6.15)
-     while staying clearly a step below ink-dim. */
-  --color-ink-faint: #88919f;
+  /* ---- the dark band ----------------------------------------------------
+         The ONE dark surface in the system, and it is a band, not a theme:
+         hero bands, the pre-footer CTA and the sidebar rail. Warm navy, never
+         pure black. Section rhythm must alternate light -> dark -> light; two
+         consecutive dark bands are a system violation. */
+  --color-surface-dark: #1a2129;
+  --color-surface-dark-2: #262e38;
+  --color-on-dark: #ffffff;
+  --color-on-dark-soft: #bbbbbb;
+  --color-line-on-dark: #39424e;
 
-  /* ---- signals: solid for fills/borders, -fg brightened for text on dark - */
-  --color-ok: #10b981;
-  --color-ok-fg: #34d399;
-  --color-danger: #ef4444;
-  --color-danger-fg: #f87171;
-  --color-warn: #f59e0b;
-  --color-warn-fg: #fbbf24;
-  --color-info: #3b82f6;
-  --color-info-fg: #60a5fa;
-  --color-ai: #8b5cf6;
-  --color-ai-fg: #a78bfa;
+  /* ---- ink: three weights, all AA or better on white --------------------
+         #262626 13.9:1 · #4a4a4a 8.9:1 · #757575 4.6:1. The faint step carries
+         every panel title, axis label and table header in the product, so it is
+         pinned just over AA's 4.5:1 rather than chosen by eye -- BMW's own
+         #9a9a9a muted-soft measures 2.8:1 and is used only for disabled text. */
+  --color-ink: #262626;
+  --color-ink-dim: #4a4a4a;
+  --color-ink-faint: #757575;
+  --color-ink-disabled: #9a9a9a;
 
-  /* The old bg- / txt- / signal- aliases that carried the pages through the
-     migration lived here. Every view now uses the tokens above, so they are
-     gone -- keeping them would have left two names for one colour. */
+  /* ---- BMW blue: the single primary action colour ----------------------- */
+  --color-primary: #1c69d4;
+  --color-primary-active: #0653b6;
+  --color-on-primary: #ffffff;
 
-  /* ---- type scale: replaces 142 ad-hoc text-[Npx] values ----------------
-         Bumped one notch up across the board (2026-09-21) -- the original scale
-         bottomed out at 10px for table meta and 14px for default body copy, which
-         read as too small even for a dense control-room UI. Every step moved, so
-         relative hierarchy is unchanged; only the floor moved up. */
+  /* ---- signals ----------------------------------------------------------
+         Solid values are for fills, borders, dots and chart marks and are
+         darkened from the dark theme's so a 1px line still reads on white.
+         The `-fg` values are for TEXT and clear AA on white and on their own
+         10% tint: ok 6.4:1 · danger 6.0:1 · warn 7.0:1 · info 6.9:1 · ai 6.7:1. */
+  --color-ok: #16a34a;
+  --color-ok-fg: #166534;
+  --color-danger: #dc2626;
+  --color-danger-fg: #b91c1c;
+  --color-warn: #d97706;
+  --color-warn-fg: #92400e;
+  /* info IS BMW blue -- the corporate system has exactly one action colour, so
+     selection/info and the primary CTA must not be two different blues. */
+  --color-info: #1c69d4;
+  --color-info-fg: #0653b6;
+  --color-ai: #7c3aed;
+  --color-ai-fg: #6d28d9;
+
+  /* ---- signals inside a dark band --------------------------------------
+         The `-fg` pair above is darkened for white and goes muddy on navy. The
+         dark band is a real surface in this system (sidebar rail, hero, tooltip,
+         chart tip), so it gets its own text-weight pair rather than call sites
+         reaching for a raw hex. All clear AA on #1a2129: 7.0-9.4:1. */
+  --color-ok-on-dark: #4ade80;
+  --color-danger-on-dark: #f87171;
+  --color-warn-on-dark: #fbbf24;
+  --color-info-on-dark: #8ab4f0;
+  --color-ai-on-dark: #b69dfa;
+
+  /* ---- the M tricolor ---------------------------------------------------
+         Divider and badge only, never a CTA fill. Present so the `m-stripe`
+         utility below has named stops rather than inline hex. */
+  --color-m-blue-light: #0066b1;
+  --color-m-blue-dark: #1c69d4;
+  --color-m-red: #e22718;
+
+  /* ---- type scale -------------------------------------------------------
+         Unchanged from the dark build: the relative hierarchy is already tuned
+         for a dense control-room body, and BMW's own scale is editorial (64/48/
+         32px display) rather than dashboard. The display end is reached through
+         text-3xl/2xl; what BMW contributes here is WEIGHT and TRACKING, not size. */
   --text-2xs: 0.6875rem; /* 11px — dense table meta, badges           */
   --text-2xs--line-height: 0.9375rem;
   --text-xs: 0.75rem; /* 12px — the workhorse label size           */
   --text-xs--line-height: 1.0625rem;
   --text-sm: 0.875rem; /* 14px — body copy in panels                */
-  --text-sm--line-height: 1.25rem;
+  --text-sm--line-height: 1.375rem;
   --text-base: 0.9375rem; /* 15px — default                           */
-  --text-base--line-height: 1.375rem;
+  --text-base--line-height: 1.4375rem;
   --text-lg: 1.125rem; /* 18px — sub-headings, emphasised facts     */
   --text-lg--line-height: 1.5rem;
   --text-xl: 1.375rem; /* 22px — panel stat                         */
@@ -91,61 +140,101 @@
   --text-2xl: 1.8125rem; /* 29px — KPI value                          */
   --text-2xl--line-height: 2.125rem;
   --text-3xl: 2.375rem; /* 38px — landing headline                   */
-  --text-3xl--line-height: 2.75rem;
+  --text-3xl--line-height: 2.625rem;
+  --text-4xl: 3.25rem; /* 52px — hero band headline                 */
+  --text-4xl--line-height: 1.05;
 
-  /* ---- fonts: self-hosted via @font-face above, not next/font (no build-time
-         fetch, works air-gapped). Before that @font-face existed, this line named
-         Inter but nothing ever served it, so every machine rendered whatever
-         system face ui-sans-serif resolved to instead -- the fallback chain
-         below still exists for the split second before the local woff2 parses,
-         and as a floor if a static-export path ever serves public/ wrong. ---- */
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
 
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
-  --radius-xl: 14px;
+  /* ---- radius: the binary hierarchy ------------------------------------
+         Rectangular for everything, circular only for avatars, status dots and
+         icon buttons. These four names are kept so no call site needs editing;
+         they all resolve to 0. A new component should reach for `rounded-none`
+         or `rounded-full` and nothing in between. */
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
 
-  --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.4);
-  --shadow-raised: 0 2px 8px -2px rgb(0 0 0 / 0.5);
-  --shadow-pop: 0 12px 32px -8px rgb(0 0 0 / 0.7);
+  /* ---- elevation --------------------------------------------------------
+         Cards get NO shadow: depth is colour-block contrast plus the hairline.
+         `shadow-pop` survives for things that genuinely float free of the
+         document -- popover, tooltip, toast, dock -- which BMW's card rule does
+         not cover and its Known Gaps explicitly leaves unextracted. */
+  --shadow-panel: none;
+  --shadow-raised: none;
+  --shadow-pop: 0 8px 24px -6px rgb(26 33 41 / 0.16), 0 2px 6px -2px rgb(26 33 41 / 0.08);
 
   --ease-soft: cubic-bezier(0.2, 0.8, 0.25, 1);
+
+  /* Section rhythm: 80px, tighter than BMW M's 96px. */
+  --spacing-section: 5rem;
 }
 
 /* ============================================================================
    Base layer
    ========================================================================= */
 
-:root {
-  color-scheme: dark;
-  scroll-behavior: smooth;
-}
+/* EVERYTHING below goes in `@layer base`, and that is load-bearing rather than
+   tidiness. Tailwind v4 emits its utilities inside `@layer utilities`, and an
+   UNLAYERED rule beats any layered one regardless of specificity -- so an
+   unlayered `h2 { color: var(--color-ink) }` silently overrides `text-on-dark`
+   and renders every heading in a dark band invisible, and an unlayered
+   `.text-2xs { font-weight: 400 }` overrides `font-bold` on every badge, panel
+   title and table header in the product. Both of those shipped for exactly one
+   screenshot. Layered, the cascade runs the right way round: base loses to
+   utilities, so these are defaults a class can still override. */
+@layer base {
+  :root {
+    color-scheme: light;
+    scroll-behavior: smooth;
+  }
 
-body {
-  background: var(--color-canvas);
-  color: var(--color-ink);
-  font-family: var(--font-sans);
-  /* tabular numerals: every column of figures lines up, everywhere */
-  font-feature-settings: "tnum" 1, "zero" 1, "cv05" 1;
-  -webkit-font-smoothing: antialiased;
-}
+  body {
+    background: var(--color-canvas);
+    color: var(--color-ink-dim);
+    font-family: var(--font-sans);
+    /* Light 300 is the running-text weight; display type opts up to 700 per
+       element. Weight 500 is absent from the system by design -- if a component
+       needs emphasis it takes 700, not a middle step. */
+    font-weight: 300;
+    /* tabular numerals: every column of figures lines up, everywhere */
+    font-feature-settings: "tnum" 1, "zero" 1, "cv05" 1;
+    -webkit-font-smoothing: antialiased;
+  }
 
-/* Numerals are monospace throughout -- CLAUDE.md §7. Applied per-element via
-   .font-mono rather than globally so prose stays in the sans face. */
+  /* Below ~13px, Light 300 stops being editorial and starts being unreadable --
+     it is hinted away to almost nothing at 11px on a white ground. The dense UI
+     sizes therefore sit at 400, which is the same lane BMW gives `caption` and
+     `nav-link`. Anything that wants emphasis at these sizes still takes 700. */
+  .text-2xs,
+  .text-xs {
+    font-weight: 400;
+  }
+
+  /* Headings are display type: 700, never the absent 500. */
+  h1,
+  h2,
+  h3,
+  h4,
+  th {
+    font-weight: 700;
+    color: var(--color-ink);
+  }
+}
 
 ::selection {
-  background: color-mix(in oklab, var(--color-info) 35%, transparent);
+  background: color-mix(in oklab, var(--color-primary) 22%, transparent);
   color: var(--color-ink);
 }
 
 /* ---- focus: the app previously had ZERO focus styles. This is the floor;
        components may add their own ring on top. ------------------------- */
 :focus-visible {
-  outline: 2px solid var(--color-info-fg);
+  outline: 2px solid var(--color-primary);
   outline-offset: 2px;
-  border-radius: var(--radius-sm);
+  border-radius: 0;
 }
 :focus:not(:focus-visible) {
   outline: none;
@@ -160,11 +249,10 @@ body {
 }
 ::-webkit-scrollbar-thumb {
   background: var(--color-line-strong);
-  border-radius: 999px;
   border: 2px solid var(--color-canvas);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3d4657;
+  background: #b0b0b0;
 }
 
 /* Recharts injects its own focus outline on every bar/cell; suppress it and
@@ -190,24 +278,33 @@ body {
    ========================================================================= */
 
 /* The provenance hatch. A DATA CONTRACT (CLAUDE.md §3): inferred values must
-   never be able to read as measured. Restyleable, not removable. */
+   never be able to read as measured. Restyleable, not removable. The opacity is
+   raised from the dark build's 28% -- an amber hatch that read clearly against
+   #111419 nearly vanishes against #ffffff. */
 @utility hatch-inferred {
   background-image: repeating-linear-gradient(
     45deg,
     transparent,
     transparent 5px,
-    color-mix(in oklab, var(--color-warn) 28%, transparent) 5px,
-    color-mix(in oklab, var(--color-warn) 28%, transparent) 10px
+    color-mix(in oklab, var(--color-warn) 42%, transparent) 5px,
+    color-mix(in oklab, var(--color-warn) 42%, transparent) 10px
   );
 }
 
-/* Panel chrome, previously the string "bg-bg-card border border-bg-surface
-   rounded p-3" copy-pasted into 13 places. */
+/* Panel chrome. BMW: white plate, 1px hairline, square corners, no shadow. */
 @utility panel-surface {
   background: var(--color-surface);
   border: 1px solid var(--color-line);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-panel);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* The same plate inside a dark band. */
+@utility panel-surface-dark {
+  background: var(--color-surface-dark-2);
+  border: 1px solid var(--color-line-on-dark);
+  border-radius: 0;
+  box-shadow: none;
 }
 
 /* Fades the bottom edge of a scroll region so cut-off rows read as "more
@@ -216,10 +313,35 @@ body {
   mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent 100%);
 }
 
+/* Monospace figures, CLAUDE.md §7. Tracking is 0: BMW Type Next works on a wide
+   body and the system takes no negative letter-spacing anywhere, so the dark
+   build's -0.01em is gone. */
 @utility text-numeric {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
+}
+
+/* The uppercase tracked inline link -- "LEARN MORE ›". 13px / 700 / 1.5px. */
+@utility label-upper {
+  font-size: 0.8125rem;
+  line-height: 1.3;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.115em;
+}
+
+/* The M tricolor stripe. Divider and badge role ONLY -- never a CTA fill, and
+   never in the corporate main flow. Here it marks the model/AI tier, which is
+   this product's equivalent of an M-badged context. */
+@utility m-stripe {
+  height: 4px;
+  background: linear-gradient(
+    to right,
+    var(--color-m-blue-light) 0 33.33%,
+    var(--color-m-blue-dark) 33.33% 66.66%,
+    var(--color-m-red) 66.66% 100%
+  );
 }
 
 /* Slowly turning hub spokes on the hero chassis. Plain CSS, not motion: framer-motion

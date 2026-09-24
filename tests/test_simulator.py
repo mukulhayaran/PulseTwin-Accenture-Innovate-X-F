@@ -18,7 +18,6 @@ from offline.simulator.inspection import inspect
 from offline.simulator.line_model import (
     ALL_STATES,
     BLOCKED,
-    DOWN,
     STARVED,
     LineSimulator,
     ground_truth_bottleneck,

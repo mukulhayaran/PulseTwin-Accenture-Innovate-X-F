@@ -7,13 +7,34 @@ without saying so.
 
 ## Authentication
 
-**Built:** headers `X-PulseTwin-Role: supervisor | manager | leadership | system` and
+**Built, two layers.**
+
+*The header.* `X-PulseTwin-Role: supervisor | manager | leadership | system` and
 `X-PulseTwin-User`, read by `serve/middleware/auth.py`. The latter attributes manual
-decisions and defaults to `demo-<role>` when omitted. No password, token, or session is
-validated. This is
-authorization infrastructure without authentication in front of it — deliberately, per
-the finals brief's anti-pattern guidance ("do not implement full OAuth/SSO — a role
-header is sufficient for the demo").
+decisions and defaults to `demo-<role>` when omitted. A caller that presents nothing
+else is trusted on its own word, exactly as before — deliberately, per the finals brief's
+anti-pattern guidance ("do not implement full OAuth/SSO — a role header is sufficient for
+the demo").
+
+*The session (ADR-048).* `POST /api/auth/login` checks a fixed demo credential per role
+(`serve/routers/auth_demo.py`, constant-time compare) and mints an opaque 256-bit token
+held in `serve/session_store.py` with an 8-hour TTL. `GET /api/auth/session` validates
+one; `POST /api/auth/logout` revokes it. When a request carries `X-PulseTwin-Token`, the
+**session decides the role and the declared header cannot raise it** — a declared role at
+or below the session's is honoured (the deliberate privilege drop `/ops`'s "Viewing as"
+selector performs), anything above it is ignored, and an unknown or expired token is a
+`401` rather than a quiet fall-back to the header. `get_user` takes the session's user, so
+a token-holder cannot relabel who acted in the audit trail.
+
+**What this does and does not close.** The UI's own path through the app is now a role the
+*server* issued and can revoke, which is what makes "a manager cannot open the leadership
+view" enforceable rather than a claim the client makes about itself. It does **not** close
+the header seam: a caller that presents no token and sets `X-PulseTwin-Role` by hand
+behaves exactly as it did before sessions existed, and `tests/test_auth_session.py` pins
+that on purpose. The store is also process-local, which is right for the demo's
+`--workers 1` deployment and wrong for several replicas — the fix there is the shared
+store or the stateless JWT below, not a larger dict. Full authentication is still the
+upgrade path, not the current state.
 
 **Production upgrade path:** replace the header with a JWT issued by the plant's OIDC
 provider (Azure AD, Okta), validated with `python-jose` (already on the import
@@ -39,6 +60,25 @@ no router code changes — only this one function's body does. `require_role`'s 
 ## Authorization (RBAC)
 
 Strict hierarchy — each role can do everything the one before it can (`serve/middleware/auth.py`).
+
+**The hierarchy governs the API. It does not govern which view you may open.** Those are
+two questions and ADR-048 separates them: `leadership` may *call* `POST /api/whatif`, and
+`leadership` may not *enter* `/manager`. Persona views are separations of duty, which a
+rank comparison cannot express — under the previous entry check a leadership login walked
+into `/manager` and `system` walked into all four. `frontend/lib/routeAccess.ts` is the
+single exact-match table both the route guard and the navigation rail read.
+
+| View | May enter |
+|---|---|
+| `/overview`, `/supervisor` | anyone, signed in or not — the floor view is where an unauthenticated visitor lands, and every endpoint it calls is already at the API's own default role |
+| `/manager` | `manager` |
+| `/leadership` | `leadership` |
+| `/ops` | `system` |
+| `/copilot` | `manager`, `leadership`, `system` — the three its own endpoints accept |
+
+A signed-out visitor acts as `supervisor` (matching this middleware's own default: least
+access, never most) and is redirected to `/login?next=<path>` off any gated view. A
+signed-in role on the wrong view gets `AccessRestricted`, not a redirect.
 
 **This table is generated from the actual `Depends(require_role(...))` declarations in
 `serve/`, not from intent.** Verify it with
@@ -69,7 +109,10 @@ of today's behaviour, not "supervisor role required." Closing it is a one-line d
 per route; it has not been done because with no authentication in front of the header
 (see above) a read gate would be decorative. **When real authentication lands, gate these
 reads in the same change** — otherwise the RBAC story is stronger on paper than in the
-routing table.
+routing table. ADR-048's session token narrows this: a request that carries one is
+authenticated, so gating these reads would now mean something for the UI's path. It is
+still not done, because the un-tokened header path remains open by design and a gate that
+any caller can step around by dropping a header is the decoration this paragraph is about.
 
 Enforcement of what *is* gated is server-side only and cannot be bypassed from the client
 — `require_role` raises `403` regardless of what the UI renders, and

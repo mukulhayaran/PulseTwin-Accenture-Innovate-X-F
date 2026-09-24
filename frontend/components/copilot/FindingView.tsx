@@ -29,7 +29,7 @@ export const STATUS_VARIANT: Record<
 
 export function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mb-1.5 text-2xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+    <div className="mb-1.5 text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
       {children}
     </div>
   );
@@ -43,7 +43,7 @@ export function ClaimRow({ claim }: { claim: TriageClaim }) {
     <li
       className={cn(
         "rounded-md border px-2.5 py-1.5",
-        redacted ? "border-danger/30 bg-danger/[0.05]" : "border-line bg-surface-2/50"
+        redacted ? "border-danger/30 bg-danger/[0.05]" : "border-line bg-surface-2"
       )}
     >
       <div className="flex items-start justify-between gap-3">
@@ -119,7 +119,7 @@ export default function FindingView({ run }: { run: TriageRun }) {
   if (run.status === "rejected") {
     return (
       <div className="rounded-lg border border-danger/35 bg-danger/[0.07] p-3">
-        <p className="mb-1 text-xs font-semibold text-danger-fg">
+        <p className="mb-1 text-xs font-bold text-danger-fg">
           Finding discarded — it could not be verified
         </p>
         <p className="text-numeric text-2xs text-ink-dim">
@@ -137,7 +137,7 @@ export default function FindingView({ run }: { run: TriageRun }) {
   if (run.status === "failed") {
     return (
       <div className="rounded-lg border border-danger/35 bg-danger/[0.07] p-3">
-        <p className="mb-1 text-xs font-semibold text-danger-fg">Run failed</p>
+        <p className="mb-1 text-xs font-bold text-danger-fg">Run failed</p>
         <p className="text-numeric text-2xs text-ink-dim">{run.error || "unknown"}</p>
       </div>
     );

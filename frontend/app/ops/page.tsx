@@ -6,6 +6,8 @@ import {
   getAuditLog, getHealth, getIngestionLag, getModelHealth, getModelRegistry,
   getRole, getStations, getSystemHealth, setRole, type Role,
 } from "@/lib/api";
+import { usePersonaAccess } from "@/lib/usePersonaAccess";
+import AccessRestricted from "@/components/shared/AccessRestricted";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import RoleGate from "@/components/shared/RoleGate";
 import { useAuditToast } from "@/components/shared/AuditToast";
@@ -30,6 +32,12 @@ export default function OpsPage() {
   // live, exactly the story `docs/FINALS_DEMO_SCRIPT.md` Act 4 wants to tell.
   const [role, setRoleState] = useState<Role>(() => (getRole() === "supervisor" ? "leadership" : getRole()));
 
+  // Entry needs a `system` session (lib/routeAccess.ts). The selector below then drops
+  // BELOW that at will -- lib/api.ts::setRole clamps to the session's role, so dropping
+  // works and climbing back above `system` is not possible even from here.
+  const access = usePersonaAccess("system");
+  const granted = access.status === "granted";
+
   const [system, setSystem] = useState<any>(null);
   const [lag, setLag] = useState<any>(null);
   const [health, setHealth] = useState<any>(null);
@@ -40,10 +48,16 @@ export default function OpsPage() {
   const { show, ToastElement } = useAuditToast();
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => { setRole(role); }, [role]);
-  useEffect(() => { getStations(plant).then((r) => setStations(r.stations)); }, [plant]);
+  // Re-applied when `granted` flips: usePersonaAccess pins the page to `system` once it
+  // resolves, which would otherwise silently overwrite a selector choice made first.
+  useEffect(() => { if (granted) setRole(role); }, [role, granted]);
+  useEffect(() => {
+    if (!granted) return;
+    getStations(plant).then((r) => setStations(r.stations)).catch(() => setStations([]));
+  }, [plant, granted]);
 
   const poll = async () => {
+    if (!granted) return;
     const atLeastManager = ROLES.indexOf(role) >= ROLES.indexOf("manager");
     const atLeastLeadership = ROLES.indexOf(role) >= ROLES.indexOf("leadership");
 
@@ -74,10 +88,15 @@ export default function OpsPage() {
     pollRef.current = setInterval(poll, POLL_MS);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plant, role]);
+  }, [plant, role, granted]);
 
   const championMetrics = registry?.history?.find((h: any) => h.status === "champion")?.metrics;
   const hasChallenger = !!registry?.history?.some((h: any) => h.status === "challenger");
+
+  if (access.status === "pending" || access.status === "anonymous") return null;
+  if (access.status === "denied") {
+    return <AccessRestricted required={["system"]} current={access.role} />;
+  }
 
   return (
     <AppShell
@@ -91,7 +110,7 @@ export default function OpsPage() {
       controls={
         <Tooltip content="Drops the client's declared role. Panels below gate themselves off and the API returns 403 for anything above this level — the gate is server-side, this only mirrors it.">
           <label className="flex shrink-0 cursor-help items-center gap-2 rounded-lg border border-warn/35 bg-warn/[0.06] px-2.5 py-1">
-            <span className="text-2xs font-medium uppercase tracking-[0.14em] text-warn-fg">
+            <span className="text-2xs font-bold uppercase tracking-[0.14em] text-warn-fg">
               Viewing as
             </span>
             <Select

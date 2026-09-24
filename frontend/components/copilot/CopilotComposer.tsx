@@ -25,14 +25,25 @@ export default function CopilotComposer({
   ask,
   busy,
   compact,
+  draft,
 }: {
   plant: string;
   ask: Ask;
   busy: boolean;
   compact?: boolean;
+  /** Seeds the box — the shell's search sends a typed question here via `#q=`. */
+  draft?: string;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(draft ?? "");
   const [bn, setBn] = useState<Bottleneck | null>(null);
+
+  // Seed, do not control: the box stays the user's once they touch it, so arriving
+  // with a draft still lets them edit or clear it before sending. Firing `ask` from
+  // here instead would dispatch a run the moment the page mounted, which is a
+  // surprising thing for a search box to do.
+  useEffect(() => {
+    if (draft) setText(draft);
+  }, [draft]);
 
   useEffect(() => {
     let cancelled = false;

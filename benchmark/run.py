@@ -19,7 +19,6 @@ import argparse
 import os
 import secrets
 import sys
-import time
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")  # ADR-016 convention, before sklearn import
 
