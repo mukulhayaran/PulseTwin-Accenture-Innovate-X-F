@@ -1,6 +1,6 @@
 {
   "plant_id": "plant_a",
-  "git_sha": "f0aa70c1b4a567d07ef9349f3445cae5ab4550cd",
+  "git_sha": "83bfeef42be454ecb204d807149a65f8fd75a179",
   "seeds": [
     42,
     43,
@@ -60,26 +60,26 @@
   ],
   "systems": {
     "watch": {
-      "recall": 0.296,
+      "recall": 0.556,
       "placebo_recall": 0.074,
       "impactful_runs": 8,
-      "impactful_detected": 0,
-      "detected": 8,
+      "impactful_detected": 6,
+      "detected": 15,
       "fault_runs": 27,
-      "median_delay_min": 17.7,
-      "exact_station_share": 1.0,
-      "root_cause_accuracy": 0.75,
+      "median_delay_min": 13.6,
+      "exact_station_share": 0.8,
+      "root_cause_accuracy": 0.8,
       "false_alarms_per_shift_clean": 3.2,
-      "false_alarms_per_shift_all": 3.23,
+      "false_alarms_per_shift_all": 3.04,
       "by_scenario": {
         "buffer_congestion": {
           "runs": 9,
-          "detected": 0,
+          "detected": 6,
           "placebo_detected": 0,
           "median_loss_pct": 77.9,
-          "median_delay_min": null,
-          "root_cause_correct": 0,
-          "root_cause_of": 0
+          "median_delay_min": 13.4,
+          "root_cause_correct": 6,
+          "root_cause_of": 6
         },
         "high_humidity": {
           "runs": 3,
@@ -92,12 +92,12 @@
         },
         "station_breakdown": {
           "runs": 9,
-          "detected": 2,
+          "detected": 3,
           "placebo_detected": 0,
           "median_loss_pct": 2.9,
-          "median_delay_min": 14.0,
+          "median_delay_min": 12.4,
           "root_cause_correct": 0,
-          "root_cause_of": 2
+          "root_cause_of": 3
         },
         "torque_degradation": {
           "runs": 6,
@@ -120,8 +120,8 @@
       "median_delay_min": 9.9,
       "exact_station_share": 0.7,
       "root_cause_accuracy": 0.7,
-      "false_alarms_per_shift_clean": 382.9,
-      "false_alarms_per_shift_all": 358.4,
+      "false_alarms_per_shift_clean": 382.93,
+      "false_alarms_per_shift_all": 325.17,
       "by_scenario": {
         "buffer_congestion": {
           "runs": 9,
@@ -171,8 +171,8 @@
       "median_delay_min": 24.7,
       "exact_station_share": 0.7,
       "root_cause_accuracy": 0.7,
-      "false_alarms_per_shift_clean": 63.46,
-      "false_alarms_per_shift_all": 60.55,
+      "false_alarms_per_shift_clean": 63.47,
+      "false_alarms_per_shift_all": 54.93,
       "by_scenario": {
         "buffer_congestion": {
           "runs": 9,
@@ -214,12 +214,12 @@
     }
   },
   "verdict": [
-    "watch vs threshold: placebo recall 7% vs 41% (detections on a clean line); impactful faults caught 0/8 vs 2/8; FEWER faults detected (8 vs 10); SLOWER or equal median detection (17.7 vs 9.9 min); FEWER false alarms per shift (3.23 vs 358.4); root cause 75% vs 70%.",
-    "watch vs deadband: placebo recall 7% vs 41% (detections on a clean line); impactful faults caught 0/8 vs 2/8; FEWER faults detected (8 vs 10); FASTER median detection (17.7 vs 24.7 min); FEWER false alarms per shift (3.23 vs 60.55); root cause 75% vs 70%."
+    "watch vs threshold: placebo recall 7% vs 41% (detections on a clean line); impactful faults caught 6/8 vs 2/8; MORE faults detected (15 vs 10); SLOWER or equal median detection (13.6 vs 9.9 min); FEWER false alarms per shift (3.04 vs 325.17); root cause 80% vs 70%.",
+    "watch vs deadband: placebo recall 7% vs 41% (detections on a clean line); impactful faults caught 6/8 vs 2/8; MORE faults detected (15 vs 10); FASTER median detection (13.6 vs 24.7 min); FEWER false alarms per shift (3.04 vs 54.93); root cause 80% vs 70%."
   ],
   "not_measured": {
     "containment_and_escape": "single-station incidents are defect-inert in the twin (ADR-055); an escape comparison compares zeros",
     "llm_diagnosis": "provider quota; the deterministic diagnosis is measured"
   },
-  "elapsed_s": 342.6
+  "elapsed_s": 407.2
 }
