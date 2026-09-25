@@ -73,11 +73,14 @@ def hypothesis(detector: str, evidence: dict[str, Any]) -> tuple[str, float, str
                 f"{excess:.1f} pts humidity over ambient / {MAX_HUMIDITY_ADD_PCT:.0f} pts full severity")
     if detector == "starvation":
         share = float(evidence.get("stalled_share") or 0.0)
+        state = str(evidence.get("stalled_state") or "unknown").upper()
+        seen = (f"silent {float(evidence['silent_s']) / 60:.0f} min, last state {state}"
+                if evidence.get("signal") == "silence"
+                else f"station reported {state}; stalled share {share:.2f}")
         if evidence.get("stalled_state") == "down":
-            return ("station_breakdown", min(1.0, share),
-                    f"station reported DOWN; stalled share {share:.2f}")
+            return ("station_breakdown", min(1.0, share), seen)
         return ("buffer_congestion", min(MAX_CONGESTION, share),
-                f"station reported BLOCKED; stalled share {share:.2f} (capped {MAX_CONGESTION})")
+                f"{seen} (severity capped {MAX_CONGESTION})")
     raise ValueError(f"unknown detector '{detector}'")
 
 

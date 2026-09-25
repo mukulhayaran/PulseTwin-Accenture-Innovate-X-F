@@ -10,6 +10,10 @@ Three detectors, one per use case, each keyed on what the stream actually carrie
 
   starvation  a station's rolling share of `down`/`blocked` events with its mean cycle
               time above takt -- the next station will draw its buffer dry.
+              ALSO (ADR-057) a station that has emitted NO event for `silence_s`: a
+              deadlocked line goes quiet, and a window over events never sees that.
+              Silence is judged on every event from ANY station, and on `tick()` for a
+              driver whose clock runs when no event arrives at all.
   paint_env   paint-zone humidity in EXCESS of ambient, above the Mode A threshold --
               moisture the ambient does not explain (the zone climate is not holding).
   tool_wear   torque / weld current drifting from the station's per-variant baseline
@@ -39,6 +43,7 @@ DETECTORS = (STARVATION, PAINT_ENV, TOOL_WEAR)
 
 STALLED_STATES = frozenset({"down", "blocked"})
 PAINT_KEY = 0  # paint_env is zone-wide, not per station
+LINE_KEY = 0   # silence is line-wide: one stoppage, one firing
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,9 @@ class LineWatch:
         }
         self.paint_stations = {int(s) for s in rules["paint_env"]["stations"]}
         self._keys: dict[tuple[str, int, str], _Key] = {}
+        # 0 = off: rules baked before ADR-057 carry no silence threshold.
+        self.silence_s = float(rules["starvation"].get("silence_s") or 0.0)
+        self._last_seen: dict[int, tuple[float, Any]] = {}  # sid -> (epoch, last state)
 
     # ------------------------------------------------------------------ public
 
@@ -92,13 +100,21 @@ class LineWatch:
             return []
         sid = int(event["station_id"])
         now = _epoch(event["ts"])
+        self._last_seen[sid] = (now, event.get("station_state"))
         fired: list[Firing] = []
         for firing in (self._starvation(sid, event, now),
                        self._paint(sid, event, now),
-                       *self._tool_wear(sid, event, now)):
+                       *self._tool_wear(sid, event, now),
+                       self._silence(now, event["ts"])):
             if firing is not None:
                 fired.append(firing)
         return fired
+
+    def tick(self, now: float) -> list[Firing]:
+        """Advance the clock with no event (epoch seconds). A line that has stopped
+        entirely emits nothing, so only a driver with its own clock can see it."""
+        firing = self._silence(now, datetime.fromtimestamp(now).isoformat())
+        return [firing] if firing else []
 
     def is_clear(self, detector: str, station_id: int) -> bool:
         """True once a FULL post-mitigation window shows the condition gone."""
@@ -157,6 +173,35 @@ class LineWatch:
             "stalled_state": event.get("station_state"),
             "window_events": len(key.window),
             "mean_cycle_time_s": round(mean_cycle, 2),
+            "takt_s": takt,
+            "downstream_station": meta.get("next_station"),
+            "buffer_capacity_after": meta.get("buffer_capacity_after"),
+        })
+
+    def _silence(self, now: float, ts: str) -> Firing | None:
+        """One firing per line stoppage (a line-level key, like paint_env's zone key)."""
+        if not self.silence_s or not self._last_seen:
+            return None
+        silent = {s: now - t for s, (t, _) in self._last_seen.items()}
+        worst = max(silent.values())
+        key = self._key(STARVATION, LINE_KEY, "silence")
+        if not self._latch(key, worst >= self.silence_s, now):
+            return None
+        # ponytail: localisation heuristic. A blockage freezes everything upstream at
+        # once, so the stalled point is the DOWNSTREAM end of the longest-silent run
+        # (ties within one takt). Measured in docs/AGENT_EVAL.md, not assumed right.
+        takt = float(self.rules["takt_s"])
+        sid = max(s for s, gap in silent.items() if gap >= worst - takt)
+        meta = self.stations.get(sid, {})
+        return Firing(STARVATION, sid, ts, {
+            "station_id": sid,
+            "station_name": meta.get("name"),
+            "signal": "silence",
+            "silent_s": round(worst, 1),
+            "silence_threshold_s": self.silence_s,
+            "silent_stations": sum(gap >= self.silence_s for gap in silent.values()),
+            "stalled_share": 1.0,
+            "stalled_state": self._last_seen[sid][1],
             "takt_s": takt,
             "downstream_station": meta.get("next_station"),
             "buffer_capacity_after": meta.get("buffer_capacity_after"),

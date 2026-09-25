@@ -280,6 +280,10 @@ class WatchStarvation(StrictModel):
     # Share of a station's rolling window spent down or blocked. The replay stream only
     # ever carries idle/starved, so this is silent on a normal run by construction.
     stalled_share: float = Field(gt=0, le=1)
+    # A station that emits NO events for this many takts has stopped (ADR-057). A
+    # deadlocked line goes silent, and a window over events never fills with evidence of
+    # that. Set above the longest gap the replay stream shows on a normal run.
+    silence_takts: float = Field(gt=0)
 
 
 class WatchPaintEnv(StrictModel):

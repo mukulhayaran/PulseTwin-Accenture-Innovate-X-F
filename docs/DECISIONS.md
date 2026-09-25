@@ -2021,3 +2021,36 @@ detector cannot fire on silence.
 **Not changed by this ADR.** No threshold was retuned to improve these numbers. The two gaps
 it found are recorded rather than patched: a missing silence detector, and ambient humidity
 being excluded by the paint rule.
+
+### ADR-057 — The watch detects silence: a stopped line emits no events
+
+**Context.** ADR-056's eval found the watch caught 0 of 8 faults that cost real output.
+Deadlock-level congestion loses 78–91% of throughput. Stations stop completing units, so
+they stop emitting events, and every detector in `serve/watch.py` works by windowing
+events. On the twin the DES clock itself stops, because the event queue runs dry.
+
+**Decision.** Silence is a mode of the existing `starvation` detector, not a new detector.
+A station that has emitted no event for `watch.starvation.silence_takts` × takt fires
+`starvation` with `signal: "silence"`, `stalled_share: 1.0`, the station's last reported
+state, and the silent duration.
+* **Why a mode, not a detector:** the proposal row, the starvation agent plan, the
+  counterfactual hypothesis (last state DOWN → breakdown, otherwise congestion), the tool
+  enum and the UI all consume `starvation` already. A new detector would have meant a new
+  intent, mirrored by hand in serve/, genai/ and frontend/ (CLAUDE.md §2).
+* **The threshold is profiled on the replay stream, not on the eval.** The longest
+  per-station gap on a normal run is 9.9 min on plant A (9.1 takts, routine repairs
+  included) and 16.7 min on plant B (13.4 takts), so the thresholds are 12 and 16 takts.
+  `tests/test_watch.py` replays both whole streams and asserts silence never fires.
+* **One firing per stoppage.** It uses a line-level latch key. It is localised to the
+  downstream end of the longest-silent run of stations, because a blockage freezes
+  everything upstream at once. That heuristic is marked `ponytail:` in the code, and its
+  accuracy is measured (80% exact station, all within one).
+* **`LineWatch.tick(now)`** checks silence with no event. The eval ticks every 60 s of twin
+  time. The live replay needs no tick (the stream never stops), and a paused run must not
+  tick wall-clock time into a false stoppage. `tick()` is for a driver with its own clock,
+  such as a real MQTT feed.
+
+**Result** (`docs/AGENT_EVAL.md`): impactful faults caught went from 0/8 to **6/8**, all six
+deadlocked congestions at about 13 min with the root cause right. There are no new false
+alarms, and placebo recall is unchanged at 7%. **Not fixed:** the two impactful breakdowns
+never go silent long enough, and breakdowns are still diagnosed as congestion (0/3).

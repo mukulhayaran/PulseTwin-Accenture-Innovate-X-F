@@ -56,7 +56,8 @@ def build_rules(cfg: PlantConfig, source: str, stream: Path) -> dict[str, Any]:
         "window_events": w.window_events,
         "cooldown_s": w.cooldown_s,
         "max_open_investigations": w.max_open_investigations,
-        "starvation": {"stalled_share": w.starvation.stalled_share},
+        "starvation": {"stalled_share": w.starvation.stalled_share,
+                       "silence_s": round(w.starvation.silence_takts * cfg.takt_s, 1)},
         "paint_env": {
             "humidity_excess_pct": w.paint_env.humidity_excess_pct,
             "humidity_threshold_pct": cfg.defect_physics.mode_a.humidity_threshold_pct,

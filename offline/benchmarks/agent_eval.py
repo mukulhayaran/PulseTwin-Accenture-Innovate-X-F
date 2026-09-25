@@ -4,7 +4,9 @@ Replays injected faults on the PHYSICAL twin (`offline.live_twin`) -- not the co
 replay stream the watch thresholds were profiled on, which would grade the watch on its
 own training data -- and feeds every station event, identically, to three alerters:
 
-  watch       serve/watch.py::LineWatch -- 8-event window, latch, per-key cooldown
+  watch       serve/watch.py::LineWatch -- 8-event window, latch, per-key cooldown, and
+              (ADR-057) silence: ticked with the twin's clock every CHUNK_S, because a
+              stopped line emits no event to carry time forward
   threshold   the SAME thresholds on each single event, every crossing an alarm. This is
               "simple threshold alerting" as a plant historian ships it.
   deadband    threshold + the watch's own per-key cooldown. Isolates what the WINDOW buys,
@@ -54,7 +56,8 @@ from offline.config_schema import load_plant_config
 from offline.counterfactual import MAX_CONGESTION, hypothesis
 from offline.live_twin.engine import LiveTwinEngine
 from offline.live_twin.incidents import Incident
-from serve.watch import PAINT_ENV, STALLED_STATES, STARVATION, TOOL_WEAR, LineWatch, load_rules
+from serve.watch import (PAINT_ENV, STALLED_STATES, STARVATION, TOOL_WEAR, LineWatch, _epoch,
+                         load_rules)
 
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS = ROOT / "artifacts"
@@ -63,6 +66,7 @@ SHIFT_H = 8.0
 PRE_S = 2 * 3600.0   # clean segment before onset: false alarms on a line that is fine
 POST_S = 3 * 3600.0  # detection horizon after onset
 SEVERITY = 0.8
+CHUNK_S = 60.0    # how often the eval ticks the watch's clock
 IMPACT_PCT = 5.0  # a fault costing under 5% of the horizon's output is a minor event
 DETECTOR_FOR = {"torque_degradation": TOOL_WEAR, "high_humidity": PAINT_ENV,
                 "station_breakdown": STARVATION, "buffer_congestion": STARVATION}
@@ -158,38 +162,44 @@ def _run(base: LiveTwinEngine, rules: dict[str, Any], fault: dict[str, Any] | No
     t0 = twin.now
     t_onset = t0 + PRE_S
 
-    def feed(events: list[dict[str, Any]]) -> None:
-        for e in events:
-            if e.get("event_type") != "station_update" or "station_id" not in e:
-                continue
-            t = float(e["sim_time_s"])
-            for name, alerter in alerters.items():
-                if name == "watch":
-                    got = [Alert(f.detector, f.station_id, t, f.evidence)
-                           for f in alerter.observe(e)]
-                else:
-                    got = alerter.observe(e, t)
-                for a in got:
-                    if fault is None:
-                        res.alerts[name].append(a)
-                    if not _is_match(a, fault, t_onset):
-                        res.false_alarms[name] += 1
-                    elif res.first_match[name] is None:
-                        res.first_match[name] = (a.t - t_onset) / 60.0
-                        res.exact_station[name] = (a.detector == PAINT_ENV
-                                                   or a.station_id == fault["station_id"])
-                        res.root_cause_ok[name] = (
-                            hypothesis(a.detector, a.evidence)[0] == fault["scenario"])
+    def record(name: str, got: list[Alert]) -> None:
+        for a in got:
+            if fault is None:
+                res.alerts[name].append(a)
+            if not _is_match(a, fault, t_onset):
+                res.false_alarms[name] += 1
+            elif res.first_match[name] is None:
+                res.first_match[name] = (a.t - t_onset) / 60.0
+                res.exact_station[name] = (a.detector == PAINT_ENV
+                                           or a.station_id == fault["station_id"])
+                res.root_cause_ok[name] = (
+                    hypothesis(a.detector, a.evidence)[0] == fault["scenario"])
 
-    feed(twin.advance(PRE_S))
+    def run_for(seconds: float) -> None:
+        watch = alerters["watch"]
+        for _ in range(int(seconds // CHUNK_S)):
+            for e in twin.advance(CHUNK_S):
+                if e.get("event_type") != "station_update" or "station_id" not in e:
+                    continue
+                t = float(e["sim_time_s"])
+                record("watch", [Alert(f.detector, f.station_id, t, f.evidence)
+                                 for f in watch.observe(e)])
+                for name in ("threshold", "deadband"):
+                    record(name, alerters[name].observe(e, t))
+            # The twin's clock target keeps moving when the DES has nothing left to do.
+            t = float(twin._clock_target)
+            record("watch", [Alert(f.detector, f.station_id, t, f.evidence)
+                             for f in watch.tick(_epoch(twin.timestamp(t)))])
+
+    run_for(PRE_S)
     if fault is not None:
         twin.inject(Incident(fault["scenario"], fault["severity"],
                              station_id=(None if fault["scenario"] == "high_humidity"
                                          else fault["station_id"])))
     u_onset = twin.units_completed
-    feed(twin.advance(POST_S))
+    run_for(POST_S)
     res.units = twin.units_completed - u_onset
-    res.observed_h = (twin.now - t0) / 3600.0
+    res.observed_h = (float(twin._clock_target) - t0) / 3600.0  # now freezes in a deadlock
     return res
 
 

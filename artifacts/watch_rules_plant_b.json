@@ -6,7 +6,8 @@
   "cooldown_s": 3600.0,
   "max_open_investigations": 3,
   "starvation": {
-    "stalled_share": 0.5
+    "stalled_share": 0.5,
+    "silence_s": 1200.0
   },
   "paint_env": {
     "humidity_excess_pct": 5.0,

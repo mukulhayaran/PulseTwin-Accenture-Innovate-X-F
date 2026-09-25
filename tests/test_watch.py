@@ -118,3 +118,40 @@ def test_recovery_is_judged_only_on_events_after_a_mitigation() -> None:
     for e in _events("plant_a", "normal", None, 800):
         watch.observe(e)
     assert watch.is_clear(STARVATION, station)
+
+
+# ------------------------------------------------------------------ silence (ADR-057)
+
+@pytest.mark.parametrize("plant", PLANTS)
+def test_the_whole_normal_stream_never_goes_silent(plant: str) -> None:
+    """The threshold was set above the longest normal gap; this is that measurement."""
+    watch = LineWatch(load_rules(ARTIFACTS, plant))
+    assert watch.silence_s > 0
+    with open(ARTIFACTS / f"stream_{plant}.jsonl", encoding="utf-8") as f:
+        silent = [x for line in f for x in watch.observe(json.loads(line))
+                  if x.evidence.get("signal") == "silence"]
+    assert silent == []
+
+
+def test_a_stopped_line_fires_once_at_the_downstream_end_of_the_silence() -> None:
+    rules = load_rules(ARTIFACTS, "plant_a")
+    watch = LineWatch(rules)
+    t0 = datetime(2026, 1, 5, 8, 0).timestamp()
+    ev = lambda sid, t, state="working": {  # noqa: E731
+        "station_id": sid, "ts": datetime.fromtimestamp(t).isoformat(),
+        "station_state": state, "cycle_time_s": 60.0}
+    for sid in (1, 2, 3, 4, 5):
+        watch.observe(ev(sid, t0))
+    # S1-S3 freeze together (a blockage at S3 holds everything upstream); S4-S5 run on.
+    watch.observe(ev(3, t0 + 1, "blocked"))
+    for k in range(1, 5):
+        watch.observe(ev(4, t0 + 60 * k))
+        watch.observe(ev(5, t0 + 60 * k))
+    fired = watch.tick(t0 + watch.silence_s + 5)
+    assert [(f.station_id, f.evidence["signal"]) for f in fired] == [(3, "silence")]
+    assert fired[0].evidence["stalled_state"] == "blocked"
+    assert fired[0].evidence["silent_stations"] == 3  # S4-S5 spoke 240 s later
+    assert watch.tick(t0 + watch.silence_s + 600) == []  # latched: one stoppage, one firing
+    for sid in (1, 2, 3, 4, 5):                          # the line restarts...
+        watch.observe(ev(sid, t0 + 2 * watch.silence_s))
+    assert watch.tick(t0 + 2 * watch.silence_s + 10) == []

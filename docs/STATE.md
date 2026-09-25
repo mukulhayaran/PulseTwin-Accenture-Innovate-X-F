@@ -668,9 +668,10 @@ runs 27 injected faults on the physical twin, with placebo and impact controls. 
 watch: 3.2 false alarms per shift vs 358, placebo 7% vs 41%, slower on torque, and
 **0/8 impactful faults caught (the baseline's 2/8 are chance or 3 h late)**.
 
+**Silence detector added (ADR-057):** impactful faults caught went from 0/8 to **6/8**.
+There are no new false alarms and placebo recall is still 7%.
+
 **Verify-next, from this eval:**
-- A **silence detector** in `serve/watch.py`. Deadlocked congestion loses 78–91% of output
-  and emits no events, so nothing fires.
 - The starvation hypothesis maps a breakdown's `blocked` neighbours to congestion (0/2
   correct).
 - The paint rule excludes ambient humidity, but Mode A's physics does not.

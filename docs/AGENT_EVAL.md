@@ -1,17 +1,21 @@
 # Does the proactive watch beat simple threshold alerting?
 
-> Synthetic twin data throughout, plant_a, seeds 42–44, git `f0aa70c`. These are not
+> Synthetic twin data throughout, plant_a, seeds 42–44. The first run was at git `f0aa70c`
+> (watch without silence); the rerun is stamped in the JSON's `git_sha`. These are not
 > claims about a real line (`docs/CLAIMS.md`). Every number comes from
 > `artifacts/benchmarks/agent_eval_plant_a.json`. To regenerate:
 > `OMP_NUM_THREADS=1 python -m offline.benchmarks.agent_eval --seeds 3` (≈6 min).
 
 ## Short answer
 
-**Partly, and not where it matters most.** The watch's alerts are far more trustworthy
-than threshold alarms: 110× fewer false alarms, and detections that are not chance. But
-**neither the watch nor the threshold baseline catches the faults that cost real
-throughput.** Deadlock-level buffer congestion loses 78–91% of output and is invisible to
-every event-driven alerter, because a stopped line emits no events.
+**Yes, now, on the measures that matter. It did not the first time.** The first run found
+that neither the watch nor threshold alarms caught the faults that cost real output
+(watch **0/8**). Deadlock-level congestion loses 78–91% of output, and a stopped line emits
+no events for an event-driven alerter to fire on. A silence detector was added
+(ADR-057), with its threshold profiled on the replay stream and not on this eval. The
+rerun catches **6/8** impactful faults against the baseline's 2/8, with the same 7% placebo
+rate and about 100× fewer false alarms. It is still slower than raw thresholds on the
+faults both catch.
 
 ## Method
 
@@ -37,24 +41,31 @@ Two controls that a naive eval would skip:
 
 ## Results
 
-| | watch | threshold | deadband |
-|---|---|---|---|
-| Faults detected (of 27) | 8 | 10 | 10 |
-| **Placebo recall**, "detections" on a clean line | **7%** | 41% | 41% |
-| **Impactful faults caught** (loss ≥ 5%) | **0 / 8** | 2 / 8 | 2 / 8 |
-| Median detection delay | 17.7 min | 9.9 min | 24.7 min |
-| **False alarms per 8 h shift** | **3.2** | 358 | 61 |
-| Root cause from the alert's evidence | 75% | 70% | 70% |
-| Alert at the exact faulted station | 100% | 70% | 70% |
+| | watch, first run | **watch + silence** | threshold | deadband |
+|---|---|---|---|---|
+| Faults detected (of 27) | 8 | **15** | 10 | 10 |
+| **Placebo recall**, "detections" on a clean line | 7% | **7%** | 41% | 41% |
+| **Impactful faults caught** (loss ≥ 5%) | 0 / 8 | **6 / 8** | 2 / 8 | 2 / 8 |
+| Median detection delay | 17.7 min | 13.6 min | 9.9 min | 24.7 min |
+| **False alarms per 8 h shift** | 3.2 | **3.0** | 325 | 55 |
+| Root cause from the alert's evidence | 75% | 80% | 70% | 70% |
+| Alert at the exact faulted station | 100% | 80% | 70% | 70% |
 
-By fault (watch / threshold, detected of runs, placebo in brackets):
+(The baselines' false-alarm rates dropped from 358/61 to 325/55 between runs only because
+the rerun divides by the twin's clock target. The first run divided by the DES clock, which
+freezes in a deadlock. Their alarm counts are identical.)
+
+By fault (detected of runs, placebo in brackets), with the silence detector:
 
 | Fault | Median loss | watch | threshold |
 |---|---|---|---|
 | torque_degradation | 0% | 6/6 (2), 19.5 min | 6/6 (**5**), 4.4 min |
-| station_breakdown | 2.9% | 2/9 (0), 14 min | 3/9 (**3**), 119 min |
-| buffer_congestion | **77.9%** | **0/9** | 1/9 (**3**) |
+| station_breakdown | 2.9% | 3/9 (0), 12.4 min | 3/9 (**3**), 119 min |
+| buffer_congestion | **77.9%** | **6/9 (0), 13.4 min, root cause 6/6** | 1/9 (**3**) |
 | high_humidity | 0% | 0/3 | 0/3 |
+
+The three congestions still missed are the three at S22. They cost **0%** output
+(S22 is not a constraint), so there is nothing for a silence detector to see.
 
 ## What this says, plainly
 
@@ -64,14 +75,17 @@ By fault (watch / threshold, detected of runs, placebo in brackets):
    operator ignores it, which is the failure mode the brief warns about.
 2. **The watch is slower on the faults both catch** (torque: 19.5 vs 4.4 min). That is the
    8-event window's price for its false-alarm rate. It is a tradeoff, not a win.
-3. **Neither catches impactful faults: watch 0/8, threshold 2/8.** One of the threshold's
-   two is a placebo-positive, and the other came 178 min late. Congestion at a
-   constraining station deadlocks the line. The stations fall silent, and a detector that
-   waits for events never fires. **The watch needs a silence detector** (no events from a
-   station for N × takt). It is the largest gap this eval found.
-4. **The watch's breakdown diagnoses were both wrong** (0/2). A down station emits no
-   events while it is down, so its neighbours report `blocked`, and the hypothesis maps
-   `blocked` to congestion.
+3. **First run: neither caught impactful faults (watch 0/8, threshold 2/8).** Congestion
+   at a constraining station deadlocks the line, the stations fall silent, and a
+   detector that waits for events never fires. **Fixed by ADR-057**: a station with no
+   event for 12 takts (13.1 min, just above the replay stream's longest normal gap of
+   9.9 min) fires `starvation` with `signal: silence`. The watch is ticked by a clock
+   because a fully stopped line emits nothing. It now catches every impactful
+   congestion at about 13 min, with the root cause right in all six.
+4. **Still missed: the two impactful breakdowns** (S15/S22, seed 44, 6.1% loss). Those
+   stations keep emitting between repairs, so they never go silent for 13 min. **All
+   three breakdown diagnoses are wrong** (0/3): a down station's neighbours report
+   `blocked`, and the hypothesis maps `blocked` to congestion.
 5. **Humidity is invisible by design.** The twin's incident raises *ambient* humidity, and
    the paint rule fires only on zone humidity *in excess of* ambient (ADR-051). Mode A's
    defect physics keys on absolute humidity, though, so weather-driven humidity can cause

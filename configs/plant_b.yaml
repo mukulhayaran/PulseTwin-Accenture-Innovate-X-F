@@ -203,6 +203,9 @@ watch:
   max_open_investigations: 3
   starvation:
     stalled_share: 0.5
+    # ADR-057: longest per-station event gap on the replay stream is 16.7 min (13.4
+    # takts; p99.9 2.9 min), so 16 takts (20 min) never fires on it.
+    silence_takts: 16
   paint_env:
     humidity_excess_pct: 5.0
   tool_wear:
