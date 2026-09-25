@@ -49,12 +49,13 @@ export default function CopilotDock({
     <>
       <div className="fixed bottom-6 right-6 z-40">
         <Button
-          variant="ai"
-          size="lg"
+          size="md"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-controls="copilot-dock"
-          className="rounded-full shadow-pop"
+          // Solid, on the dark band: the old 8% violet tint let the page show through
+          // the button wherever it floated over a chart.
+          className="border-surface-dark bg-surface-dark text-on-dark shadow-pop hover:border-surface-dark-2 hover:bg-surface-dark-2"
         >
           <svg
             aria-hidden
@@ -82,7 +83,7 @@ export default function CopilotDock({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={reduce ? { opacity: 0 } : { opacity: 0, y: 12, scale: 0.98 }}
             transition={{ duration: 0.2, ease: [0.2, 0.8, 0.25, 1] }}
-            className="fixed bottom-24 right-6 z-40 flex max-h-[76vh] w-[min(28rem,calc(100vw-2rem))] flex-col rounded-xl border border-line-strong bg-surface shadow-pop"
+            className="fixed bottom-24 right-6 z-40 flex max-h-[76vh] w-[min(28rem,calc(100vw-2rem))] flex-col border border-line-strong bg-surface shadow-pop"
           >
             <header className="flex items-center justify-between border-b border-line px-3 py-2">
               <div className="flex items-center gap-2">
@@ -114,7 +115,7 @@ export default function CopilotDock({
                     run started here could not read anything you cannot.
                   </p>
                   {/* The floor view is open to anyone, so this dock is the first place a
-                      signed-out visitor meets the gate. Pointing at /login is a shorter
+                      signed-out visitor meets the gate. /copilot asks for sign-in in place, a shorter
                       answer than explaining a role they have no way to acquire from here. */}
                   {signedOut && (
                     <Link href="/copilot" className="mt-3 inline-block">
@@ -134,7 +135,7 @@ export default function CopilotDock({
                   compact
                 >
                   {(ask: (a: Omit<StartTriageArgs, "plant">) => void, busy: boolean) => (
-                    <CopilotComposer plant={plant} ask={ask} busy={busy} compact />
+                    <CopilotComposer ask={ask} busy={busy} compact />
                   )}
                 </CopilotThread>
               )}

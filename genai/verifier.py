@@ -33,7 +33,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from genai import config
-from genai.finding import Claim, Finding, KnowledgeCitation
+from genai.finding import ACTION_TYPES, Claim, Finding, KnowledgeCitation, ProposedAction
 from serve.privacy import contains_operator_identity
 
 # ----------------------------------------------------------------------- verdict codes
@@ -109,6 +109,11 @@ class Verification:
     # inflate `claims_verified` past `claims_total` and corrupt the C1/C2 redaction ratio.
     knowledge_citations_total: int = 0
     knowledge_citations_verified: int = 0
+    # ADR-051. Proposed actions are graded like numbers: served only if every claim they
+    # rest on verified. Dropping one is never fatal -- it is a proposal, not evidence.
+    actions_total: int = 0
+    actions_served: int = 0
+    action_issues: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -121,6 +126,9 @@ class Verification:
             "carried_values_used": self.carried_values_used,
             "knowledge_citations_total": self.knowledge_citations_total,
             "knowledge_citations_verified": self.knowledge_citations_verified,
+            "actions_total": self.actions_total,
+            "actions_served": self.actions_served,
+            "action_issues": list(self.action_issues),
         }
 
 
@@ -345,6 +353,9 @@ def verify(
                 )
             )
 
+    served_actions, action_issues = _grade_actions(
+        finding, ok_ids, cited_values, corpus, station_ids, carried)
+
     served = Finding(
         question=finding.question,
         summary=clean_summary,
@@ -358,15 +369,59 @@ def verify(
         # Nothing to redact, unlike claims: there is no "REDACTED knowledge citation"
         # marker because a run with even one bad one never reaches this line.
         knowledge_citations=finding.knowledge_citations,
+        proposed_actions=served_actions,
     )
     return (
         Verification(status=status, claims_total=total, claims_verified=verified,
                      claim_verdicts=verdicts, prose_issues=prose_issues,
                      carried_values_used=len(carried_used),
                      knowledge_citations_total=kc_total,
-                     knowledge_citations_verified=kc_verified),
+                     knowledge_citations_verified=kc_verified,
+                     actions_total=len(finding.proposed_actions),
+                     actions_served=len(served_actions),
+                     action_issues=action_issues),
         served,
     )
+
+
+def _grade_actions(
+    finding: Finding,
+    ok_ids: set[str],
+    cited_values: set[float],
+    corpus: set[float],
+    station_ids: set[int],
+    carried: set[float],
+) -> tuple[list[ProposedAction], list[str]]:
+    """ADR-051: serve an action only if its type is in the closed catalogue, its required
+    params are present, and it rests on at least one claim -- ALL of which verified. Its
+    rationale is prose and gets the same C3 sweep and C4 privacy check as the summary."""
+    served: list[ProposedAction] = []
+    issues: list[str] = []
+    for action in finding.proposed_actions:
+        required = ACTION_TYPES.get(action.action_type)
+        if required is None:
+            issues.append(f"{action.id}: unknown action_type {action.action_type!r}")
+            continue
+        missing = [p for p in required if p not in action.params]
+        if missing:
+            issues.append(f"{action.id}: missing params {missing}")
+            continue
+        if not action.claim_ids:
+            issues.append(f"{action.id}: cites no claim")
+            continue
+        unverified = [c for c in action.claim_ids if c not in ok_ids]
+        if unverified:
+            issues.append(f"{action.id}: rests on unverified claims {unverified}")
+            continue
+        if _contains_operator_identity(action.rationale):
+            issues.append(f"{action.id}: operator identity in rationale")
+            continue
+        _, clean, _ = _sweep_prose(action.rationale, cited_values, corpus,
+                                   station_ids, carried)
+        served.append(ProposedAction(id=action.id, action_type=action.action_type,
+                                     params=dict(action.params), rationale=clean,
+                                     claim_ids=list(action.claim_ids)))
+    return served, issues
 
 
 def _verify_claim(claim: Claim, transcript: dict[str, Any]) -> ClaimVerdict:

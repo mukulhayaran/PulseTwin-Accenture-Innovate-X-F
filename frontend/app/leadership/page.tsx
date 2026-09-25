@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Bar, BarChart, CartesianGrid, Cell, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Cell, LabelList, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { Metrics, getHealth, getInstrumentationPlan, getMetrics, getRole, getRoi } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { axisProps, gridProps, theme } from "@/lib/theme";
 import { usePersonaAccess } from "@/lib/usePersonaAccess";
-import AccessRestricted from "@/components/shared/AccessRestricted";
+import SignInGate from "@/components/shared/SignInGate";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import {
   AnimatedNumber, AppShell, Badge, ChartFrame, ChartTooltip, DataTable, Fact, Kpi, Panel,
@@ -117,9 +117,10 @@ export default function LeadershipPage() {
     },
   ];
 
-  if (access.status === "pending" || access.status === "anonymous") return null;
+  if (access.status === "pending") return null;
+  if (access.status === "anonymous") return <SignInGate view="Leadership" required={["leadership"]} />;
   if (access.status === "denied") {
-    return <AccessRestricted required={["leadership"]} current={access.role} />;
+    return <SignInGate view="Leadership" required={["leadership"]} current={access.role} />;
   }
 
   return (
@@ -233,11 +234,11 @@ export default function LeadershipPage() {
             {/* ----------------------------------------------- value bridge */}
             <Panel title="Value bridge" note="Hover any bar for its source.">
               <ChartFrame height={272}>
-                <BarChart data={bridge} margin={{ bottom: 44, top: 4, right: 8, left: -4 }}>
+                <BarChart data={bridge} margin={{ bottom: 8, top: 24, right: 8, left: -4 }}>
                   <CartesianGrid {...gridProps} />
                   <XAxis
-                    dataKey="label" {...axisProps} angle={-20} textAnchor="end" interval={0} height={54}
-                    tick={{ ...axisProps.tick, fontSize: 9 }}
+                    dataKey="label" {...axisProps} interval={0} height={40}
+                    tick={<WrappedTick />}
                   />
                   <YAxis {...axisProps} width={48} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
                   <RTooltip
@@ -271,7 +272,13 @@ export default function LeadershipPage() {
                     }
                   />
                   <Bar dataKey="base" stackId="a" fill="transparent" isAnimationActive={false} />
-                  <Bar dataKey="delta" stackId="a" radius={[3, 3, 0, 0]} isAnimationActive={false} minPointSize={3}>
+                  <Bar dataKey="delta" stackId="a" isAnimationActive={false} minPointSize={3}>
+                    <LabelList
+                      dataKey="value"
+                      position="top"
+                      formatter={(v: number) => money(v)}
+                      style={{ fill: theme.ink, fontSize: 12, fontWeight: 700, fontFamily: "var(--font-mono)" }}
+                    />
                     {bridge.map((b: any, i: number) => (
                       <Cell
                         key={i}
@@ -362,20 +369,20 @@ export default function LeadershipPage() {
                 ].map((ph, i) => (
                   <div
                     key={ph.p}
-                    className="relative rounded-lg border border-line bg-surface-2 p-3.5 transition-colors hover:border-line-strong"
+                    className="relative border border-line bg-surface-2 p-3.5"
                   >
                     <span
                       aria-hidden
-                      className="absolute inset-x-3.5 top-0 h-0.5 rounded-b-full bg-ai"
+                      className="absolute inset-x-0 top-0 h-0.5 bg-primary"
                       style={{ opacity: 1 - i * 0.2 }}
                     />
-                    <div className="text-xs font-bold text-ai-fg">{ph.p}</div>
+                    <div className="text-xs font-bold text-info-fg">{ph.p}</div>
                     <div className="text-numeric text-2xs text-ink-faint">{ph.w}</div>
                     <div className="mb-2.5 mt-1.5 text-xs font-bold text-ink">{ph.t}</div>
                     <ul className="space-y-1">
                       {ph.items.map((it) => (
                         <li key={it} className="flex gap-1.5 text-2xs leading-relaxed text-ink-faint">
-                          <span className="text-ai/60">─</span>
+                          <span className="text-line-strong">─</span>
                           {it}
                         </li>
                       ))}
@@ -466,5 +473,20 @@ function ThresholdCard({
       <div className={cn("text-numeric text-xl font-bold", TONE.text)}>{value}</div>
       <p className="mt-2 text-2xs leading-relaxed text-ink-faint">{body}</p>
     </div>
+  );
+}
+
+/** Value-bridge category tick: horizontal, wrapped onto two lines at the middle word
+ *  break, instead of rotated text that cost 54px of dead axis height. */
+function WrappedTick({ x = 0, y = 0, payload }: { x?: number; y?: number; payload?: { value: string } }) {
+  const words = String(payload?.value ?? "").split(" ");
+  const cut = Math.ceil(words.length / 2);
+  const lines = words.length > 2 ? [words.slice(0, cut).join(" "), words.slice(cut).join(" ")] : [words.join(" ")];
+  return (
+    <text x={x} y={y + 14} textAnchor="middle" fill={theme.inkDim} fontSize={11} fontFamily="var(--font-sans)">
+      {lines.map((l, i) => (
+        <tspan key={i} x={x} dy={i === 0 ? 0 : 13}>{l}</tspan>
+      ))}
+    </text>
   );
 }

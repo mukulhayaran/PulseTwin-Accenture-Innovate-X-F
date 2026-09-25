@@ -1,0 +1,120 @@
+"""The proactive watch (ADR-051): each detector fires on its own injected scenario and
+stays silent on a normal run.
+
+Events are produced by the live simulator's REAL `_transform` -- the same scenario
+physics the demo injects -- over the committed replay stream, not by a hand-copied
+imitation of it that could drift.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from offline.build_watch_rules import build_rules
+from offline.config_schema import load_plant_config
+from serve.live_simulation import LiveSimulationManager
+from serve.watch import PAINT_ENV, STARVATION, TOOL_WEAR, LineWatch, load_rules
+
+ROOT = Path(__file__).resolve().parents[1]
+ARTIFACTS = ROOT / "artifacts"
+PLANTS = ["plant_a", "plant_b"]
+
+
+def _events(plant: str, scenario: str, station: int | None, limit: int,
+            severity: float = 0.7):
+    fake = SimpleNamespace(plants={plant: {"budget_threshold": 1.0}},
+                           _raise_risk=lambda event, sev: None)
+    control = {"scenario": scenario, "severity": severity,
+               "affected_station": station or 0, "affected_lot": None,
+               "incident_start_s": 0.0, "first_event_ts": None}
+    with open(ARTIFACTS / f"stream_{plant}.jsonl", encoding="utf-8") as f:
+        for seq, line in enumerate(f, start=1):
+            if seq > limit:
+                return
+            yield LiveSimulationManager._transform(
+                fake, json.loads(line), "RUN", plant, 42, seq, control)
+
+
+def _firings(plant: str, scenario: str, station: int | None = None, limit: int = 2000):
+    watch = LineWatch(load_rules(ARTIFACTS, plant))
+    out = []
+    for event in _events(plant, scenario, station, limit):
+        out.extend(watch.observe(event))
+    return out
+
+
+def _busiest_station_with(plant: str, signal: str) -> int:
+    rules = load_rules(ARTIFACTS, plant)
+    return min(int(k) for k, v in rules["stations"].items() if signal in v["sensors"])
+
+
+@pytest.mark.parametrize("plant", PLANTS)
+def test_the_rules_json_is_exactly_what_the_yaml_says(plant: str) -> None:
+    """serve/ reads the JSON because it cannot parse YAML; this keeps the two in step."""
+    cfg = load_plant_config(ROOT / "configs" / f"{plant}.yaml")
+    assert load_rules(ARTIFACTS, plant) == build_rules(
+        cfg, f"configs/{plant}.yaml", ARTIFACTS / f"stream_{plant}.jsonl")
+
+
+@pytest.mark.parametrize("plant", PLANTS)
+def test_a_normal_run_raises_no_starvation_or_paint_firing(plant: str) -> None:
+    detectors = {f.detector for f in _firings(plant, "normal")}
+    assert STARVATION not in detectors
+    assert PAINT_ENV not in detectors
+
+
+@pytest.mark.parametrize("plant", PLANTS)
+def test_on_a_normal_run_tool_wear_fires_only_at_mode_c_stations(plant: str) -> None:
+    """Measured: the only normal-run firings are the designed Mode C torque deficits --
+    true positives the simulator put there, not noise."""
+    cfg = load_plant_config(ROOT / "configs" / f"{plant}.yaml")
+    stations = {f.station_id for f in _firings(plant, "normal", limit=5000)
+                if f.detector == TOOL_WEAR}
+    assert stations <= set(cfg.defect_physics.mode_c.contributing_stations)
+
+
+@pytest.mark.parametrize("plant", PLANTS)
+def test_high_humidity_fires_the_paint_detector_latched(plant: str) -> None:
+    fired = [f for f in _firings(plant, "high_humidity") if f.detector == PAINT_ENV]
+    assert fired
+    # Latched, with a cooldown: a persisting episode may re-fire, but never inside it.
+    cooldown = load_rules(ARTIFACTS, plant)["cooldown_s"]
+    stamps = [datetime.fromisoformat(f.ts).timestamp() for f in fired]
+    assert all(b - a >= cooldown for a, b in zip(stamps, stamps[1:]))
+    ev = fired[0].evidence
+    assert ev["humidity_excess_over_ambient_pct"] >= ev["excess_threshold_pct"]
+
+
+@pytest.mark.parametrize("plant", PLANTS)
+@pytest.mark.parametrize("scenario", ["station_breakdown", "buffer_congestion"])
+def test_a_stalled_station_fires_starvation_there(plant: str, scenario: str) -> None:
+    station = _busiest_station_with(plant, "torque_nm")
+    fired = [f for f in _firings(plant, scenario, station) if f.detector == STARVATION]
+    assert [f.station_id for f in fired] == [station]
+    assert fired[0].evidence["stalled_share"] >= 0.5
+
+
+@pytest.mark.parametrize("plant", PLANTS)
+def test_torque_degradation_fires_tool_wear_at_that_station(plant: str) -> None:
+    station = _busiest_station_with(plant, "torque_nm")
+    fired = [f for f in _firings(plant, "torque_degradation", station)
+             if f.detector == TOOL_WEAR and f.station_id == station]
+    assert fired and fired[0].evidence["signal"] == "torque_nm"
+
+
+def test_recovery_is_judged_only_on_events_after_a_mitigation() -> None:
+    watch = LineWatch(load_rules(ARTIFACTS, "plant_a"))
+    station = _busiest_station_with("plant_a", "torque_nm")
+    events = list(_events("plant_a", "station_breakdown", station, 800))
+    for e in events:
+        watch.observe(e)
+    assert not watch.is_clear(STARVATION, station)
+    watch.mark_applied(STARVATION, station)
+    for e in _events("plant_a", "normal", None, 800):
+        watch.observe(e)
+    assert watch.is_clear(STARVATION, station)

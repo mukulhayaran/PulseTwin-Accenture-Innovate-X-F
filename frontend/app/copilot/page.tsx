@@ -1,6 +1,9 @@
 "use client";
 
-// The AI Operations Copilot.
+// Ask Copilot: a natural, multi-turn conversation with the system (intent "ask"). A turn
+// reads live plant data through the read-only API and retrieves matching passages from
+// the engineering knowledge base (RAG). The agents are separate: one card each on
+// /manager and /ops (AgentPanel), and their runs never appear in this thread list.
 //
 // Thread id lives in the URL HASH (`/copilot#t=<id>`), not a dynamic route and not
 // localStorage:
@@ -24,7 +27,7 @@ import {
   TriageRun, TriageThread, getHealth, listTriageThreads, setRole,
 } from "@/lib/api";
 import { usePersonaAccess } from "@/lib/usePersonaAccess";
-import AccessRestricted from "@/components/shared/AccessRestricted";
+import SignInGate from "@/components/shared/SignInGate";
 import {
   AppShell, Badge, Button, PLANT_OPTIONS, Panel, Skeleton,
 } from "@/components/ui";
@@ -113,7 +116,7 @@ export default function CopilotPage() {
   }, [ready]);
 
   const loadThreads = useCallback(() => {
-    listTriageThreads(plant, 12)
+    listTriageThreads(plant, 12, "ask")
       .then((t) => setThreads(t.threads))
       .catch(() => setThreads([]));
   }, [plant]);
@@ -130,9 +133,10 @@ export default function CopilotPage() {
     [loadThreads]
   );
 
-  if (access.status === "pending" || access.status === "anonymous") return null;
+  if (access.status === "pending") return null;
+  if (access.status === "anonymous") return <SignInGate view="Copilot" required={["manager", "leadership", "system"]} />;
   if (access.status === "denied") {
-    return <AccessRestricted required={["manager", "leadership", "system"]} current={access.role} />;
+    return <SignInGate view="Copilot" required={["manager", "leadership", "system"]} current={access.role} />;
   }
 
   return (
@@ -166,10 +170,10 @@ export default function CopilotPage() {
       }
     >
       {ToastElement}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <Panel
-          title="Operations copilot"
-          note="Ask in plain language. The agent calls the same read-only API you can, and every number it reports is re-checked against the tool results it saw."
+          title="Ask Copilot"
+          note="Talk to the plant in plain language. Each answer draws on live line data and on passages retrieved from the engineering knowledge base, and every number and quote is re-checked before you see it."
           bodyClassName="flex min-h-[60vh] flex-col"
         >
           {!ready ? (
@@ -184,9 +188,10 @@ export default function CopilotPage() {
               onThreadChange={onThreadChange}
               onAction={show}
               onTurnComplete={setLastRun}
+              emptyHint="Ask anything about the plant — live status, risks, or procedures."
             >
               {(ask, busy) => (
-                <CopilotComposer plant={plant} ask={ask} busy={busy} draft={draft} />
+                <CopilotComposer ask={ask} busy={busy} draft={draft} />
               )}
             </CopilotThread>
           )}
@@ -201,7 +206,7 @@ export default function CopilotPage() {
                 No conversations yet.
               </p>
             ) : (
-              <ul className="space-y-1">
+              <ul className="scroll-fade-b max-h-[26rem] space-y-1 overflow-y-auto pb-4">
                 {threads.map((t) => (
                   <li key={t.thread_id}>
                     <button

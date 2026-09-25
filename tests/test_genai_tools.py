@@ -58,6 +58,8 @@ APPROVED = {
     ("GET", "/api/economics/instrumentation-plan"),
     # --- ADR-046
     ("GET", "/api/knowledge/search"),
+    # --- ADR-051: read-only -- the watch's evidence, never its decisions
+    ("GET", "/api/watch/firings"),
 }
 
 # Surfaces that must NEVER become tools, whatever else is admitted.

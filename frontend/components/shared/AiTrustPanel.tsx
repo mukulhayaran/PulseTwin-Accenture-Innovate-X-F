@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import {
   DataQuality, ModelHealthLike, TriageRun,
-  getDataQuality, getModelHealth, getTriageAvailability,
+  getDataQuality, getModelHealth, getRole, getTriageAvailability, roleAtLeast,
 } from "@/lib/api";
 import { Badge, Panel, Tooltip } from "@/components/ui";
 
@@ -33,11 +33,17 @@ export default function AiTrustPanel({
     getTriageAvailability()
       .then((a) => !cancelled && setAvailability({ mode: a.mode, reason: a.reason }))
       .catch(() => !cancelled && setAvailability(null));
-    // Model health is leadership-gated. A 403 is a FACT about this viewer's role, not an
-    // error, so it is reported as one rather than swallowed into an empty panel.
-    getModelHealth(plant)
-      .then((h) => !cancelled && setHealth(h))
-      .catch(() => !cancelled && setGated(true));
+    // Model health is leadership-gated, and that is a FACT about this viewer's role, not
+    // an error -- so it is decided from the role up front (as AppShell does for the shift
+    // summary) rather than by provoking a 403 in the console. A failure for a viewer who
+    // IS allowed is a real error and shows as "—", not as a permissions message.
+    const allowed = roleAtLeast(getRole(), "leadership");
+    setGated(!allowed);
+    if (allowed) {
+      getModelHealth(plant)
+        .then((h) => !cancelled && setHealth(h))
+        .catch(() => !cancelled && setHealth(null));
+    }
     getDataQuality(plant)
       .then((d) => !cancelled && setDq(d))
       .catch(() => !cancelled && setDq(null));
@@ -63,21 +69,29 @@ export default function AiTrustPanel({
       }
     >
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+        {/* Gated: one sentence across both columns rather than four truncated copies
+            of "requires leadership" -- the reader needs the reason once, legibly. */}
+        {gated ? (
+          <p className="col-span-2 border-l-2 border-line-strong pl-2.5 text-2xs leading-relaxed text-ink-faint">
+            Model, age, drift and fallback status need the leadership or system role.
+          </p>
+        ) : (
+          <>
         <Fact
           label="Model"
-          value={health?.current_model?.id ?? (gated ? "requires leadership" : "—")}
+          value={health?.current_model?.id ?? "—"}
         />
         <Fact
           label="Model age"
           value={
             health?.current_model?.age_days != null
               ? `${health.current_model.age_days} d`
-              : gated ? "requires leadership" : "—"
+              : "—"
           }
         />
         <Fact
           label="Drift"
-          value={health?.drift?.overall_status ?? (gated ? "requires leadership" : "—")}
+          value={health?.drift?.overall_status ?? "—"}
           tone={
             health?.drift?.overall_status === "healthy"
               ? "ok"
@@ -88,10 +102,12 @@ export default function AiTrustPanel({
         />
         <Fact
           label="Fallback"
-          value={health?.fallback?.status ?? (gated ? "requires leadership" : "—")}
+          value={health?.fallback?.status ?? "—"}
           tone={health?.fallback?.status === "standby" ? "ok" : undefined}
           hint="The SPC fallback scores predictions if the model file is missing or throws. `standby` means the real model is serving."
         />
+          </>
+        )}
         <Fact
           label="Data quality"
           value={dq?.plant_score != null ? dq.plant_score.toFixed(3) : "—"}

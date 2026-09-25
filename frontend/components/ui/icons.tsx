@@ -165,7 +165,7 @@ export const IconLogout = (p: IconProps) => (
 );
 
 // The closed padlock on a route the session may not open (AppShell's rail) and on the
-// signed-out user chip. Matches RoleGate/AccessRestricted's inline lock so the three
+// signed-out user chip. Matches RoleGate's inline lock so the three
 // read as one signal at three sizes.
 export const IconLock = (p: IconProps) => (
   <Icon {...p}>

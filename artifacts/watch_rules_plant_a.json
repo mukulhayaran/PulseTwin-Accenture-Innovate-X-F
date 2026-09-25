@@ -1,0 +1,397 @@
+{
+  "plant_id": "plant_a",
+  "source": "configs/plant_a.yaml",
+  "takt_s": 65.455,
+  "window_events": 8,
+  "cooldown_s": 3600.0,
+  "max_open_investigations": 3,
+  "starvation": {
+    "stalled_share": 0.5
+  },
+  "paint_env": {
+    "humidity_excess_pct": 5.0,
+    "humidity_threshold_pct": 55.0,
+    "stations": [
+      13,
+      14,
+      15,
+      16,
+      17,
+      18
+    ]
+  },
+  "tool_wear": {
+    "signals": [
+      "torque_nm",
+      "weld_current_a"
+    ],
+    "deviation_pct": 8.0,
+    "baselines": {
+      "11|torque_nm|ev": 41.783,
+      "11|torque_nm|sedan": 41.8557,
+      "11|torque_nm|suv": 41.6804,
+      "12|torque_nm|ev": 48.0268,
+      "12|torque_nm|sedan": 48.0289,
+      "12|torque_nm|suv": 48.0836,
+      "12|weld_current_a|ev": 8169.227,
+      "12|weld_current_a|sedan": 8166.1128,
+      "12|weld_current_a|suv": 8156.8357,
+      "19|torque_nm|ev": 41.642,
+      "19|torque_nm|sedan": 41.6397,
+      "19|torque_nm|suv": 41.6844,
+      "1|torque_nm|ev": 48.5533,
+      "1|torque_nm|sedan": 48.6303,
+      "1|torque_nm|suv": 48.7767,
+      "20|torque_nm|ev": 48.8509,
+      "20|torque_nm|sedan": 48.786,
+      "20|torque_nm|suv": 48.8247,
+      "21|torque_nm|ev": 54.2062,
+      "21|torque_nm|sedan": 54.3106,
+      "21|torque_nm|suv": 54.2788,
+      "23|torque_nm|ev": 49.713,
+      "23|torque_nm|sedan": 49.7508,
+      "23|torque_nm|suv": 49.8517,
+      "24|torque_nm|ev": 57.9941,
+      "24|torque_nm|sedan": 57.9987,
+      "24|torque_nm|suv": 58.0754,
+      "25|torque_nm|ev": 44.5969,
+      "25|torque_nm|sedan": 44.6175,
+      "25|torque_nm|suv": 44.6958,
+      "26|torque_nm|ev": 53.6582,
+      "26|torque_nm|sedan": 53.6941,
+      "26|torque_nm|suv": 53.6223,
+      "28|torque_nm|ev": 46.9574,
+      "28|torque_nm|sedan": 47.0159,
+      "28|torque_nm|suv": 46.9879,
+      "29|torque_nm|ev": 53.7016,
+      "29|torque_nm|sedan": 53.8372,
+      "29|torque_nm|suv": 53.7414,
+      "2|weld_current_a|ev": 8421.3051,
+      "2|weld_current_a|sedan": 8426.8608,
+      "2|weld_current_a|suv": 8427.4854,
+      "30|torque_nm|ev": 41.8736,
+      "30|torque_nm|sedan": 41.8809,
+      "30|torque_nm|suv": 41.7198,
+      "3|torque_nm|ev": 43.8375,
+      "3|torque_nm|sedan": 43.93,
+      "3|torque_nm|suv": 43.8015,
+      "4|weld_current_a|ev": 8678.5621,
+      "4|weld_current_a|sedan": 8692.0278,
+      "4|weld_current_a|suv": 8670.448,
+      "5|torque_nm|ev": 57.077,
+      "5|torque_nm|sedan": 57.1665,
+      "5|torque_nm|suv": 57.0814,
+      "6|weld_current_a|ev": 8316.198,
+      "6|weld_current_a|sedan": 8308.6002,
+      "6|weld_current_a|suv": 8310.6424,
+      "7|torque_nm|ev": 53.2921,
+      "7|torque_nm|sedan": 53.3919,
+      "7|torque_nm|suv": 53.1822,
+      "7|weld_current_a|ev": 8365.563,
+      "7|weld_current_a|sedan": 8367.474,
+      "7|weld_current_a|suv": 8343.9603,
+      "8|torque_nm|ev": 55.6496,
+      "8|torque_nm|sedan": 55.6195,
+      "8|torque_nm|suv": 55.6459,
+      "8|weld_current_a|ev": 8528.7432,
+      "8|weld_current_a|sedan": 8525.3001,
+      "8|weld_current_a|suv": 8509.5068,
+      "9|torque_nm|ev": 47.8317,
+      "9|torque_nm|sedan": 47.9478,
+      "9|torque_nm|suv": 47.8797
+    }
+  },
+  "stations": {
+    "1": {
+      "name": "Frame Load",
+      "zone": "body",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 4,
+      "next_station": 2
+    },
+    "2": {
+      "name": "Underbody Weld A",
+      "zone": "body",
+      "sensors": [
+        "weld_current_a",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 3,
+      "next_station": 3
+    },
+    "3": {
+      "name": "Structural Fastening A",
+      "zone": "body",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 3,
+      "next_station": 4
+    },
+    "4": {
+      "name": "Underbody Weld B",
+      "zone": "body",
+      "sensors": [
+        "weld_current_a",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 4,
+      "next_station": 5
+    },
+    "5": {
+      "name": "Side Panel Fit",
+      "zone": "body",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 3,
+      "next_station": 6
+    },
+    "6": {
+      "name": "Side Panel Weld",
+      "zone": "body",
+      "sensors": [
+        "weld_current_a",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 3,
+      "next_station": 7
+    },
+    "7": {
+      "name": "Roof Assembly",
+      "zone": "body",
+      "sensors": [
+        "weld_current_a",
+        "torque_nm"
+      ],
+      "buffer_capacity_after": 4,
+      "next_station": 8
+    },
+    "8": {
+      "name": "Vibration-Critical Weld",
+      "zone": "body",
+      "sensors": [
+        "weld_current_a",
+        "vibration_mm_s",
+        "torque_nm"
+      ],
+      "buffer_capacity_after": 2,
+      "next_station": 9
+    },
+    "9": {
+      "name": "Closure Hang",
+      "zone": "body",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 5,
+      "next_station": 10
+    },
+    "10": {
+      "name": "Legacy Bracket Mount",
+      "zone": "body",
+      "sensors": [],
+      "buffer_capacity_after": 3,
+      "next_station": 11
+    },
+    "11": {
+      "name": "Body Geometry Check",
+      "zone": "body",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 4,
+      "next_station": 12
+    },
+    "12": {
+      "name": "Body Completion",
+      "zone": "body",
+      "sensors": [
+        "weld_current_a",
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 6,
+      "next_station": 13
+    },
+    "13": {
+      "name": "Paint Pre-Treatment",
+      "zone": "paint",
+      "sensors": [
+        "humidity_pct",
+        "temperature_c"
+      ],
+      "buffer_capacity_after": 4,
+      "next_station": 14
+    },
+    "14": {
+      "name": "Primer Application",
+      "zone": "paint",
+      "sensors": [
+        "humidity_pct",
+        "temperature_c",
+        "film_thickness_um"
+      ],
+      "buffer_capacity_after": 5,
+      "next_station": 15
+    },
+    "15": {
+      "name": "Paint Surface Prep",
+      "zone": "paint",
+      "sensors": [],
+      "buffer_capacity_after": 2,
+      "next_station": 16
+    },
+    "16": {
+      "name": "Base Coat Application",
+      "zone": "paint",
+      "sensors": [
+        "humidity_pct",
+        "temperature_c",
+        "film_thickness_um"
+      ],
+      "buffer_capacity_after": 2,
+      "next_station": 17
+    },
+    "17": {
+      "name": "Clear Coat Application",
+      "zone": "paint",
+      "sensors": [
+        "humidity_pct",
+        "temperature_c",
+        "film_thickness_um"
+      ],
+      "buffer_capacity_after": 2,
+      "next_station": 18
+    },
+    "18": {
+      "name": "Cure Oven",
+      "zone": "paint",
+      "sensors": [
+        "humidity_pct",
+        "temperature_c",
+        "film_thickness_um"
+      ],
+      "buffer_capacity_after": 4,
+      "next_station": 19
+    },
+    "19": {
+      "name": "Battery/Drivetrain Mount",
+      "zone": "final",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 3,
+      "next_station": 20
+    },
+    "20": {
+      "name": "Powertrain Coupling",
+      "zone": "final",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 3,
+      "next_station": 21
+    },
+    "21": {
+      "name": "Suspension Mount",
+      "zone": "final",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 4,
+      "next_station": 22
+    },
+    "22": {
+      "name": "Legacy Interior Fit",
+      "zone": "final",
+      "sensors": [],
+      "buffer_capacity_after": 3,
+      "next_station": 23
+    },
+    "23": {
+      "name": "Wiring Harness",
+      "zone": "final",
+      "sensors": [
+        "torque_nm"
+      ],
+      "buffer_capacity_after": 3,
+      "next_station": 24
+    },
+    "24": {
+      "name": "Battery Enclosure Seal",
+      "zone": "final",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 4,
+      "next_station": 25
+    },
+    "25": {
+      "name": "Interior Trim",
+      "zone": "final",
+      "sensors": [
+        "torque_nm"
+      ],
+      "buffer_capacity_after": 4,
+      "next_station": 26
+    },
+    "26": {
+      "name": "Glass & Seals",
+      "zone": "final",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 3,
+      "next_station": 27
+    },
+    "27": {
+      "name": "Legacy Electrical Check",
+      "zone": "final",
+      "sensors": [],
+      "buffer_capacity_after": 3,
+      "next_station": 28
+    },
+    "28": {
+      "name": "Fluid Fill",
+      "zone": "final",
+      "sensors": [
+        "torque_nm"
+      ],
+      "buffer_capacity_after": 4,
+      "next_station": 29
+    },
+    "29": {
+      "name": "Wheel & Alignment",
+      "zone": "final",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 3,
+      "next_station": 30
+    },
+    "30": {
+      "name": "Final Quality Gate",
+      "zone": "final",
+      "sensors": [
+        "torque_nm",
+        "vibration_mm_s"
+      ],
+      "buffer_capacity_after": 2,
+      "next_station": null
+    }
+  }
+}

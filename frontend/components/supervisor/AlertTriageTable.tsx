@@ -84,10 +84,10 @@ export default function AlertTriageTable({
   return (
     <Panel
       title="Alert triage"
-      note="Deterministic rules rank every candidate the cost model says is worth inspecting — not just the ones the attention budget already fired."
+      note="Every candidate worth inspecting, not only budget-fired alerts."
       actions={
         data ? (
-          <div className="flex flex-wrap gap-1">
+          <div className="flex shrink-0 gap-1">
             {CLASS_ORDER.map((c) =>
               data.counts_by_class[c] ? (
                 <Badge key={c} variant={CLASS_VARIANT[c]}>

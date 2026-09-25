@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from serve import db
+from serve.watch import PAINT_ENV, Firing, LineWatch, load_rules
 
 
 SCENARIOS = (
@@ -30,6 +31,29 @@ SCENARIOS = (
     "station_breakdown",
     "buffer_congestion",
 )
+
+
+# ADR-051: what an APPROVED action does to the running twin. These magnitudes are
+# MODELLED ASSUMPTIONS, not measurements (docs/ASSUMPTIONS.md, "Mitigation effects"): the
+# replay stream cannot say how far a real HVAC correction or a tip change would move a
+# signal, so an approved action removes `factor` of the matching scenario's effect.
+#   scope "station": only events at the proposal's station
+#   scope "zone":    every event that carries the scenario's signal (paint humidity)
+#   scope "risk":    only the scenario's contribution to calibrated risk, not the signal
+# Keys mirror genai/finding.py::ACTION_TYPES; tests/test_proposals.py asserts they agree.
+MITIGATIONS: dict[str, dict[str, Any]] = {
+    "hvac_setpoint": {"scenarios": ("high_humidity",), "factor": 1.0, "scope": "zone"},
+    "resequence_paint_queue": {"scenarios": ("high_humidity",), "factor": 1.0,
+                               "scope": "risk"},
+    "maintenance_ticket": {"scenarios": ("torque_degradation", "station_breakdown"),
+                           "factor": 1.0, "scope": "station"},
+    "shift_weld_load": {"scenarios": ("torque_degradation",), "factor": 1.0,
+                        "scope": "station"},
+    "increase_feed_buffer": {"scenarios": ("buffer_congestion", "station_breakdown"),
+                             "factor": 0.5, "scope": "station"},
+    "rebalance_cycle": {"scenarios": ("buffer_congestion",), "factor": 0.5,
+                        "scope": "station"},
+}
 
 
 def _utc_now() -> str:
@@ -61,6 +85,7 @@ class LiveSimulationManager:
             }
             for plant_id in plants
         }
+        self._watch_rules = {pid: load_rules(artifacts, pid) for pid in plants}
         # A process restart must never leave a run claiming to be live.
         db.execute(
             self.ops,
@@ -133,6 +158,11 @@ class LiveSimulationManager:
             "incident_start_s": float(incident_start_s),
             "first_event_ts": None,
             "event_seq": 0,
+            # ADR-051. None when no watch_rules_<plant>.json was built: the watch is off.
+            "watch": (LineWatch(self._watch_rules[plant_id])
+                      if self._watch_rules.get(plant_id) else None),
+            "mitigations": [],          # approved actions, read by _transform
+            "applied": {},              # proposal_id -> (detector, station) awaiting recovery
         }
         control["running"].set()
         with self._lock:
@@ -291,6 +321,7 @@ class LiveSimulationManager:
                     event["alerts_budget"] = int(self.plants[plant_id]["alert_budget"])
                     self._append_event(run_id, event)
                     self._update_current_state(run_id, plant_id, event)
+                    self._watch(run_id, plant_id, event, control)
                     db.execute(
                         self.ops,
                         """UPDATE simulation_runs SET simulation_time=?, event_count=?,
@@ -348,15 +379,21 @@ class LiveSimulationManager:
         affected = int(event["station_id"]) == int(control["affected_station"])
         lot_match = not control.get("affected_lot") or event.get("lot_id") == control["affected_lot"]
         triggered = affected and lot_match
+        # ADR-051: an approved mitigation removes part of the scenario's effect.
+        station_id = int(event["station_id"])
+        keep = 1.0 - _mitigated(control, scenario, station_id, "signal")
+        keep_risk = 1.0 - _mitigated(control, scenario, station_id, "risk")
         if scenario == "torque_degradation" and triggered:
             if "torque_nm" in event:
-                event["torque_nm"] = round(float(event["torque_nm"]) + 8.0 * severity, 3)
-            self._raise_risk(event, severity)
+                event["torque_nm"] = round(
+                    float(event["torque_nm"]) + 8.0 * severity * keep, 3)
+            self._raise_risk(event, severity * keep_risk)
         elif scenario == "bad_material_lot" and lot_match:
             self._raise_risk(event, severity * 0.8)
         elif scenario == "high_humidity" and "humidity_pct" in event:
-            event["humidity_pct"] = round(min(100.0, float(event["humidity_pct"]) + 20.0 * severity), 3)
-            self._raise_risk(event, severity * 0.55)
+            event["humidity_pct"] = round(
+                min(100.0, float(event["humidity_pct"]) + 20.0 * severity * keep), 3)
+            self._raise_risk(event, severity * 0.55 * keep_risk)
         elif scenario == "rushed_checklist" and triggered and "checklist_time_s" in event:
             event["checklist_time_s"] = round(max(1.0, float(event["checklist_time_s"]) * (1 - 0.5 * severity)), 3)
             self._raise_risk(event, severity * 0.75)
@@ -366,13 +403,126 @@ class LiveSimulationManager:
                            "film_thickness_um", "weld_current_a"):
                     event.pop(key, None)
             event["sensor_status"] = "dropout"
-        elif scenario == "station_breakdown" and triggered:
-            event["station_state"] = "down"
-            event["cycle_time_s"] = round(event["cycle_time_s"] * (1 + severity), 3)
-        elif scenario == "buffer_congestion" and triggered:
-            event["station_state"] = "blocked"
-            event["cycle_time_s"] = round(event["cycle_time_s"] * (1 + 0.6 * severity), 3)
+        elif scenario in ("station_breakdown", "buffer_congestion") and triggered:
+            # A partial mitigation relieves the stall on that share of events, picked by
+            # stable noise so a replay of the same seed stays reproducible. With nothing
+            # applied `keep` is 1.0 and every triggered event stalls, exactly as before.
+            if (_noise(seed, seq, "mitigate") + 1.0) / 2.0 < keep:
+                down = scenario == "station_breakdown"
+                event["station_state"] = "down" if down else "blocked"
+                event["cycle_time_s"] = round(
+                    event["cycle_time_s"] * (1 + (1.0 if down else 0.6) * severity), 3)
         return event
+
+    # ------------------------------------------------------------ ADR-051: the watch
+
+    def _watch(self, run_id: str, plant_id: str, event: dict[str, Any],
+               control: dict[str, Any]) -> None:
+        watch: LineWatch | None = control.get("watch")
+        if watch is None:
+            return
+        for firing in watch.observe(event):
+            self._on_firing(run_id, plant_id, firing)
+        for proposal_id, (detector, station) in list(control["applied"].items()):
+            if not watch.is_clear(detector, station):
+                continue
+            control["applied"].pop(proposal_id, None)
+            db.execute(
+                self.ops,
+                "UPDATE action_proposals SET status='EFFECTIVE', effective_at=? "
+                "WHERE proposal_id=?",
+                (event["ts"], proposal_id),
+            )
+            _audit(self.ops, "proposal_effective", proposal_id,
+                   {"detector": detector, "station_id": station})
+            print(f"[watch] {run_id} {proposal_id} EFFECTIVE: {detector} at S{station} "
+                  f"back within threshold after mitigation")
+
+    def _on_firing(self, run_id: str, plant_id: str, firing: Firing) -> None:
+        """Record the firing as a proposal row and start the matching agent.
+
+        Same path as _trigger_auto_investigation: `start_triage_run`, best-effort, never
+        allowed to take down the producer thread. One open proposal per detector and
+        station, and at most `max_open_investigations` per run -- each agent run spends
+        7-12 provider requests, and a free tier allows a fixed number per day.
+        """
+        open_rows = db.query_all(
+            self.ops,
+            "SELECT detector, station_id FROM action_proposals WHERE sim_run_id=? "
+            "AND status IN ('OPEN','APPROVED','APPLIED')",
+            (run_id,),
+        )
+        # paint_env is ZONE-wide: whichever paint station tripped it, it is one condition,
+        # so it must not open a second proposal just because another station reported it.
+        if any(r["detector"] == firing.detector
+               and (firing.detector == PAINT_ENV or int(r["station_id"]) == firing.station_id)
+               for r in open_rows):
+            return
+        cap = int((self._watch_rules.get(plant_id) or {}).get("max_open_investigations", 1))
+        if len(open_rows) >= cap:
+            print(f"[watch] {run_id} {firing.detector} at S{firing.station_id} fired, but "
+                  f"{len(open_rows)} proposals are already open (cap {cap}); not investigated")
+            return
+
+        proposal_id = f"P-{secrets.token_hex(5)}"
+        db.execute(
+            self.ops,
+            """INSERT INTO action_proposals (proposal_id, sim_run_id, plant_id, detector,
+                   station_id, fired_at, trigger_evidence, status)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (proposal_id, run_id, plant_id, firing.detector, firing.station_id, firing.ts,
+             json.dumps(firing.evidence, separators=(",", ":")), "OPEN"),
+        )
+        print(f"[watch] {run_id} FIRED {firing.detector} at S{firing.station_id} -> "
+              f"{proposal_id} evidence={json.dumps(firing.evidence)}")
+        if os.environ.get("PULSETWIN_JOBS_ENABLED", "1") == "0":
+            return
+        try:
+            from serve.routers.triage import _credential_present, start_triage_run
+            name = firing.evidence.get("station_name") or f"S{firing.station_id}"
+            result = start_triage_run(
+                self.ops,
+                plant_id=plant_id,
+                question=(f"Watch: {firing.detector.replace('_', ' ')} fired at station "
+                          f"{firing.station_id} ({name})."),
+                intent=firing.detector,
+                role="auto-monitor",
+                acting_role="system",
+                # Resolved here, as the router does: "auto" stored on the row would tell
+                # the proposals inbox nothing about whether a model was involved.
+                mode="agent" if _credential_present() else "deterministic",
+                api_base=os.environ.get("PULSETWIN_API_BASE", "http://127.0.0.1:7860"),
+                station_id=firing.station_id,
+            )
+            db.execute(self.ops,
+                       "UPDATE action_proposals SET triage_run_id=? WHERE proposal_id=?",
+                       (result["run_id"], proposal_id))
+            print(f"[watch] {proposal_id} -> {firing.detector} agent run {result['run_id']}")
+        except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
+            print(f"[watch] agent trigger failed for {proposal_id}: {exc}")
+
+    def apply_mitigation(self, run_id: str, proposal_id: str, detector: str,
+                         station_id: int, action_type: str) -> bool:
+        """Apply an APPROVED action to the running twin -- and only to the twin.
+
+        False when this process owns no live run to apply it to: the human decision
+        still stands and is audited, it simply is not simulated.
+        """
+        effect = MITIGATIONS.get(action_type)
+        if effect is None:
+            return False
+        try:
+            control = self._control(run_id)
+        except (KeyError, RuntimeError):
+            return False
+        if self.get(run_id)["status"] not in ("running", "paused"):
+            return False
+        with self._lock:
+            control["mitigations"].append({**effect, "station": int(station_id)})
+            control["applied"][proposal_id] = (detector, int(station_id))
+        if control.get("watch") is not None:
+            control["watch"].mark_applied(detector, int(station_id))
+        return True
 
     def _raise_risk(self, event: dict[str, Any], severity: float) -> None:
         threshold = float(self.plants[event["plant_id"]]["budget_threshold"])
@@ -536,3 +686,35 @@ class LiveSimulationManager:
             "actual_defect": outcome,
         }
         self._append_event(run_id, outcome_event)
+
+
+def _mitigated(control: dict[str, Any], scenario: str, station_id: int, part: str) -> float:
+    """The share of `scenario`'s effect removed by approved mitigations, 0..1.
+
+    `part` "signal" ignores risk-only mitigations; "risk" counts every one, since
+    removing a signal's excess also removes the risk that excess was adding.
+    """
+    best = 0.0
+    for m in control.get("mitigations") or ():
+        if scenario not in m["scenarios"]:
+            continue
+        if m["scope"] == "risk" and part != "risk":
+            continue
+        if m["scope"] == "station" and m["station"] != station_id:
+            continue
+        best = max(best, float(m["factor"]))
+    return min(best, 1.0)
+
+
+def _audit(ops: Any, action: str, resource_id: str, payload: dict[str, Any]) -> None:
+    """An audit row for something the SYSTEM did, with no request to attribute it to."""
+    try:
+        db.execute(
+            ops,
+            """INSERT INTO audit_log (user_role, action, resource_type, resource_id, payload)
+               VALUES (?,?,?,?,?)""",
+            ("auto-monitor", action, "action_proposal", resource_id,
+             json.dumps(payload, default=str)),
+        )
+    except Exception as exc:  # noqa: BLE001 - auditing must never break the producer
+        print(f"[watch] audit failed for {resource_id}: {exc}")

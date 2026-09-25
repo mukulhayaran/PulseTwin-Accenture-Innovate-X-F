@@ -36,6 +36,7 @@ export default function CopilotThread({
   onAction,
   onTurnComplete,
   compact,
+  emptyHint = "Ask about the line, or run a named action.",
   children,
 }: {
   plant: string;
@@ -46,6 +47,8 @@ export default function CopilotThread({
   // verdict of the turn that actually just happened.
   onTurnComplete?: (run: TriageRun) => void;
   compact?: boolean;
+  /** First line of the empty state -- what this surface is for. */
+  emptyHint?: string;
   // The composer is passed in so the page and the dock can lay it out differently while
   // sharing every bit of conversation state.
   children?: (ask: (a: Omit<StartTriageArgs, "plant">) => void, busy: boolean) => React.ReactNode;
@@ -190,7 +193,7 @@ export default function CopilotThread({
         {turns.length === 0 && (
           <div className="py-8 text-center">
             <p className="text-xs text-ink-dim">
-              Ask about the line, or run a named action.
+              {emptyHint}
             </p>
             <p className="mt-1 text-2xs text-ink-faint">
               {mode === "agent"

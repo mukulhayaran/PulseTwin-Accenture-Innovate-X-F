@@ -26,7 +26,7 @@ import { getHealth } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import {
   AnimatedNumber, Badge, Skeleton,
-  IconArrowRight, IconChart, IconGear, IconSparkle, IconTarget, IconUser,
+  IconArrowRight, IconChart, IconGear, IconTarget, IconUser,
 } from "@/components/ui";
 import { ChassisBlueprint } from "@/components/landing/ChassisBlueprint";
 
@@ -62,14 +62,6 @@ const STATIONS = [
     role: "System",
     Icon: IconGear,
     body: "Model health, drift detection, ingestion lag and audit trail — keeping the twin itself honest, not the line.",
-  },
-  {
-    id: "05",
-    href: "/copilot",
-    title: "Copilot",
-    role: "Assistant",
-    Icon: IconSparkle,
-    body: "Ask in plain language. Every claim the agent makes is re-checked against the tool results it actually saw, or it is redacted.",
   },
 ] as const;
 
@@ -163,12 +155,6 @@ export default function Landing() {
                 API offline
               </Badge>
             )}
-            <Link
-              href="/login"
-              className="inline-flex h-10 items-center border border-line-strong px-5 text-xs font-bold tracking-[0.03em] text-ink transition-colors hover:border-ink"
-            >
-              Sign in
-            </Link>
           </div>
         </div>
       </header>
@@ -275,7 +261,7 @@ export default function Landing() {
             <div className="max-w-xl">
               <span className="label-upper text-primary">The views</span>
               <h2 className="mt-4 text-3xl font-bold leading-[1.1] text-ink">
-                Five ways in. One set of numbers.
+                Four ways in. One set of numbers.
               </h2>
               <p className="mt-5 text-base leading-relaxed text-ink-dim">
                 Each role sees the decision it actually owns, drawn from the same artifact —
@@ -289,7 +275,7 @@ export default function Landing() {
             </div>
           </div>
 
-          <ol className="mt-14 grid gap-px bg-line sm:grid-cols-2 xl:grid-cols-5">
+          <ol className="mt-14 grid gap-px bg-line sm:grid-cols-2 xl:grid-cols-4">
             {STATIONS.map((s) => (
               <Station key={s.id} station={s} />
             ))}
@@ -314,12 +300,6 @@ export default function Landing() {
             >
               Open the overview
               <IconArrowRight size={15} />
-            </Link>
-            <Link
-              href="/login"
-              className="inline-flex h-12 items-center border border-on-dark px-8 text-sm font-bold tracking-[0.03em] text-on-dark transition-colors hover:bg-on-dark/10"
-            >
-              Sign in as a role
             </Link>
           </div>
         </div>

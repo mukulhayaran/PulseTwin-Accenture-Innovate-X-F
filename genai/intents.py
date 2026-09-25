@@ -1,4 +1,4 @@
-"""The five things the copilot can be asked to do, and what each one means.
+"""The eight things the copilot can be asked to do, and what each one means.
 
 An intent is a KEY, not a sentence. "Generate Shift Handover" is a button that posts
 `intent: "handover"`, never a canned English string the browser made up, for three
@@ -31,6 +31,10 @@ INCIDENT = "incident"
 HANDOVER = "handover"
 SHIFT_INTEL = "shift_intel"
 WHATIF = "whatif"
+# ADR-051: the three watch-triggered agents. Each PROPOSES an action; a human decides.
+STARVATION = "starvation"
+PAINT_ENV = "paint_env"
+TOOL_WEAR = "tool_wear"
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,19 @@ class Intent:
 COMMON_GUIDANCE = (
     "Work only from tool results. Every number you report must be citable to a call you "
     "actually made in THIS turn."
+)
+
+# ADR-051, learned from the first live run: the model proposed sound actions but rested
+# them on a claim about `stalled_state` ("down" -- a string) and on the what-if station
+# LIST, so the verifier rightly dropped both; and a torque claim in "Nm" -- not a claim
+# unit -- made a whole tool-wear finding unparseable. Said here, where the model reads it.
+ACTION_GUIDANCE = (
+    " Every action's claim_ids must name NUMERIC claims -- a number read at the pointer, "
+    "never a string such as a station state and never a list such as the what-if station "
+    "list; say those in words in the rationale instead. Claim units are only uph, pct, "
+    "usd, count, station_id, minutes, ratio, seconds: there is no Nm, no A and no amps, "
+    "so never claim a raw torque or current value -- claim its deviation_pct as pct. A "
+    "claim with any other unit makes the whole finding unreadable."
 )
 
 INTENTS: dict[str, Intent] = {
@@ -137,6 +154,63 @@ INTENTS: dict[str, Intent] = {
         plan="whatif",
         requires_station=True,
     ),
+    STARVATION: Intent(
+        key=STARVATION,
+        label="Prevent line starvation",
+        instruction=(
+            "The watch reports a station at risk of starving the line (station "
+            "{station_id}). Establish the risk and propose a corrective action. {question}"
+        ),
+        guidance=(
+            "START with get_watch_firings (detector starvation) and claim the measured "
+            "stall evidence from it -- stalled_share and mean_cycle_time_s against takt_s. "
+            "Confirm the line context with get_bottleneck_current. Then check "
+            "get_whatif_stations: if the DOWNSTREAM station is in the grid, "
+            "simulate_whatif a positive buffer_delta for it and claim baseline and "
+            "projected throughput. PROPOSE a maintenance_ticket for a station that is "
+            "down, and increase_feed_buffer for the downstream station -- saying plainly "
+            "in the rationale when its effect was not simulated. " + COMMON_GUIDANCE
+            + ACTION_GUIDANCE
+        ),
+        plan="starvation",
+    ),
+    PAINT_ENV: Intent(
+        key=PAINT_ENV,
+        label="Mitigate paint environment risk",
+        instruction=(
+            "The watch reports paint-zone humidity the ambient does not explain. "
+            "Establish the risk to paint quality and propose a mitigation. {question}"
+        ),
+        guidance=(
+            "START with get_watch_firings (detector paint_env) and claim "
+            "zone_humidity_mean_pct and humidity_excess_over_ambient_pct from it. Call "
+            "search_engineering_knowledge for the paint humidity and dwell procedure and "
+            "cite what you use. PROPOSE hvac_setpoint with target_humidity_pct at or below "
+            "the humidity_threshold_pct the evidence carries, and resequence_paint_queue "
+            "when exposed units are on the line now. " + COMMON_GUIDANCE
+            + ACTION_GUIDANCE
+        ),
+        plan="paint_env",
+    ),
+    TOOL_WEAR: Intent(
+        key=TOOL_WEAR,
+        label="Assess tool degradation",
+        instruction=(
+            "The watch reports a torque or weld-current drift at station {station_id}. "
+            "Establish whether the tool is degrading and propose an action. {question}"
+        ),
+        guidance=(
+            "START with get_watch_firings (detector tool_wear) and claim deviation_pct "
+            "and baseline_mean from it. Call search_engineering_knowledge for the torque "
+            "or weld verification procedure and cite it. Use get_station_config to find "
+            "an adjacent station carrying the SAME signal, and get_station_stats for its "
+            "measured util. PROPOSE a maintenance_ticket for the degraded station, and "
+            "shift_weld_load to the adjacent same-capability station with the lowest "
+            "util. There is no electrode-force signal: do not claim tip wear as measured. "
+            + COMMON_GUIDANCE + ACTION_GUIDANCE
+        ),
+        plan="tool_wear",
+    ),
 }
 
 KEYS = frozenset(INTENTS)
@@ -185,6 +259,7 @@ def plan(key: str | None) -> str:
 
 __all__ = [
     "ASK", "INCIDENT", "HANDOVER", "SHIFT_INTEL", "WHATIF",
-    "Intent", "INTENTS", "KEYS", "LABELS", "COMMON_GUIDANCE",
+    "STARVATION", "PAINT_ENV", "TOOL_WEAR",
+    "Intent", "INTENTS", "KEYS", "LABELS", "COMMON_GUIDANCE", "ACTION_GUIDANCE",
     "get", "expand", "guidance", "plan",
 ]

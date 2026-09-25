@@ -130,7 +130,8 @@ def test_a_restricted_role_reports_rather_than_invents(ctx) -> None:
 # whole argument for this module is that the demo survives an outage with its guarantees
 # intact, not with a weaker version of them.
 
-PLANS = ["general", "handover", "shift_intel", "whatif", "incident"]
+PLANS = ["general", "handover", "shift_intel", "whatif", "incident",
+         "starvation", "paint_env", "tool_wear"]
 
 
 def _grid_station(client, plant: str):
@@ -210,3 +211,18 @@ def test_intents_and_plans_are_in_sync() -> None:
     named = {i.plan for i in intents.INTENTS.values()}
     missing = named - set(offline_triage.PLANS)
     assert not missing, f"intents name missing plans: {missing}"
+
+
+def test_a_conversation_turn_answers_from_line_data_and_the_knowledge_base(ctx) -> None:
+    """The copilot's `ask` turn is RAG plus live data: retrieved passages are quoted
+    verbatim beside the line claims, and every quote passes the substring check."""
+    registry, api, client = ctx
+    loop, finding = offline_triage.run_plan(
+        "general", registry, api, plant_id="plant_a",
+        question="torque specification fastening verification")
+    ver, served = V.verify(finding, loop.transcript,
+                           station_ids=_station_ids(client, "plant_a"))
+    assert ver.status != V.REJECTED, ver.reject_reason
+    assert finding.claims and finding.knowledge_citations
+    assert ver.knowledge_citations_verified == len(finding.knowledge_citations)
+    assert served.knowledge_citations

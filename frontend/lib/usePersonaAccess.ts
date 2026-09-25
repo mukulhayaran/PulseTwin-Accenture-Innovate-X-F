@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
-import { type Role, getSession, restoreSession, setRole } from "@/lib/api";
+import { usePathname } from "next/navigation";
+import { SESSION_EVENT, type Role, getSession, restoreSession, setRole } from "@/lib/api";
 import { canEnter, policyFor } from "@/lib/routeAccess";
 
 // Gates a persona page's ENTRY on the SESSION the server issued, then locks the page to
@@ -13,8 +13,8 @@ import { canEnter, policyFor } from "@/lib/routeAccess";
 //        client had set on itself, defaulting to "leadership". So a visitor who never
 //        signed in entered every view, and a leadership login entered /manager.
 //   now: entry requires a live server session whose role the route policy names
-//        explicitly (lib/routeAccess.ts). Signed out -> /login?next=<here>. Signed in as
-//        the wrong role -> the page renders AccessRestricted instead of its data.
+//        explicitly (lib/routeAccess.ts). Signed out -> the page renders SignInGate in place. Signed in as
+//        the wrong role -> the page renders SignInGate for its own role (switch account).
 //
 // The persona pin stays exactly as it was and for the same reason: a page shows its own
 // persona's job, never a blend (CLAUDE.md §7, "the views are not symmetric"). setRole()
@@ -28,15 +28,22 @@ export type AccessState =
   | { status: "pending" }
   /** Entry granted; the page may render. */
   | { status: "granted"; role: Role }
-  /** No session at all -- a redirect to /login is already in flight. */
+  /** No session at all -- the page renders SignInGate instead of its data. */
   | { status: "anonymous" }
   /** Signed in, but as a role this view is not for. */
   | { status: "denied"; role: Role };
 
 export function usePersonaAccess(pageRole: Role): AccessState {
-  const router = useRouter();
   const pathname = usePathname();
   const [state, setState] = useState<AccessState>({ status: "pending" });
+  // Bumped on sign-in / sign-out, so the gate re-evaluates without a navigation.
+  const [epoch, setEpoch] = useState(0);
+
+  useEffect(() => {
+    const bump = () => setEpoch((n) => n + 1);
+    window.addEventListener(SESSION_EVENT, bump);
+    return () => window.removeEventListener(SESSION_EVENT, bump);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,8 +59,6 @@ export function usePersonaAccess(pageRole: Role): AccessState {
 
       if (!session && !isPublic) {
         setState({ status: "anonymous" });
-        const next = encodeURIComponent(pathname ?? "/");
-        router.replace(`/login?next=${next}`);
         return;
       }
 
@@ -70,7 +75,7 @@ export function usePersonaAccess(pageRole: Role): AccessState {
     return () => {
       cancelled = true;
     };
-  }, [pageRole, pathname, router]);
+  }, [pageRole, pathname, epoch]);
 
   return state;
 }

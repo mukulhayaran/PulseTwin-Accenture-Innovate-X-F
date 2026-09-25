@@ -12,7 +12,7 @@ import {
 import { cn } from "@/lib/cn";
 import { axisProps, gridProps, theme } from "@/lib/theme";
 import { usePersonaAccess } from "@/lib/usePersonaAccess";
-import AccessRestricted from "@/components/shared/AccessRestricted";
+import SignInGate from "@/components/shared/SignInGate";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import { useAuditToast } from "@/components/shared/AuditToast";
 import {
@@ -20,6 +20,8 @@ import {
   Select, Skeleton, SkeletonChart, SkeletonTable, Slider, Tooltip, type Column,
 } from "@/components/ui";
 import CopilotDock from "@/components/copilot/CopilotDock";
+import AgentPanel from "@/components/copilot/AgentPanel";
+import ProposalInbox from "@/components/ops/ProposalInbox";
 
 export default function ManagerPage() {
   const [plant, setPlant] = useState("plant_a");
@@ -44,7 +46,7 @@ export default function ManagerPage() {
   // Requires a live `manager` session, THEN locks this page to its own fixed persona --
   // see lib/usePersonaAccess.ts and the exact-match policy in lib/routeAccess.ts. Not a
   // rank check: a leadership login is refused here, the same way a manager is refused on
-  // /leadership. Signed-out visitors are redirected to /login by the hook.
+  // /leadership. Signed-out visitors get SignInGate in place.
   const access = usePersonaAccess("manager");
   const granted = access.status === "granted";
 
@@ -168,9 +170,10 @@ export default function ManagerPage() {
     { key: "lost", header: "Lost UPH", align: "right", cell: (s) => <Num>{s.lost_uph.toFixed(1)}</Num> },
   ];
 
-  if (access.status === "pending" || access.status === "anonymous") return null;
+  if (access.status === "pending") return null;
+  if (access.status === "anonymous") return <SignInGate view="Manager" required={["manager"]} />;
   if (access.status === "denied") {
-    return <AccessRestricted required={["manager"]} current={access.role} />;
+    return <SignInGate view="Manager" required={["manager"]} current={access.role} />;
   }
 
   return (
@@ -251,7 +254,7 @@ export default function ManagerPage() {
                     ))}
                   </Scatter>
                   <Line
-                    type="stepAfter" dataKey="truth" stroke={theme.ai} dot={false}
+                    type="stepAfter" dataKey="truth" stroke={theme.ink} dot={false}
                     strokeWidth={1.5} isAnimationActive={false}
                   />
                 </ComposedChart>
@@ -260,7 +263,7 @@ export default function ManagerPage() {
                 items={[
                   { color: theme.ok, label: "detector correct" },
                   { color: theme.danger, label: "detector wrong" },
-                  { color: theme.ai, label: "sustained truth (2h)", shape: "line" },
+                  { color: theme.ink, label: "sustained truth (2h)", shape: "line" },
                 ]}
               />
             </>
@@ -430,6 +433,10 @@ export default function ManagerPage() {
             )}
           </div>
         </Panel>
+      </div>
+      <div className="mt-4 space-y-4">
+        <ProposalInbox plant={plant} onAction={show} />
+        <AgentPanel plant={plant} onAction={show} />
       </div>
       {ToastElement}
       <CopilotDock plant={plant}

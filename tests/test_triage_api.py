@@ -295,6 +295,43 @@ def test_thread_listing_is_plant_scoped(client) -> None:
     assert all(t["plant_id"] == "plant_a" for t in body["threads"])
 
 
+def test_thread_listing_filters_on_the_opening_intent(client) -> None:
+    """The copilot lists conversations only; agent runs from /manager and /ops stay out."""
+    h = {"X-PulseTwin-Role": "manager"}
+    agent = client.post("/api/triage/runs", json={"plant_id": "plant_a", "intent": "handover"},
+                        headers=h).json()
+    chat = client.post("/api/triage/runs",
+                       json={"plant_id": "plant_a", "intent": "ask",
+                             "question": "why is the constraint where it is?"},
+                       headers=h).json()
+    ids = {t["thread_id"] for t in client.get(
+        "/api/triage/threads?plant_id=plant_a&intent=ask", headers=h).json()["threads"]}
+    assert chat["thread_id"] in ids and agent["thread_id"] not in ids
+
+
 def test_threads_require_manager(client) -> None:
     assert client.get("/api/triage/threads?plant_id=plant_a",
                       headers={"X-PulseTwin-Role": "supervisor"}).status_code == 403
+
+
+def test_a_run_whose_worker_went_silent_reports_failed(client, tmp_path, monkeypatch) -> None:
+    """A worker killed outright cannot record its own failure; the API must not report
+    it as running forever. Fresh runs are left alone."""
+    import os
+    import time
+
+    monkeypatch.setenv("PULSETWIN_JOBS_DIR", str(tmp_path))
+    h = {"X-PulseTwin-Role": "manager"}
+    run_id = client.post("/api/triage/runs", json={"plant_id": "plant_a", "intent": "handover"},
+                         headers=h).json()["run_id"]
+    assert client.get(f"/api/triage/runs/{run_id}", headers=h).json()["status"] == "queued"
+
+    hb = tmp_path / "pulsetwin_triage_runs" / f"{run_id}.json"
+    old = time.time() - R.WORKER_STALE_S - 60
+    os.utime(hb, (old, old))
+    body = client.get(f"/api/triage/runs/{run_id}", headers=h).json()
+    assert body["status"] == "failed"
+    assert body["error"].startswith("worker_stopped")
+
+    hb.unlink()  # no heartbeat at all: fall back to the row's age -- still fresh here
+    assert client.get(f"/api/triage/runs/{run_id}", headers=h).json()["status"] == "queued"

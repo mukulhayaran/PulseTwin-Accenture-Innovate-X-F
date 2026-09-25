@@ -57,9 +57,9 @@ const ROLE_TONE: Record<Role, string> = {
 // the one place the UI has to look like a real product; the menu says what it is.
 const DEMO_USER: Record<Role, string> = {
   supervisor: "Jordan Malik",
-  manager: "Priya Raman",
-  leadership: "Alex Whitfield",
-  system: "Sam Okafor",
+  manager: "Mukul Hayaran",
+  leadership: "Rishabh Yadav",
+  system: "Prashant Mishra",
 };
 
 export const PLANT_OPTIONS = [
@@ -229,7 +229,6 @@ function NotificationTray({ notices }: { notices: Notice[] }) {
 // ------------------------------------------------------------------------ user chip
 
 function UserChip({ role, sessionRole }: { role: Role; sessionRole: Role | null }) {
-  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -250,23 +249,17 @@ function UserChip({ role, sessionRole }: { role: Role; sessionRole: Role | null 
     await logout();
     setOpen(false);
     setBusy(false);
-    router.replace("/login");
+    // A restricted page re-renders its SignInGate on SESSION_EVENT; nowhere to navigate.
   };
 
-  // Anonymous gets the sign-in affordance, not a fabricated identity. Showing a named
-  // account for someone who never signed in is the one thing a chip like this must not do.
+  // Anonymous gets a plain "not signed in", not a fabricated identity. There is no login
+  // page to link to: each restricted view asks for sign-in in place (SignInGate).
   if (!sessionRole) {
     return (
-      <Link
-        href="/login"
-        className={cn(
-          "flex items-center gap-2 border border-line-strong px-3 py-1.5 text-xs font-bold text-ink",
-          "transition-colors duration-150 hover:bg-surface-2 hover:border-ink"
-        )}
-      >
-        <IconLock size={13} className="text-ink-faint" />
-        Sign in
-      </Link>
+      <span className="flex items-center gap-2 px-3 py-1.5 text-xs text-ink-faint">
+        <IconLock size={13} />
+        Not signed in
+      </span>
     );
   }
 
@@ -335,33 +328,6 @@ function UserChip({ role, sessionRole }: { role: Role; sessionRole: Role | null 
 
 // -------------------------------------------------------------------------- the rail
 
-/** The plant outline under the rail's sign-off. Decorative; marked aria-hidden. */
-function RailSkyline() {
-  return (
-    <svg
-      viewBox="0 0 220 76"
-      className="w-full text-on-dark/12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.2"
-      aria-hidden
-    >
-      <path d="M0 70h220" />
-      <path d="M8 70V44l16-9v9l16-9v35z" />
-      <path d="M46 70V30l14-8v48z" />
-      <path d="M64 70V38l18-10v9l18-10v43z" />
-      <path d="M104 70V22l12-7v55z" />
-      <path d="M120 70V46l20-11v35z" />
-      <path d="M144 70V34l16-9v45z" />
-      <path d="M164 70V40l22-12v42z" />
-      <path d="M190 70V50l14-8v28z" />
-      <path d="M30 35v-9M32 24a3 3 0 1 0-4 0" />
-      <path d="M110 15V6M112 4a3 3 0 1 0-4 0" />
-      <path d="M172 28v-8M174 18a3 3 0 1 0-4 0" />
-    </svg>
-  );
-}
-
 function Rail({
   role,
   sessionRole,
@@ -394,8 +360,7 @@ function Rail({
           <span className="text-lg font-bold tracking-normal text-on-dark">PulseTwin</span>
         </span>
         <span className="mt-2 block text-2xs leading-relaxed text-on-dark-soft">
-          Digital Twin for
-          <br />a Smarter Tomorrow
+          Assembly-line digital twin
         </span>
       </Link>
 
@@ -406,25 +371,22 @@ function Rail({
             const active = pathname === href;
             const open = canEnter(href, sessionRole);
 
-            // Locked: still listed, never a link. Clicking it would land on the guard,
-            // which either bounces to /login or shows AccessRestricted -- so the rail
-            // says which it would be up front instead of making the user find out.
+            // Locked: still a link -- the view itself asks for sign-in as its own role
+            // (SignInGate), so a click goes straight to that form. The lock says so first.
             if (!open) {
               return (
                 <li key={href}>
-                  <span
-                    title={
-                      sessionRole
-                        ? `Signed in as ${sessionRole}. This view is for ${requires?.join(" or ")}.`
-                        : `Sign in as ${requires?.join(" or ")} to open this view.`
-                    }
-                    aria-disabled
-                    className="relative flex cursor-not-allowed items-center gap-3 px-3 py-2.5 text-sm text-on-dark/35"
+                  <Link
+                    href={href}
+                    onClick={onNavigate}
+                    aria-current={active ? "page" : undefined}
+                    title={`Sign in as ${requires?.join(" or ")} to open this view.`}
+                    className="relative flex items-center gap-3 px-3 py-2.5 text-sm text-on-dark/45 transition-colors duration-150 hover:bg-on-dark/5 hover:text-on-dark-soft"
                   >
                     <Icon size={17} className="shrink-0" />
                     {label}
                     <IconLock size={12} className="ml-auto shrink-0" />
-                  </span>
+                  </Link>
                 </li>
               );
             }
@@ -455,17 +417,7 @@ function Rail({
       </nav>
 
       <div className="px-5 pb-5 pt-6">
-        <p className="text-sm font-bold leading-snug text-on-dark">
-          Build Better.
-          <br />
-          Faster.
-          <br />
-          Together.
-        </p>
-        <div className="mt-4">
-          <RailSkyline />
-        </div>
-        <div className="mt-4 flex items-center justify-between gap-2 border-t border-line-on-dark pt-3">
+        <div className="flex items-center justify-between gap-2 border-t border-line-on-dark pt-3">
           <span className="text-numeric text-2xs text-on-dark-soft">v0.4.0</span>
           <span
             className={cn(
@@ -489,10 +441,7 @@ function Rail({
             </>
           ) : (
             <>
-              Not signed in ·{" "}
-              <Link href="/login" className="font-bold text-on-dark underline-offset-2 hover:underline">
-                Sign in
-              </Link>
+              Not signed in · restricted views ask for sign-in
             </>
           )}
         </div>
@@ -530,6 +479,7 @@ export default function AppShell({
   children: ReactNode;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [shift, setShift] = useState<ShiftSummary | null>(null);
   const [query, setQuery] = useState("");
   const [railOpen, setRailOpen] = useState(false);
@@ -585,7 +535,10 @@ export default function AppShell({
     // prose -- which is also why the copilot never parses a station back out of it
     // (CLAUDE.md §1); its what-if action takes the station structurally instead.
     if (/^u\d{4,8}$/i.test(q)) {
-      router.push(`/supervisor#unit=${q.toUpperCase()}`);
+      // Already on the floor view: router.push to the same route neither remounts the
+      // page nor fires `hashchange`, so the unit never opened. Setting the hash does.
+      if (pathname === "/supervisor") window.location.hash = `unit=${q.toUpperCase()}`;
+      else router.push(`/supervisor#unit=${q.toUpperCase()}`);
     } else {
       router.push(`/copilot#q=${encodeURIComponent(q)}`);
     }
@@ -695,13 +648,13 @@ export default function AppShell({
 
           {/* ------------------------------------------------------ sub-bar */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line px-4 py-2.5 lg:px-6">
-            <h1 className="shrink-0 text-sm font-bold uppercase tracking-[0.115em] text-ink">
+            <h1 className="shrink-0 text-lg font-bold text-ink">
               {persona}
             </h1>
             {controls}
             <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
               {status}
-              <span className="text-numeric shrink-0 text-2xs text-ink-faint">
+              <span className="text-numeric hidden shrink-0 text-2xs text-ink-faint 2xl:inline">
                 {now
                   ? now.toLocaleDateString(undefined, {
                       weekday: "short",
@@ -714,7 +667,8 @@ export default function AppShell({
             </div>
           </div>
 
-          <main className="flex-1 p-4 lg:p-6">{children}</main>
+          {/* pb-20 keeps the last panel scrollable clear of the fixed copilot dock */}
+          <main className="flex-1 p-4 pb-20 lg:p-6 lg:pb-20">{children}</main>
         </div>
       </div>
     </TooltipProvider>

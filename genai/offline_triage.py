@@ -30,7 +30,7 @@ from typing import Any
 
 from genai import tools as T
 from genai.api_client import PulseTwinAPI
-from genai.finding import Citation, Claim, Finding
+from genai.finding import Citation, Claim, Finding, KnowledgeCitation, ProposedAction
 from genai.loop import LoopResult, ToolRecord, truncate
 
 BANNER = (
@@ -51,6 +51,28 @@ def _call(
     payload = truncate(T.dispatch(registry, api, name, json.dumps(args)))
     records.append(ToolRecord(call_id, "", seq, name, args, payload, 0.0))
     return call_id, payload
+
+
+def _retrieve_knowledge(
+    records: list[ToolRecord], registry: dict[str, T.ToolSpec], api: PulseTwinAPI,
+    question: str, limit: int = 2,
+) -> tuple[list[KnowledgeCitation], list[dict]]:
+    """The RAG half of a conversation turn: retrieve passages for the question and cite
+    each one VERBATIM, so the verifier's substring check can re-derive every quote. A
+    question with no matching passage retrieves nothing and cites nothing -- never an
+    arbitrary top-k of unrelated procedures."""
+    ks_id, ks = _call(records, registry, api, "search_engineering_knowledge",
+                      {"query": question, "limit": limit})
+    cites: list[KnowledgeCitation] = []
+    passages: list[dict] = []
+    for i, r in enumerate((_ok(ks) or {}).get("results") or []):
+        if isinstance(r, dict) and isinstance(r.get("text"), str) and r["text"].strip():
+            passages.append(r)
+            cites.append(KnowledgeCitation(
+                id=f"k{len(cites) + 1}", quoted_text=r["text"], doc_id=str(r.get("doc_id")),
+                section=str(r.get("section_id")),
+                citation=Citation(ks_id, f"/data/results/{i}/text")))
+    return cites, passages
 
 
 def run(
@@ -216,6 +238,14 @@ def run(
             else:
                 unanswered.append(f"simulate_whatif: {sim.get('error')}")
 
+    # Conversation turns answer from BOTH sources: the live line above, and the
+    # engineering knowledge base for whatever procedure the question touches.
+    knowledge, passages = _retrieve_knowledge(records, registry, api, question)
+    if passages:
+        top = passages[0]
+        notes.append(f"The most relevant procedure is {top.get('doc_title')}, section "
+                     f"{top.get('section_id')}, quoted below.")
+
     summary = f"{BANNER} " + (" ".join(notes) if notes else
                               "Constraint and station statistics were read directly.")
 
@@ -231,6 +261,7 @@ def run(
         ],
         confidence="medium" if len(claims) >= 4 else "low",
         unanswered=unanswered,
+        knowledge_citations=knowledge,
     )
     return loop, finding
 
@@ -753,12 +784,295 @@ def run_incident(
     )
 
 
+# ------------------------------------------------------------ ADR-051: watch agents
+#
+# Each plan starts from the watch's own measured evidence (get_watch_firings), claims it,
+# and PROPOSES actions from genai/finding.py::ACTION_TYPES whose `claim_ids` name those
+# claims -- so an action is served only when the evidence it rests on verified. Nothing
+# here executes anything: a human approves, and the twin applies.
+
+
+def _watch_firing(
+    records: list[ToolRecord], registry: dict[str, T.ToolSpec], api: PulseTwinAPI,
+    plant_id: str, detector: str, station_id: int | None, unanswered: list[str],
+) -> tuple[str, str, dict[str, Any]] | None:
+    """(call_id, pointer to the firing's evidence, evidence) for the newest firing of
+    `detector` -- at `station_id` when one was given -- or None, recorded in unanswered."""
+    fw_id, fw = _call(records, registry, api, "get_watch_firings",
+                      {"plant_id": plant_id, "detector": detector, "limit": 10})
+    data = _ok(fw)
+    if data is None:
+        _fail(unanswered, "get_watch_firings", fw)
+        return None
+    for i, f in enumerate(data.get("firings") or []):
+        if station_id is None or int(f.get("station_id", -1)) == int(station_id):
+            return fw_id, f"/data/firings/{i}/evidence", f.get("evidence") or {}
+    unanswered.append(
+        f"get_watch_firings: no {detector.replace('_', ' ')} firing"
+        + (f" at station {station_id}" if station_id is not None else "")
+        + " -- the watch has not seen this risk, so no action is proposed.")
+    return None
+
+
+def _line_context(records: list[ToolRecord], registry: dict[str, T.ToolSpec],
+                  api: PulseTwinAPI, plant_id: str, claims: list[Claim],
+                  unanswered: list[str]) -> None:
+    """One claim that always exists, so a plan with no firing still verifies."""
+    bn_id, bn = _call(records, registry, api, "get_bottleneck_current",
+                      {"plant_id": plant_id})
+    bnd = _ok(bn)
+    if bnd and isinstance(bnd.get("current_station"), int):
+        claims.append(Claim(
+            id="c0", text=f"The line's current constraint is station S{bnd['current_station']}",
+            value=float(bnd["current_station"]), unit="station_id", provenance="measured",
+            citation=Citation(bn_id, "/data/current_station")))
+    else:
+        _fail(unanswered, "get_bottleneck_current", bn)
+
+
+def _evidence_claim(claims: list[Claim], cid: str, text: str, evidence: dict[str, Any],
+                    field_name: str, unit: str, call_id: str, base: str) -> bool:
+    value = evidence.get(field_name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    claims.append(Claim(id=cid, text=text, value=float(value), unit=unit,
+                        provenance="measured",
+                        citation=Citation(call_id, f"{base}/{field_name}")))
+    return True
+
+
+def _finish(question: str, claims: list[Claim], notes: list[str], recommendation: str,
+            unanswered: list[str], actions: list[ProposedAction],
+            knowledge: list[KnowledgeCitation], records: list[ToolRecord],
+            alternatives: list[str]) -> tuple[LoopResult, Finding]:
+    loop = LoopResult(status="finished", content="", records=records, iterations=0)
+    return loop, Finding(
+        question=question,
+        summary=f"{BANNER} " + (" ".join(notes) if notes else
+                                "The watch evidence was read directly."),
+        claims=claims, recommendation=f"{BANNER} {recommendation}",
+        alternatives_considered=alternatives,
+        confidence="medium" if actions else "low",
+        unanswered=unanswered, knowledge_citations=knowledge, proposed_actions=actions,
+    )
+
+
+def run_starvation(
+    registry: dict[str, T.ToolSpec], api: PulseTwinAPI, *, plant_id: str, question: str,
+    station_id: int | None = None,
+) -> tuple[LoopResult, Finding]:
+    """A stalled station will starve the next one: evidence, a tested buffer, a ticket."""
+    records: list[ToolRecord] = []
+    claims: list[Claim] = []
+    unanswered: list[str] = []
+    notes: list[str] = []
+    actions: list[ProposedAction] = []
+    _line_context(records, registry, api, plant_id, claims, unanswered)
+    hit = _watch_firing(records, registry, api, plant_id, "starvation", station_id,
+                        unanswered)
+    if hit:
+        fw_id, base, ev = hit
+        sid = int(ev.get("station_id") or station_id or 0)
+        down = ev.get("downstream_station")
+        _evidence_claim(claims, "c1", f"Share of recent cycles S{sid} spent stalled",
+                        ev, "stalled_share", "ratio", fw_id, base)
+        _evidence_claim(claims, "c2", f"Mean recent cycle time at S{sid}", ev,
+                        "mean_cycle_time_s", "seconds", fw_id, base)
+        _evidence_claim(claims, "c3", "The line's takt time", ev, "takt_s", "seconds",
+                        fw_id, base)
+        stall_ids = [c.id for c in claims if c.id in ("c1", "c2")]
+        notes.append(f"S{sid} is stalled ({ev.get('stalled_state')}) and cycling slower "
+                     f"than takt, so the station after it will draw its buffer dry.")
+        if ev.get("stalled_state") == "down" and stall_ids:
+            actions.append(ProposedAction(
+                id="a1", action_type="maintenance_ticket",
+                params={"station_id": sid},
+                rationale=f"S{sid} is reporting down on most recent cycles; restore it "
+                          f"before its downstream buffer empties.",
+                claim_ids=stall_ids))
+        if isinstance(down, int) and stall_ids:
+            simulated_ids: list[str] = []
+            wf_id, wf = _call(records, registry, api, "get_whatif_stations",
+                              {"plant_id": plant_id})
+            covered = [r.get("station_id") for r in (_ok(wf) or [])
+                       if isinstance(r, dict)]
+            if down in covered:
+                sim_id, sim = _call(records, registry, api, "simulate_whatif", {
+                    "plant_id": plant_id, "station_id": down, "buffer_delta": 4,
+                    "cycle_delta_pct": 0.0})
+                simd = _ok(sim)
+                if simd:
+                    for cid, label, ptr in (
+                            ("c4", f"Baseline throughput with S{down}'s feed buffer as is",
+                             "/data/baseline/throughput_uph"),
+                            ("c5", f"Projected throughput with four more feed slots at S{down}",
+                             "/data/projected/throughput_uph")):
+                        value = simd
+                        for part in ptr.split("/")[2:]:
+                            value = (value or {}).get(part)
+                        if isinstance(value, (int, float)):
+                            claims.append(Claim(
+                                id=cid, text=label, value=float(value), unit="uph",
+                                provenance="measured", citation=Citation(sim_id, ptr)))
+                            simulated_ids.append(cid)
+                else:
+                    _fail(unanswered, "simulate_whatif", sim)
+            else:
+                unanswered.append(f"simulate_whatif: S{down} is not in the what-if grid, "
+                                  f"so the buffer change is proposed without a simulated "
+                                  f"effect.")
+            actions.append(ProposedAction(
+                id="a2", action_type="increase_feed_buffer",
+                params={"station_id": down, "buffer_delta": 4},
+                rationale=(f"Add feed slots ahead of S{down} so it keeps working while "
+                           f"S{sid} recovers. "
+                           + ("The effect was tested on the simulation grid."
+                              if simulated_ids else "Its effect was NOT simulated.")),
+                claim_ids=stall_ids + simulated_ids))
+    return _finish(
+        question, claims, notes,
+        "Approve the ticket first if the station is down; the buffer change buys time, "
+        "it does not remove the cause." if actions else
+        "No starvation risk was established, so nothing is proposed.",
+        unanswered, actions, [], records,
+        ["Rerouting units around the stalled station (not proposed: the line model has "
+         "no parallel path to route through)."])
+
+
+def run_paint_env(
+    registry: dict[str, T.ToolSpec], api: PulseTwinAPI, *, plant_id: str, question: str,
+    station_id: int | None = None,
+) -> tuple[LoopResult, Finding]:
+    """Zone humidity the ambient does not explain: evidence, the SOP, HVAC + resequence."""
+    records: list[ToolRecord] = []
+    claims: list[Claim] = []
+    unanswered: list[str] = []
+    notes: list[str] = []
+    actions: list[ProposedAction] = []
+    _line_context(records, registry, api, plant_id, claims, unanswered)
+    hit = _watch_firing(records, registry, api, plant_id, "paint_env", None, unanswered)
+    knowledge: list[KnowledgeCitation] = []
+    if hit:
+        fw_id, base, ev = hit
+        _evidence_claim(claims, "c1", "Mean paint-zone humidity over the watch window",
+                        ev, "zone_humidity_mean_pct", "pct", fw_id, base)
+        _evidence_claim(claims, "c2", "Paint-zone humidity in excess of ambient",
+                        ev, "humidity_excess_over_ambient_pct", "pct", fw_id, base)
+        _evidence_claim(claims, "c3", "The plant's paint humidity threshold",
+                        ev, "humidity_threshold_pct", "pct", fw_id, base)
+        evidence_ids = [c.id for c in claims if c.id in ("c1", "c2")]
+        knowledge, passages = _retrieve_knowledge(
+            records, registry, api, "paint humidity dwell blistering procedure")
+        notes.append("The paint zone is holding more moisture than ambient explains, "
+                     "above the plant's humidity threshold for paint defects.")
+        if passages:
+            notes.append(f"The relevant procedure is {passages[0].get('doc_title')}, "
+                         f"quoted below.")
+        threshold = ev.get("humidity_threshold_pct")
+        if evidence_ids and isinstance(threshold, (int, float)):
+            actions.append(ProposedAction(
+                id="a1", action_type="hvac_setpoint",
+                params={"target_humidity_pct": float(threshold)},
+                rationale="Bring the paint zone back to the humidity threshold so the "
+                          "excess over ambient stops.",
+                claim_ids=evidence_ids + (["c3"] if any(c.id == "c3" for c in claims) else [])))
+            actions.append(ProposedAction(
+                id="a2", action_type="resequence_paint_queue", params={},
+                rationale="Hold units with long paint-buffer dwell until the zone "
+                          "recovers, so none cures in humid air.",
+                claim_ids=evidence_ids))
+    return _finish(
+        question, claims, notes,
+        "Correct the zone climate first; resequencing limits exposure while it recovers."
+        if actions else "No paint environment risk was established, so nothing is proposed.",
+        unanswered, actions, knowledge, records,
+        ["Stopping the paint line (not proposed: the humidity excess is recoverable "
+         "without losing throughput)."])
+
+
+def run_tool_wear(
+    registry: dict[str, T.ToolSpec], api: PulseTwinAPI, *, plant_id: str, question: str,
+    station_id: int | None = None,
+) -> tuple[LoopResult, Finding]:
+    """Torque / weld current drifting: evidence, the SOP, a ticket, and a load shift."""
+    records: list[ToolRecord] = []
+    claims: list[Claim] = []
+    unanswered: list[str] = []
+    notes: list[str] = []
+    actions: list[ProposedAction] = []
+    knowledge: list[KnowledgeCitation] = []
+    _line_context(records, registry, api, plant_id, claims, unanswered)
+    hit = _watch_firing(records, registry, api, plant_id, "tool_wear", station_id,
+                        unanswered)
+    if hit:
+        fw_id, base, ev = hit
+        sid = int(ev.get("station_id") or station_id or 0)
+        signal = str(ev.get("signal") or "torque_nm")
+        _evidence_claim(claims, "c1", f"Drift of {signal} at S{sid} from its baseline",
+                        ev, "deviation_pct", "pct", fw_id, base)
+        _evidence_claim(claims, "c2", "The plant's tool-wear deviation threshold",
+                        ev, "deviation_threshold_pct", "pct", fw_id, base)
+        drift_ids = [c.id for c in claims if c.id == "c1"]
+        knowledge, passages = _retrieve_knowledge(
+            records, registry, api, f"{signal} drift tool wear verification procedure")
+        notes.append(f"S{sid}'s {signal} has drifted from its normal level by more than "
+                     f"the plant's tool-wear threshold. There is no electrode-force "
+                     f"signal, so tip wear is inferred from this drift, not measured.")
+        if drift_ids:
+            actions.append(ProposedAction(
+                id="a1", action_type="maintenance_ticket",
+                params={"station_id": sid, "signal": signal},
+                rationale=f"Inspect and service the tool at S{sid} before its drift "
+                          f"becomes a fastening or weld defect.",
+                claim_ids=drift_ids))
+            cfg_id, cfg = _call(records, registry, api, "get_station_config",
+                                {"plant_id": plant_id})
+            st_id, st = _call(records, registry, api, "get_station_stats",
+                              {"plant_id": plant_id})
+            peers = {s["station_id"] for s in (_ok(cfg) or {}).get("stations", [])
+                     if signal in (s.get("sensors") or [])
+                     and s["station_id"] != sid and abs(s["station_id"] - sid) <= 2}
+            rows = _ok(st) if isinstance(_ok(st), list) else []
+            ranked = sorted(
+                (i for i, r in enumerate(rows) if r.get("station_id") in peers
+                 and r.get("provenance", "measured") == "measured"
+                 and isinstance(r.get("util"), (int, float))),
+                key=lambda i: rows[i]["util"])
+            if ranked:
+                i = ranked[0]
+                target = int(rows[i]["station_id"])
+                claims.append(Claim(
+                    id="c3", text=f"Measured utilisation of adjacent station S{target}",
+                    value=float(rows[i]["util"]), unit="ratio", provenance="measured",
+                    citation=Citation(st_id, f"/data/{i}/util")))
+                actions.append(ProposedAction(
+                    id="a2", action_type="shift_weld_load",
+                    params={"from_station": sid, "to_station": target},
+                    rationale=f"S{target} carries the same {signal} capability and is the "
+                              f"least utilised adjacent station, so it can absorb the "
+                              f"work while S{sid} is serviced.",
+                    claim_ids=drift_ids + ["c3"]))
+            else:
+                unanswered.append(f"No adjacent station with measured statistics carries "
+                                  f"{signal}, so no load shift is proposed.")
+    return _finish(
+        question, claims, notes,
+        "Raise the ticket; shift the load only for as long as the station is out."
+        if actions else "No tool degradation was established, so nothing is proposed.",
+        unanswered, actions, knowledge, records,
+        ["Recalibrating the sensor instead of the tool (not proposed: a drift confined "
+         "to one station's signal is the tool's signature, not the sensor's)."])
+
+
 PLANS = {
     "general": run,
     "handover": run_handover,
     "shift_intel": run_shift_intel,
     "whatif": run_whatif,
     "incident": run_incident,
+    "starvation": run_starvation,
+    "paint_env": run_paint_env,
+    "tool_wear": run_tool_wear,
 }
 
 

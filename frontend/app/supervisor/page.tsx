@@ -11,7 +11,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { usePersonaAccess } from "@/lib/usePersonaAccess";
-import AccessRestricted from "@/components/shared/AccessRestricted";
+import SignInGate from "@/components/shared/SignInGate";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import SensorDropoutAlert from "@/components/supervisor/SensorDropoutAlert";
 import EscalationChain from "@/components/supervisor/EscalationChain";
@@ -55,6 +55,7 @@ function riskBand(risk: number): { label: string; tone: "warn" | "danger" } {
 
 interface LiveStation {
   state: string;
+  exit_ts?: string;
   unit_id?: string;
   cycle_time_s?: number;
   risk?: number;
@@ -200,7 +201,8 @@ export default function SupervisorPage() {
       const next = { ...prev };
       for (const e of batch) {
         next[e.station_id] = {
-          state: e.station_state === "working" ? "working" : e.station_state,
+          state: e.station_state,
+          exit_ts: e.exit_ts,
           unit_id: e.unit_id,
           cycle_time_s: e.cycle_time_s,
           risk: e.calibrated_risk,
@@ -435,11 +437,18 @@ export default function SupervisorPage() {
     setDecisionMessage("");
     setDecisionError(null);
     const runId = mode === "live_synthetic" ? activeRun?.run_id : null;
+    // Containment is context, not the unit: the API answers 409 ("risk not available at
+    // the requested time") for an alert clicked the instant it arrives, and that used to
+    // reject the whole open as an unhandled error. The unit opens; the sweep is omitted.
     const [u, c, status] = await Promise.all([
-      getUnit(unitId, plant, clock || null, runId),
-      getContainment(unitId, plant, clock || null, runId),
+      getUnit(unitId, plant, clock || null, runId).catch(() => null),
+      getContainment(unitId, plant, clock || null, runId).catch(() => null),
       getAlertStatus(unitId, plant, runId).catch(() => null),
     ]);
+    if (!u) {
+      show(`Unit ${unitId} is not available at this point in the shift`);
+      return;
+    }
     setSelected(u); setContainment(c); setSelectedAlertStatus(status);
     if (status?.acknowledged_at) {
       setAcked((current) => ({ ...current, [unitId]: status.acknowledged_at! }));
@@ -450,15 +459,23 @@ export default function SupervisorPage() {
   // Consumed once, on mount, and then cleared from the URL: leaving it in place would
   // re-open the same unit on every reload, and the drawer is a transient inspection,
   // not page state worth restoring.
+  // Also on `hashchange`: searching a unit while already on this page cannot remount it,
+  // so the shell sets the hash directly and this picks it up. The ref keeps the listener
+  // calling the CURRENT openUnit (it closes over the replay clock) without re-running
+  // the effect -- which would re-open the drawer after the user closed it.
+  const openUnitRef = useRef(openUnit);
+  openUnitRef.current = openUnit;
   useEffect(() => {
     if (!granted || typeof window === "undefined") return;
-    const m = window.location.hash.match(/(?:^|[#&])unit=(U\d{4,8})/i);
-    if (!m) return;
-    window.history.replaceState(null, "", window.location.pathname);
-    openUnit(m[1].toUpperCase()).catch(() => undefined);
-    // Mount-only: `openUnit` closes over the replay clock, and re-running this when the
-    // clock ticks would re-open the drawer after the user closed it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const consume = () => {
+      const m = window.location.hash.match(/(?:^|[#&])unit=(U\d{4,8})/i);
+      if (!m) return;
+      window.history.replaceState(null, "", window.location.pathname);
+      openUnitRef.current(m[1].toUpperCase()).catch(() => undefined);
+    };
+    consume();
+    window.addEventListener("hashchange", consume);
+    return () => window.removeEventListener("hashchange", consume);
   }, [granted]);
 
   const vote = async (unitId: string, verdict: string) => {
@@ -590,7 +607,7 @@ export default function SupervisorPage() {
 
   if (access.status === "pending" || access.status === "anonymous") return null;
   if (access.status === "denied") {
-    return <AccessRestricted required={["supervisor"]} current={access.role} />;
+    return <SignInGate view="Supervisor" required={["supervisor"]} current={access.role} />;
   }
 
   return (
@@ -701,7 +718,7 @@ export default function SupervisorPage() {
               ? (running ? "Pause this browser's MQTT monitor" : "Resume this browser's MQTT monitor")
               : (running ? "Pause while keeping the shared plant state" : "Start or resume this simulation")}>
               <Button
-                variant={running ? "warn" : "ok"}
+                variant={running ? "default" : "primary"}
                 size="sm"
                 onClick={running ? pause : begin}
                 aria-label={running ? "Pause simulation" : "Start simulation"}
@@ -863,7 +880,17 @@ export default function SupervisorPage() {
                           const l = live[s.station_id];
                           const manual = s.sensor_tier === "manual";
                           const dropout = dropouts.find((d) => d.station_id === s.station_id);
-                          const state = l?.state ?? "idle";
+                          // `station_state` is the state BEFORE this unit arrived, so on
+                          // its own it painted every busy station idle/starved and a
+                          // replay never showed a working station. While the replay
+                          // clock is inside the unit's [ts, exit_ts) the station is
+                          // working it; after exit it shows the waiting state it last
+                          // reported. ISO strings of one format compare correctly.
+                          const state = !l
+                            ? "idle"
+                            : l.exit_ts && clock && clock < l.exit_ts
+                              ? "working"
+                              : l.state;
                           return (
                             <Tooltip
                               key={s.station_id}
@@ -1231,7 +1258,12 @@ export default function SupervisorPage() {
                     initial={reduced ? false : { opacity: 0, x: 16, scale: 0.97 }}
                     animate={{ opacity: 1, x: 0, scale: 1 }}
                     transition={{ duration: 0.25, ease: [0.2, 0.8, 0.25, 1] }}
-                    className="rounded-lg border border-danger/30 bg-danger/[0.06] p-2.5"
+                    // White card, band-coloured left rule: a full red wash on every
+                    // card turned a busy feed into one undifferentiated red block.
+                    className={cn(
+                      "border border-l-2 border-line bg-canvas p-2.5",
+                      riskBand(a.calibrated_risk).tone === "danger" ? "border-l-danger" : "border-l-warn"
+                    )}
                   >
                     <div className="flex items-baseline justify-between gap-2">
                       <Badge variant={riskBand(a.calibrated_risk).tone}>

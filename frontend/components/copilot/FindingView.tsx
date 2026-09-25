@@ -10,7 +10,7 @@
 // takeaway is "nice LLM demo" this component has failed; the intended takeaway is "they
 // made the model prove every number and discarded the ones it could not".
 
-import { TriageClaim, TriageRun } from "@/lib/api";
+import { ActionType, ProposedAction, TriageClaim, TriageRun } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { Badge, Tooltip } from "@/components/ui";
 
@@ -32,6 +32,49 @@ export function SectionLabel({ children }: { children: React.ReactNode }) {
     <div className="mb-1.5 text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
       {children}
     </div>
+  );
+}
+
+export const ACTION_LABEL: Record<ActionType, string> = {
+  increase_feed_buffer: "Increase feed buffer",
+  rebalance_cycle: "Rebalance cycle time",
+  shift_weld_load: "Shift weld load",
+  maintenance_ticket: "Maintenance ticket",
+  hvac_setpoint: "HVAC setpoint",
+  resequence_paint_queue: "Resequence paint queue",
+};
+
+/** "S12 · +4 feed slots" -- the params in floor language, never raw JSON. */
+export function describeParams(params: ProposedAction["params"]): string {
+  const p = params;
+  const parts: string[] = [];
+  if (p.from_station != null && p.to_station != null) parts.push(`S${p.from_station} → S${p.to_station}`);
+  else if (p.station_id != null) parts.push(`S${p.station_id}`);
+  if (p.buffer_delta != null) parts.push(`${Number(p.buffer_delta) > 0 ? "+" : ""}${p.buffer_delta} feed slots`);
+  if (p.cycle_delta_pct != null) parts.push(`${p.cycle_delta_pct}% cycle time`);
+  if (p.target_humidity_pct != null) parts.push(`target ${p.target_humidity_pct}% RH`);
+  if (p.signal != null) parts.push(String(p.signal));
+  return parts.join(" · ");
+}
+
+export function ActionRow({ action, trailing }: { action: ProposedAction; trailing?: React.ReactNode }) {
+  const params = describeParams(action.params);
+  return (
+    <li className="border border-ai/30 bg-ai/[0.05] px-2.5 py-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <span className="text-xs font-bold text-ink">{ACTION_LABEL[action.action_type] ?? action.action_type}</span>
+          {params && <span className="text-numeric ml-2 text-2xs text-ink-dim">{params}</span>}
+        </div>
+        {trailing}
+      </div>
+      {action.rationale && (
+        <p className="mt-1 text-2xs leading-relaxed text-ink-dim">{action.rationale}</p>
+      )}
+      <div className="text-numeric mt-1 text-2xs text-ink-faint">
+        rests on {action.claim_ids.join(", ")}
+      </div>
+    </li>
   );
 }
 
@@ -155,6 +198,33 @@ export default function FindingView({ run }: { run: TriageRun }) {
           <ul className="space-y-1.5">
             {run.finding.claims.map((c) => (
               <ClaimRow key={c.id} claim={c} />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {(run.finding.proposed_actions?.length ?? 0) > 0 && (
+        <div>
+          <SectionLabel>Proposed actions · a person decides</SectionLabel>
+          <ul className="space-y-1.5">
+            {run.finding.proposed_actions!.map((a) => (
+              <ActionRow key={a.id} action={a} />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {(run.finding.knowledge_citations?.length ?? 0) > 0 && (
+        <div>
+          <SectionLabel>Retrieved sources</SectionLabel>
+          <ul className="space-y-1.5">
+            {run.finding.knowledge_citations!.map((k) => (
+              <li key={k.id} className="border border-line bg-surface-2 px-2.5 py-2">
+                <div className="text-numeric mb-1 text-2xs font-bold text-primary">
+                  {k.doc_id} · §{k.section}
+                </div>
+                <p className="text-xs leading-relaxed text-ink">{k.quoted_text}</p>
+              </li>
             ))}
           </ul>
         </div>

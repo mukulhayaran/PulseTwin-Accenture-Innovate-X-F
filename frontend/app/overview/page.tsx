@@ -22,11 +22,10 @@ import {
 import { canEnter, policyFor } from "@/lib/routeAccess";
 import { cn } from "@/lib/cn";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
-import CopilotDock from "@/components/copilot/CopilotDock";
 import {
   AppShell, Badge, Button, DataTable, InferredBadge, Kpi, Panel, Skeleton, SkeletonTable,
   Tooltip, type Column,
-  IconAlert, IconArrowRight, IconChart, IconGauge, IconGear, IconShield, IconSparkle,
+  IconAlert, IconArrowRight, IconChart, IconGauge, IconGear, IconShield,
   IconLock, IconTarget, IconUser,
 } from "@/components/ui";
 
@@ -135,13 +134,6 @@ const PERSONAS: {
     Icon: IconGear,
     min: "manager",
   },
-  {
-    href: "/copilot",
-    title: "Copilot",
-    body: "Ask a question, get an investigation whose every claim is re-checked against the API before you see it.",
-    Icon: IconSparkle,
-    min: "manager",
-  },
 ];
 
 /** A section the current role cannot load. Says which role, not just "no data". */
@@ -153,12 +145,6 @@ function RoleNote({ min }: { min: Role }) {
         role or higher. The API refuses it at your current role, so nothing is shown rather
         than an estimate.
       </p>
-      <Link href="/login">
-        <Button variant="link">
-          Choose a role
-          <IconArrowRight size={13} />
-        </Button>
-      </Link>
     </div>
   );
 }
@@ -321,7 +307,7 @@ export default function OverviewPage() {
     >
       <div className="space-y-6">
         {/* ---------------------------------------------------------- KPI row */}
-        <div className="grid grid-cols-1 gap-px bg-line sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid grid-cols-1 gap-px bg-line sm:grid-cols-2 xl:grid-cols-4">
           {!loaded ? (
             Array.from({ length: 5 }, (_, i) => <Skeleton key={i} className="h-28" />)
           ) : (
@@ -652,17 +638,16 @@ export default function OverviewPage() {
           <h2 className="mb-3 text-xs font-bold uppercase tracking-[0.115em] text-ink-faint">
             Go to a view
           </h2>
-          <div className="grid grid-cols-1 gap-px bg-line sm:grid-cols-2 xl:grid-cols-5">
+          <div className="grid grid-cols-1 gap-px bg-line sm:grid-cols-2 xl:grid-cols-4">
             {PERSONAS.map(({ href, title, body, Icon }) => {
-              // Each card says whether THIS session can open it, and a locked one links
-              // to /login carrying `next` -- so the click still gets the visitor where
-              // they were going, one sign-in later, instead of landing on a refusal.
+              // Each card says whether THIS session can open it. A locked one still links
+              // straight to the view, which asks for sign-in in place (SignInGate).
               const open = canEnter(href, session?.role ?? null);
               const requires = policyFor(href)?.requires;
               return (
                 <Link
                   key={href}
-                  href={open ? href : `/login?next=${encodeURIComponent(href)}`}
+                  href={href}
                   className={cn(
                     "group flex flex-col bg-canvas p-5",
                     "transition-colors duration-150 hover:bg-surface-2"
@@ -675,7 +660,7 @@ export default function OverviewPage() {
                   <h3 className="mt-3 text-base font-bold text-ink">{title}</h3>
                   <p className="mt-1.5 flex-1 text-xs leading-relaxed text-ink-faint">{body}</p>
                   <span className="label-upper mt-4 flex items-center gap-1.5 text-ink transition-colors group-hover:text-primary">
-                    {open ? "Open" : `Sign in as ${requires?.join(" or ")}`}
+                    {open ? "Open" : `Sign in required · ${requires?.join(" or ")}`}
                     <IconArrowRight size={13} />
                   </span>
                 </Link>
@@ -685,7 +670,6 @@ export default function OverviewPage() {
         </section>
       </div>
 
-      <CopilotDock plant={plant} />
     </AppShell>
   );
 }

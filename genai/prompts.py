@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from genai.finding import ACTION_PARAMS, ACTION_TYPES
+
 SYSTEM = """You are a shift engineer investigating a mixed-model vehicle assembly line \
 through PulseTwin, a read-only digital twin. You answer by calling tools and citing what \
 they return.
@@ -57,6 +59,16 @@ behavioural ones -- a constraint that "moved" is sometimes a sensor that went da
 (get_system_health), or a model that drifted (get_model_health). Use get_station_stats \
 for the evidence and get_station_config to name things in plain language. Where you want \
 to recommend a change, TEST it with simulate_whatif rather than asserting it.
+
+THE ACTION CONTRACT -- you PROPOSE, a human decides
+When your task asks for a corrective action, put it in `proposed_actions`. You never execute anything and no tool can: a signed-in human approves or rejects each proposal. `action_type` must be one of exactly these, with these params:
+  increase_feed_buffer     {station_id, buffer_delta}
+  rebalance_cycle          {station_id, cycle_delta_pct}
+  shift_weld_load          {from_station, to_station}
+  maintenance_ticket       {station_id, signal (optional)}
+  hvac_setpoint            {target_humidity_pct}
+  resequence_paint_queue   {}
+Every action must list in `claim_ids` the ids of the claims that justify it. An action whose claims do not all verify is removed, and so is any action_type not listed above. Test a buffer or cycle change with simulate_whatif first when the station is in the grid. Emit `[]` when no action is warranted -- "no change needed" is a valid proposal.
 
 WHEN YOU CANNOT KNOW
 If a tool returns a 403, you are acting at a role that cannot read it. Put that in \
@@ -111,10 +123,19 @@ There is NO top-level `citations` key. Every number lives in `claims`, and its c
       "section": "SOP-01-2",
       "citation": {"call_id": "call_0005", "pointer": "/data/0/text"}
     }
+  ],
+  "proposed_actions": [
+    {
+      "id": "a1",
+      "action_type": "maintenance_ticket",
+      "params": {"station_id": 8, "buffer_delta": null, "cycle_delta_pct": null, "from_station": null, "to_station": null, "signal": "torque_nm", "target_humidity_pct": null},
+      "rationale": "<why, in words; no figures that are not claims>",
+      "claim_ids": ["c1"]
+    }
   ]
 }
 
-Every one of those keys must be present on every claim. `ci_low`/`ci_high` are null for a measured value and REQUIRED numbers for an inferred one. `source` is null unless `unit` is "usd", where it is required and must be the `source` string the tool returned beside the figure. `knowledge_citations` is `[]` if you never called search_engineering_knowledge or cited nothing from it. Emit `[]` for an empty list and `null` for an absent number -- never omit a key."""
+Every one of those keys must be present on every claim. `ci_low`/`ci_high` are null for a measured value and REQUIRED numbers for an inferred one. `source` is null unless `unit` is "usd", where it is required and must be the `source` string the tool returned beside the figure. `knowledge_citations` is `[]` if you never called search_engineering_knowledge or cited nothing from it. `proposed_actions` is `[]` unless your task asks for an action; every `params` key is present, `null` when unused. Emit `[]` for an empty list and `null` for an absent number -- never omit a key."""
 
 
 USER_TEMPLATE = """Plant: {plant_id}
@@ -194,7 +215,8 @@ RESPONSE_FORMAT: dict[str, Any] = {
             "type": "object",
             "additionalProperties": False,
             "required": ["summary", "claims", "recommendation", "confidence",
-                         "alternatives_considered", "unanswered", "knowledge_citations"],
+                         "alternatives_considered", "unanswered", "knowledge_citations",
+                         "proposed_actions"],
             "properties": {
                 "summary": {"type": "string"},
                 "recommendation": {"type": "string"},
@@ -231,6 +253,36 @@ RESPONSE_FORMAT: dict[str, Any] = {
                                     "pointer": {"type": "string"},
                                 },
                             },
+                        },
+                    },
+                },
+                "proposed_actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["id", "action_type", "params", "rationale",
+                                     "claim_ids"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "action_type": {"type": "string",
+                                            "enum": list(ACTION_TYPES)},
+                            "params": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": list(ACTION_PARAMS),
+                                "properties": {
+                                    "station_id": {"type": ["integer", "null"]},
+                                    "buffer_delta": {"type": ["integer", "null"]},
+                                    "cycle_delta_pct": {"type": ["number", "null"]},
+                                    "from_station": {"type": ["integer", "null"]},
+                                    "to_station": {"type": ["integer", "null"]},
+                                    "signal": {"type": ["string", "null"]},
+                                    "target_humidity_pct": {"type": ["number", "null"]},
+                                },
+                            },
+                            "rationale": {"type": "string"},
+                            "claim_ids": {"type": "array", "items": {"type": "string"}},
                         },
                     },
                 },

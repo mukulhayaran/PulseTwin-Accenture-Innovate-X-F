@@ -142,7 +142,7 @@ export default function TriageConsole({
               "transition-colors hover:border-line-strong focus:border-info/50"
             )}
           />
-          <Button variant="ai" size="sm" disabled={running}
+          <Button variant="primary" size="sm" disabled={running}
                   onClick={() => launch(question || presets[0] || "")}>
             {running ? "Investigating…" : "Investigate"}
           </Button>

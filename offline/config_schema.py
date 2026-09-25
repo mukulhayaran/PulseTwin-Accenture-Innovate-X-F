@@ -276,6 +276,39 @@ class DefectPhysics(StrictModel):
         return self
 
 
+class WatchStarvation(StrictModel):
+    # Share of a station's rolling window spent down or blocked. The replay stream only
+    # ever carries idle/starved, so this is silent on a normal run by construction.
+    stalled_share: float = Field(gt=0, le=1)
+
+
+class WatchPaintEnv(StrictModel):
+    # Zone humidity in EXCESS of ambient, in percentage points. Measured on the replay
+    # stream: zone tracks ambient with sd 1.1 and a rolling-8 max excess of 1.43, so a
+    # rise past the absolute threshold on a humid day never fires -- only moisture the
+    # ambient does not explain (an HVAC that is not holding the zone).
+    humidity_excess_pct: float = Field(gt=0)
+
+
+class WatchToolWear(StrictModel):
+    # Rolling-mean deviation from the station's per-variant baseline. Vibration is
+    # deliberately absent: its rolling-8 deviation reaches 60-120% on a normal run.
+    signals: list[str] = Field(min_length=1)
+    deviation_pct: float = Field(gt=0)
+
+
+class Watch(StrictModel):
+    """Proactive detection rules (ADR-051), baked to artifacts/watch_rules_<plant>.json
+    by offline/build_watch_rules.py because serve/ cannot parse YAML."""
+
+    window_events: int = Field(ge=2)
+    cooldown_s: float = Field(ge=0)
+    max_open_investigations: int = Field(ge=1)
+    starvation: WatchStarvation
+    paint_env: WatchPaintEnv
+    tool_wear: WatchToolWear
+
+
 class Simulation(StrictModel):
     duration_days: int = Field(gt=0)
     seed: int
@@ -323,6 +356,7 @@ class PlantConfig(StrictModel):
     operators: Operators
     defect_physics: DefectPhysics
     simulation: Simulation
+    watch: Watch
 
     # ------------------------------------------------------------------ accessors
 

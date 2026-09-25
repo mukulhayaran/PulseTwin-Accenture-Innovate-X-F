@@ -546,3 +546,22 @@ simulation:
   test_days: [22, 28]
   replay_window_hours: 24                    # ADR-008: station_readings scope
   tool_wear_pct_per_hour: [0.1, 0.5]         # resets after repair -> bottleneck drifts
+
+# PROACTIVE WATCH (ADR-051). Evaluated on every live-simulation event by serve/watch.py;
+# a firing starts the matching agent, which may PROPOSE an action a human approves.
+# Thresholds were measured against this plant's replay stream, not assumed:
+#   * tool_wear at 8.0% (= mode_c torque_deficit), against per-variant baselines baked from
+#     the stream, fires on a normal run only at the Mode C station (worst 13.7% at S3,
+#     next-worst 4.8%) -- those are the designed torque deficits, true positives;
+#   * vibration is excluded: its rolling-8 deviation reaches ~60% on a normal run.
+watch:
+  window_events: 8
+  cooldown_s: 3600          # simulated seconds before one detector/station re-fires
+  max_open_investigations: 3   # protects the provider's daily request quota
+  starvation:
+    stalled_share: 0.5
+  paint_env:
+    humidity_excess_pct: 5.0
+  tool_wear:
+    signals: [torque_nm, weld_current_a]
+    deviation_pct: 8.0

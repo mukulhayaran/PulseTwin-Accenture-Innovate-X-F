@@ -143,3 +143,23 @@ always quoted against a specific artifact rather than asserted as a property of 
   corrects for this but the shift-pattern statistics are optimistic.
 - Ambient temperature and humidity follow smooth seasonal-free profiles; real plants see
   weather fronts and HVAC failures.
+
+## Mitigation effects in the twin (ADR-051)
+
+When a person approves an agent's proposed action, `serve/live_simulation.py::MITIGATIONS`
+removes a share of the injected scenario's effect from the running simulation. The replay
+stream cannot say how far a real HVAC correction or a tip change would move a signal, so
+these are **modelled assumptions**, not measurements:
+
+| Action | Scenario it acts on | Share of the effect removed | Scope |
+|---|---|---|---|
+| `hvac_setpoint` | `high_humidity` | 100% | the whole paint zone |
+| `resequence_paint_queue` | `high_humidity` | 100% of the risk contribution only; humidity unchanged | zone |
+| `maintenance_ticket` | `torque_degradation`, `station_breakdown` | 100% | the proposal's station |
+| `shift_weld_load` | `torque_degradation` | 100% | the proposal's station |
+| `increase_feed_buffer` | `buffer_congestion`, `station_breakdown` | 50% of stalled events relieved | the proposal's station |
+| `rebalance_cycle` | `buffer_congestion` | 50% of stalled events relieved | the proposal's station |
+
+"EFFECTIVE" on a proposal means the watch saw a full window of post-approval events back
+within its threshold. It confirms the twin behaved as these assumptions say; it is not
+evidence about a real line.

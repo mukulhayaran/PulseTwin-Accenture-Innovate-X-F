@@ -53,10 +53,10 @@ export default function IngestionLagChart({ lag }: Props) {
       <div className="mb-3 flex flex-wrap items-baseline gap-x-5 gap-y-1.5">
         <Reading
           label="Current"
-          value={lag.current_lag_s != null ? `${lag.current_lag_s.toFixed(2)}s` : "—"}
+          value={lag.current_lag_s != null ? fmtDuration(lag.current_lag_s) : "—"}
           tone={behind ? "warn" : "ok"}
         />
-        <Reading label="Mean" value={lag.mean_lag_s != null ? `${lag.mean_lag_s.toFixed(2)}s` : "—"} />
+        <Reading label="Mean" value={lag.mean_lag_s != null ? fmtDuration(lag.mean_lag_s) : "—"} />
         <Reading label="Threshold" value={`${threshold.toFixed(1)}s`} />
         <span className="text-numeric text-2xs text-ink-faint">{lag.samples} samples</span>
       </div>
@@ -72,7 +72,7 @@ export default function IngestionLagChart({ lag }: Props) {
             </defs>
             <CartesianGrid {...gridProps} />
             <XAxis dataKey="t" {...axisProps} interval={Math.max(1, Math.floor(series.length / 5))} />
-            <YAxis {...axisProps} width={34} />
+            <YAxis {...axisProps} width={56} tickFormatter={fmtDuration} />
             <RTooltip
               cursor={{ stroke: theme.lineStrong, strokeDasharray: "3 3" }}
               content={
@@ -81,7 +81,7 @@ export default function IngestionLagChart({ lag }: Props) {
                     <div className="flex items-center justify-between gap-4 text-xs">
                       <span className="text-on-dark-soft">Lag</span>
                       <span className="text-numeric font-bold text-on-dark">
-                        {Number(p[0]?.value).toFixed(2)}s
+                        {fmtDuration(Number(p[0]?.value))}
                       </span>
                     </div>
                   )}
@@ -96,7 +96,7 @@ export default function IngestionLagChart({ lag }: Props) {
             />
             <Area
               type="monotone" dataKey="lag" isAnimationActive={false} strokeWidth={1.5}
-              stroke={behind ? theme.warn : theme.info} fill="url(#lagFill)"
+              stroke={behind ? theme.warn : theme.info} fill={behind ? theme.warn : theme.info} fillOpacity={0.1}
             />
           </AreaChart>
         </ChartFrame>
@@ -125,4 +125,14 @@ function Reading({
       </span>
     </span>
   );
+}
+
+/** Seconds in the largest unit that keeps the figure short: a 22,932,143 s reading is
+ *  "265 d", which a reader can actually compare against a 5 s threshold. */
+function fmtDuration(s: number): string {
+  if (!Number.isFinite(s)) return "—";
+  if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)} s`;
+  if (s < 3600) return `${(s / 60).toFixed(0)} min`;
+  if (s < 86400) return `${(s / 3600).toFixed(1)} h`;
+  return `${(s / 86400).toFixed(0)} d`;
 }

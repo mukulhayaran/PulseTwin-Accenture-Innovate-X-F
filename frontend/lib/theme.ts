@@ -63,17 +63,6 @@ export const theme = {
   mRed: "#e22718",
 } as const;
 
-// Categorical series colour, in the order a multi-series chart should consume it.
-// Ordered for distinguishability at small sizes, not by hue wheel.
-export const series = [
-  theme.info,
-  theme.ai,
-  theme.ok,
-  theme.warn,
-  theme.danger,
-  theme.inkFaint,
-] as const;
-
 // Shared Recharts axis/grid props. Previously each chart re-declared its own AXIS
 // const, and IngestionLagChart had none at all.
 export const axisProps = {

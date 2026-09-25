@@ -23,6 +23,22 @@ PROVENANCE = ("measured", "inferred")
 
 CONFIDENCE = ("low", "medium", "high")
 
+# ADR-051: the CLOSED catalogue of actions an agent may propose, and the params each one
+# requires. An agent proposes; a human approves; the twin applies. Nothing here executes.
+# `serve/routers/proposals.py::ACTION_EFFECTS` mirrors these keys (the import wall), and a
+# test asserts the two agree.
+ACTION_TYPES: dict[str, tuple[str, ...]] = {
+    "increase_feed_buffer": ("station_id", "buffer_delta"),
+    "rebalance_cycle": ("station_id", "cycle_delta_pct"),
+    "shift_weld_load": ("from_station", "to_station"),
+    "maintenance_ticket": ("station_id",),
+    "hvac_setpoint": ("target_humidity_pct",),
+    "resequence_paint_queue": (),
+}
+# Every param name any action may carry -- the strict response schema must list them all.
+ACTION_PARAMS = ("station_id", "buffer_delta", "cycle_delta_pct", "from_station",
+                 "to_station", "signal", "target_humidity_pct")
+
 
 class ParseError(Exception):
     """The model's output could not be read as a Finding. Always ends the run."""
@@ -74,6 +90,22 @@ class KnowledgeCitation:
 
 
 @dataclass(frozen=True)
+class ProposedAction:
+    """A corrective action the agent PROPOSES (ADR-051) -- never executes.
+
+    `claim_ids` name the claims that justify it. The verifier serves the action only if
+    its type is in ACTION_TYPES, its required params are present, and every cited claim
+    verified: an action resting on a number the verifier removed is removed with it.
+    """
+
+    id: str
+    action_type: str
+    params: dict[str, Any]
+    rationale: str
+    claim_ids: list[str]
+
+
+@dataclass(frozen=True)
 class Finding:
     question: str
     summary: str
@@ -90,6 +122,8 @@ class Finding:
     # Empty for every Finding produced before ADR-046, and for any turn where the model
     # simply chose not to use search_engineering_knowledge -- never required.
     knowledge_citations: list[KnowledgeCitation] = field(default_factory=list)
+    # ADR-051. Empty unless the agent proposed a corrective action.
+    proposed_actions: list[ProposedAction] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -216,12 +250,33 @@ def parse_finding(text: str, *, question: str) -> Finding:
             )
         )
 
+    # OPTIONAL (ADR-051), same strictness as knowledge_citations for SHAPE. An unknown
+    # action_type is NOT a parse error: the verifier drops it, so one invented action
+    # costs that action, not the whole investigation.
+    proposed_actions: list[ProposedAction] = []
+    for idx, pa in enumerate(raw.get("proposed_actions") or []):
+        if not isinstance(pa, dict):
+            raise ParseError(f"proposed_actions[{idx}] is not an object")
+        params = _require(pa, "params", dict)
+        claim_ids = _require(pa, "claim_ids", list)
+        proposed_actions.append(
+            ProposedAction(
+                id=str(pa.get("id") or f"a{idx + 1}"),
+                action_type=_require(pa, "action_type", str),
+                # A strict schema forces every param key to be present; null means absent.
+                params={k: v for k, v in params.items() if v is not None},
+                rationale=_require(pa, "rationale", str),
+                claim_ids=[str(c) for c in claim_ids],
+            )
+        )
+
     return Finding(
         question=question,
         summary=_require(raw, "summary", str),
         claims=claims,
         recommendation=_require(raw, "recommendation", str),
         knowledge_citations=knowledge_citations,
+        proposed_actions=proposed_actions,
         alternatives_considered=[
             str(a) for a in raw.get("alternatives_considered", []) if isinstance(a, str)
         ],

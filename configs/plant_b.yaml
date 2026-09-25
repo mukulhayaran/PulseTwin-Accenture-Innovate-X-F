@@ -192,3 +192,19 @@ simulation:
   test_days: [22, 28]
   replay_window_hours: 24
   tool_wear_pct_per_hour: [0.1, 0.6]
+
+# PROACTIVE WATCH (ADR-051). See plant_a.yaml for the mechanism. Measured on this plant's
+# replay stream against the per-variant baselines: at 10.0% tool_wear fires on a normal run
+# only at the Mode C stations (their designed torque deficits -- true positives); at 9.0%
+# it also caught S25 at a marginal 9.0%. Vibration is excluded (rolling-8 deviation ~120%).
+watch:
+  window_events: 8
+  cooldown_s: 3600
+  max_open_investigations: 3
+  starvation:
+    stalled_share: 0.5
+  paint_env:
+    humidity_excess_pct: 5.0
+  tool_wear:
+    signals: [torque_nm, weld_current_a]
+    deviation_pct: 10.0
