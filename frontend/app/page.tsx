@@ -7,19 +7,15 @@
 //
 //   white nav -> light hero -> DARK principles -> light persona grid -> DARK cta -> grey footer
 //
-// The hero is a `hero-photo-band` (light) rather than a `hero-band-dark`, because the
-// "vehicle render" in this product is a line-art blueprint, and a blueprint reads on a
-// drafting sheet, not on navy. The dark band it would have occupied moves down to the
-// principles section, which keeps the alternation intact.
+// The photographic vehicle panel sits within a light hero; the principles section
+// supplies the next dark band, preserving the page's light/dark rhythm.
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
   motion,
-  useMotionValue,
   useReducedMotion,
   useScroll,
-  useSpring,
   useTransform,
 } from "motion/react";
 import { getHealth } from "@/lib/api";
@@ -28,7 +24,7 @@ import {
   AnimatedNumber, Badge, Skeleton,
   IconArrowRight, IconChart, IconGear, IconTarget, IconUser,
 } from "@/components/ui";
-import { ChassisBlueprint } from "@/components/landing/ChassisBlueprint";
+import { VehicleHero } from "@/components/landing/VehicleHero";
 
 const STATIONS = [
   {
@@ -103,30 +99,11 @@ export default function Landing() {
   });
   const spineHeight = useTransform(scrollYProgress, [0.08, 0.92], ["0%", "100%"]);
 
-  // Mouse-parallax tilt on the chassis graphic — a light, premium touch, not a
-  // gimmick: it re-centers on pointer leave and never engages under reduced motion.
-  const mx = useMotionValue(0.5);
-  const my = useMotionValue(0.5);
-  const springConfig = { stiffness: 150, damping: 20, mass: 0.5 };
-  const chassisRotateX = useSpring(useTransform(my, [0, 1], [8, -8]), springConfig);
-  const chassisRotateY = useSpring(useTransform(mx, [0, 1], [-10, 10]), springConfig);
-
-  function handleChassisPointerMove(e: React.PointerEvent<HTMLDivElement>) {
-    if (reduced) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    mx.set((e.clientX - rect.left) / rect.width);
-    my.set((e.clientY - rect.top) / rect.height);
-  }
-  function handleChassisPointerLeave() {
-    mx.set(0.5);
-    my.set(0.5);
-  }
-
   return (
     <main className="relative w-full bg-canvas">
       {/* ======================================================== top nav */}
       <header className="sticky top-0 z-40 border-b border-line bg-canvas">
-        <div className="mx-auto flex h-16 w-full max-w-[1440px] items-center gap-6 px-5 sm:px-8">
+        <div className="mx-auto flex h-16 w-full max-w-[1280px] items-center gap-3 px-5 sm:gap-6 sm:px-8">
           <Link href="/" className="flex items-center gap-2.5">
             <span aria-hidden className="flex items-end gap-[3px]">
               <span className="block h-3 w-[3px] bg-primary" />
@@ -155,33 +132,43 @@ export default function Landing() {
                 API offline
               </Badge>
             )}
+            <Link
+              href="/overview"
+              className="group inline-flex min-h-10 shrink-0 items-center gap-2 whitespace-nowrap border border-line px-3 text-xs font-bold text-ink transition-colors hover:border-primary hover:text-primary sm:px-4"
+            >
+              Open workspace
+              <IconArrowRight size={14} className="transition-transform motion-safe:group-hover:translate-x-0.5" />
+            </Link>
           </div>
         </div>
       </header>
 
       {/* ============================================== hero (light band) */}
-      <section className="relative overflow-hidden border-b border-line">
-        {/* A drafting-sheet grid, not a gradient wash — the hero's only ambient texture. */}
+      <section className="relative overflow-hidden border-b border-line" aria-labelledby="hero-title">
+        {/* A quiet engineering grid connects the photograph to the product UI. */}
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-0 opacity-70"
+          className="pointer-events-none absolute inset-0 opacity-40"
           style={{
             backgroundImage:
               "linear-gradient(var(--color-line) 1px, transparent 1px), linear-gradient(90deg, var(--color-line) 1px, transparent 1px)",
-            backgroundSize: "34px 34px",
-            maskImage: "radial-gradient(70% 60% at 28% 15%, #000 35%, transparent 100%)",
+            backgroundSize: "48px 48px",
+            maskImage: "radial-gradient(60% 55% at 5% 0%, #000 5%, transparent 100%)",
           }}
         />
 
-        <div className="relative mx-auto grid w-full max-w-[1440px] gap-12 px-5 py-section sm:px-8 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
+        <div className="relative mx-auto grid w-full max-w-[1280px] gap-10 px-5 py-10 sm:px-8 sm:py-12 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-12 xl:gap-16">
           <motion.div
             initial={reduced ? false : { opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, ease: EASE }}
           >
-            <span className="label-upper text-primary">Digital twin · mixed-model assembly</span>
+            <span className="label-upper flex items-center gap-3 text-primary">
+              <span aria-hidden className="h-px w-8 shrink-0 bg-primary" />
+              Digital twin · mixed-model assembly
+            </span>
 
-            <h1 className="mt-5 max-w-2xl text-3xl font-bold leading-[1.05] text-ink sm:text-4xl">
+            <h1 id="hero-title" className="mt-6 max-w-2xl text-3xl font-bold leading-[1.08] text-ink sm:text-4xl lg:text-[clamp(2.25rem,3.5vw,3rem)]">
               The line never fails in one place.
               <span className="mt-2 block text-ink-faint">
                 It fails in the space between stations.
@@ -194,21 +181,28 @@ export default function Landing() {
               inspector could ever catch alone.
             </p>
 
-            <div className="mt-10 flex flex-wrap items-center gap-6">
+            <div className="mt-8 flex flex-wrap items-center gap-6">
               <Link
                 href="/overview"
                 className={cn(
-                  "inline-flex h-12 items-center gap-2 bg-primary px-8 text-sm font-bold",
+                  "group inline-flex h-12 items-center gap-3 bg-primary px-7 text-sm font-bold",
                   "tracking-[0.03em] text-on-primary transition-colors hover:bg-primary-active"
                 )}
               >
                 Open the twin
-                <IconArrowRight size={15} />
+                <IconArrowRight size={15} className="transition-transform motion-safe:group-hover:translate-x-1" />
               </Link>
               <a href="#views" className="label-upper flex items-center gap-1.5 text-ink hover:text-primary">
                 Explore the views
                 <span aria-hidden>›</span>
               </a>
+            </div>
+            <div className="mt-8 flex max-w-lg items-center gap-3 border-t border-line pt-5 text-2xs text-ink-faint sm:gap-5">
+              <span>Station signals</span>
+              <span aria-hidden className="text-primary">↗</span>
+              <span>Shared context</span>
+              <span aria-hidden className="text-primary">↗</span>
+              <span className="text-ink">Clear decisions</span>
             </div>
           </motion.div>
 
@@ -216,19 +210,16 @@ export default function Landing() {
             initial={reduced ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.6, delay: 0.15 }}
-            onPointerMove={handleChassisPointerMove}
-            onPointerLeave={handleChassisPointerLeave}
-            style={{ rotateX: chassisRotateX, rotateY: chassisRotateY, transformPerspective: 700 }}
-            className="relative aspect-[3/1.5] w-full lg:aspect-[3/1.9]"
+            className="relative min-w-0"
           >
-            <ChassisBlueprint reduced={!!reduced} />
+            <VehicleHero />
           </motion.div>
         </div>
       </section>
 
       {/* ========================================== principles (dark band) */}
       <section id="principles" className="scroll-mt-16 bg-surface-dark">
-        <div className="mx-auto w-full max-w-[1440px] px-5 py-section sm:px-8">
+        <div className="mx-auto w-full max-w-[1280px] px-5 py-section sm:px-8">
           <div className="max-w-2xl">
             <span className="label-upper text-on-dark-soft">What it refuses to do</span>
             <h2 className="mt-4 text-3xl font-bold leading-[1.1] text-on-dark">
@@ -256,7 +247,7 @@ export default function Landing() {
 
       {/* ============================================ views (light band) */}
       <section id="views" ref={lineRef} className="scroll-mt-16 border-b border-line">
-        <div className="mx-auto w-full max-w-[1440px] px-5 py-section sm:px-8">
+        <div className="mx-auto w-full max-w-[1280px] px-5 py-section sm:px-8">
           <div className="flex flex-wrap items-end justify-between gap-6">
             <div className="max-w-xl">
               <span className="label-upper text-primary">The views</span>
@@ -285,7 +276,7 @@ export default function Landing() {
 
       {/* ================================================ cta (dark band) */}
       <section className="bg-surface-dark">
-        <div className="mx-auto w-full max-w-[1440px] px-5 py-section text-center sm:px-8">
+        <div className="mx-auto w-full max-w-[1280px] px-5 py-section text-center sm:px-8">
           <h2 className="mx-auto max-w-2xl text-2xl font-bold leading-[1.15] text-on-dark sm:text-3xl">
             Start on the overview. It tells you where to look first.
           </h2>
@@ -307,7 +298,7 @@ export default function Landing() {
 
       {/* ============================================ footer telemetry */}
       <footer className="bg-surface-2">
-        <div className="mx-auto w-full max-w-[1440px] px-5 py-16 sm:px-8">
+        <div className="mx-auto w-full max-w-[1280px] px-5 py-16 sm:px-8">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-2xs text-ink-faint">
             {err && (
               <Badge variant="danger" dot>
@@ -369,8 +360,8 @@ function Station({ station }: { station: (typeof STATIONS)[number] }) {
       <Link
         href={station.href}
         className={cn(
-          "group flex flex-col bg-canvas p-6",
-          "transition-colors duration-200 ease-soft hover:bg-surface-2"
+          "group relative flex flex-col border-t-2 border-transparent bg-canvas p-6",
+          "transition-colors duration-200 ease-soft hover:border-primary hover:bg-surface-2 focus-visible:border-primary"
         )}
       >
         <div className="flex items-center justify-between gap-3">
@@ -387,7 +378,7 @@ function Station({ station }: { station: (typeof STATIONS)[number] }) {
 
         <span className="label-upper mt-6 flex items-center gap-1.5 text-ink transition-colors group-hover:text-primary">
           Enter
-          <span aria-hidden>›</span>
+          <IconArrowRight size={14} className="transition-transform motion-safe:group-hover:translate-x-1" />
         </span>
       </Link>
     </li>
