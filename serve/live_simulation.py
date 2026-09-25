@@ -204,9 +204,19 @@ class LiveSimulationManager:
         return self.get(run_id)
 
     def stop(self, run_id: str) -> dict[str, Any]:
-        control = self._control(run_id)
-        control["stop"].set()
-        control["running"].set()
+        run = self.get(run_id)
+        with self._lock:
+            control = self._controls.get(run_id)
+        if control is not None:
+            control["stop"].set()
+            control["running"].set()
+        elif run.get("producer") != "mqtt":
+            raise RuntimeError("run is not owned by this backend process")
+        # An MQTT run is produced at the edge, so this process holds no control for it. Its
+        # publisher ends it with a terminal lifecycle message -- and a publisher that crashed
+        # never sends one, leaving the run `running` forever and blocking every new run on
+        # the plant (found on the prod stack, 2026-09-25). Closing it here only records the
+        # stop; a publisher that is genuinely alive re-asserts `running` on its next message.
         db.execute(
             self.ops,
             "UPDATE simulation_runs SET status='stopped', ended_at=? WHERE run_id=?",

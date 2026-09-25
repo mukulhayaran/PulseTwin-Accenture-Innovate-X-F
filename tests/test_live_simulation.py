@@ -191,3 +191,30 @@ def test_alert_lifecycle_persists_through_closed_and_updates_metrics(client):
     assert metrics["correct_alerts"] == 1
     assert metrics["false_alerts"] == 0
     assert metrics["alert_correctness_rate"] == 1.0
+
+
+def test_an_orphaned_mqtt_run_can_be_stopped_and_stops_blocking(client):
+    """An MQTT run whose publisher died never gets a terminal lifecycle message, so it sat
+    at `running` forever and blocked every new run on the plant -- `stop` answered 409 'not
+    owned by this backend process'. Found on the prod stack; the backend may now close it."""
+    from serve import db
+    from serve.main import app
+
+    run_id = "MQTT-plant_a-orphan-test"
+    db.execute(app.state.ops,
+               """INSERT INTO simulation_runs (run_id, plant_id, seed, scenario, status, speed,
+                      severity, max_events, source, producer, started_at)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+               (run_id, "plant_a", 0, "normal", "running", 1.0, 0.0, 1000000,
+                "live_synthetic", "mqtt", "2026-01-01T00:00:00+00:00"))
+    try:
+        blocked = client.post("/api/simulations", json={
+            "plant_id": "plant_a", "seed": 707, "scenario": "normal", "speed": 10})
+        assert blocked.status_code == 409
+        stopped = client.post(f"/api/simulations/{run_id}/stop")
+        assert stopped.status_code == 200 and stopped.json()["status"] == "stopped"
+        run = _start(client, seed=708, max_events=12)
+        assert run["status"] == "running"
+        _wait_terminal(client, run["run_id"])
+    finally:
+        db.execute(app.state.ops, "DELETE FROM simulation_runs WHERE run_id=?", (run_id,))
