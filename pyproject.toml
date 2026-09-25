@@ -62,7 +62,10 @@ dev = [
 ml = [
     "pandas>=2.2",
     "scipy>=1.14",
-    "scikit-learn>=1.5",
+    # Pinned to the version that pickled data/<plant>/model.pkl: 1.9.1 cannot unpickle
+    # it (No module named '_loss'), which failed all 10 scorer-parity tests after a
+    # lock refresh bumped it (82b9f8b). Retraining to move the pin changes the model.
+    "scikit-learn==1.7.2",
     "pyarrow>=17",
     "PyYAML>=6.0",
 ]

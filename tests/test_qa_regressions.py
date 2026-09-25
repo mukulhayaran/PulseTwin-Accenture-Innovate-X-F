@@ -291,8 +291,11 @@ def test_reorder_window_actually_buffers_and_reorders():
 
     from ingestion.mqtt_subscriber import REORDER_WINDOW_S, Ingestor
 
+    from collections import OrderedDict
+
     ing = Ingestor.__new__(Ingestor)
     ing.reorder_heap, ing._seq = [], itertools.count()
+    ing._pending_signals = OrderedDict()  # set by __init__ (ADR-059), bypassed here
     ing.watermark = ing.last_message_at = 0.0
     written: list[float] = []
     ing._write_reading = lambda rec: written.append(rec["event_ts"])

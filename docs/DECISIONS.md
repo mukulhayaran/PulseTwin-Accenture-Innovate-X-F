@@ -2090,3 +2090,59 @@ intervals (contract #1). Nothing in the contract carries a dollar figure (contra
   effect" (ADR-055).
 - The data feeds, and what is not yet wired from a real feed to the watch, are in
   `docs/INTEGRATION.md`.
+
+### ADR-059 — The watch on a real feed, breakdowns that say they are down, and one fix the eval rejected
+
+**Context.** Closing the gaps ADR-056/057 and `docs/INTEGRATION.md` §5 recorded. Every
+fix was re-measured on both plants with `offline/benchmarks/agent_eval.py`, and one was
+reverted because of that.
+
+**Decisions.**
+1. **Breakdown severity is physical.** `LineSimulator` gained two optional hooks, both
+   `None` by default and neither consuming a random draw, so the batch path is
+   bit-identical. `repair_scale` makes `IncidentState.breakdown_repair_scale` live (it
+   was defined and never called), and `state_listener` fires on entering or leaving DOWN.
+   The engine binds both as *bound methods*, because `copy.deepcopy` rebinds those to
+   the fork, where a lambda would keep calling the original engine.
+2. **A down station says so.** The twin emits a `station_state` event on each DOWN
+   transition, the way a PLC state tag does. The watch keeps it as the station's state
+   **without** moving its last-production time, because reporting DOWN is not producing.
+   Starvation and silence evidence gain `down_stations`. Silence blames a silent station
+   that reported DOWN ahead of the downstream-end heuristic. The hypothesis maps a
+   blocked or starved neighbour of a DOWN station to a breakdown *there*, and the
+   counterfactual forks that station.
+3. **The watch runs on MQTT runs.** `LiveSimulationManager.follow_mqtt_once` (a thread
+   started from `serve/main.py`) tails each running `producer='mqtt'` run by sequence
+   number into its own `LineWatch`. Firings go through the same `_on_firing`. A newly
+   seen run starts at its current end, so a restart never re-fires on history.
+4. **Silence ticks on the edge's heartbeat, never on wall time.** The publisher sends
+   `{"heartbeat": true, "ts": <data clock>}` every `HEARTBEAT_S`. Ingestion projects it as
+   a `heartbeat` event, and the follower ticks on it. A network outage stops heartbeats
+   too, so it cannot read as a stopped line.
+5. **Signals and state travel in one event.** The subscriber holds a visit's telemetry
+   until its state message arrives and projects them together. Before this, the watch on
+   an MQTT feed could never have seen torque or humidity. PLC state messages with no unit
+   are projected instead of dropped.
+6. **Counterfactual arms run in parallel processes.** Each worker rebuilds the identical
+   warmed twin from the seed, and the intervals are drawn in arm order afterwards, so the
+   result is bit-identical to serial (pinned by a test). Measured on this 4-core host:
+   83 s against about 101 s serial. That is modest, because three workers share the
+   cores with everything else running here. The arms themselves are about 29 s each.
+
+**Rejected after measuring: judging starvation on pace (cycle + time held blocked).**
+Plant B's partial congestion at S21 loses 84–86% of output and is missed. The line
+trickles, so it never goes silent, and the congested station's work cycle stays under
+takt. Pace looked like the physical fix. On the twin it raised the watch's false alarms
+from **3 to 59 a shift** (placebo 7% → 30% on plant A) and **still missed S21**. Blocking
+cascades put a normal line's stations over takt routinely, and the replay stream the
+rule was profiled on carries no blocked states, so it could never have shown that.
+Reverted. The miss is recorded, not tuned around.
+
+**Not changed, measured instead: weather-driven humidity.** On the replay stream, zone
+humidity is above Mode A's 55% for 72% of a humid day's events at every paint station,
+because it tracks ambient. An absolute-humidity alarm would be on all day. The risk
+that matters (humidity **and** a paint-buffer dwell over 480 s) is already scored per unit:
+the defect model carries `s13..s18_humidity_pct` and `paint_buffer_dwell_s`. The watch's
+paint rule stays a detector of zone-climate *faults*.
+
+**Result:** see `docs/AGENT_EVAL.md`, which has both plants.

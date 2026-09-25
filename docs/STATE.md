@@ -681,10 +681,26 @@ watch: 3.2 false alarms per shift vs 358, placebo 7% vs 41%, slower on torque, a
 **Silence detector added (ADR-057):** impactful faults caught went from 0/8 to **6/8**.
 There are no new false alarms and placebo recall is still 7%.
 
-**Verify-next, from this eval:**
-- The starvation hypothesis maps a breakdown's `blocked` neighbours to congestion (0/2
-  correct).
-- The paint rule excludes ambient humidity, but Mode A's physics does not.
+**Round 3 (ADR-059, `0daa04d`), both plants:** breakdowns are caught 17/18 with the cause
+right in all 17 (0/3 before). The watch runs on MQTT runs, ticking silence on edge
+heartbeats, and telemetry is merged into state events. Counterfactual arms run in
+parallel, bit-identical to serial. Plant A: 13/13 impactful faults caught. Plant B: 8/11
+against thresholds' 9/11.
+
+**Full suite: 775 passed** (2026-09-25). It had 11 failures on the first full run.
+Ten were `test_scorer_parity`: `uv.lock` (commit 82b9f8b) had bumped scikit-learn to 1.9.1,
+which cannot unpickle `data/<plant>/model.pkl` (trained with 1.7.2, `No module named
+'_loss'`). It is now pinned `==1.7.2` in `pyproject.toml`, `requirements-dev.txt` and
+`uv.lock`; retraining to move the pin would change the model. The eleventh was a test
+that hand-builds an `Ingestor` without the new `_pending_signals`.
+
+**Verify-next:**
+- **Partial congestion** (plant B S21: 84–86% of output lost, trickling, never silent) is
+  missed 0/3 while thresholds catch it in about 1 min. Judging starvation on pace was
+  tried and reverted: false alarms went from 3 to 59 a shift and S21 was still missed.
+- The watch is not faster than raw thresholds on faults both catch.
+- A real edge must send the heartbeat, and must publish telemetry before the state
+  message (`docs/INTEGRATION.md` §5).
 
 ### Twin counterfactual behind every proposal (2026-09-25) — ADR-055
 
