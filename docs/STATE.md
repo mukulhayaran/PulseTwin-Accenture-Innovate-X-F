@@ -661,6 +661,20 @@ loaded, `/api/health` = `postgresql`, feedback persisted across `restart backend
 `/supervisor` and `/ops` loaded in Playwright with no page errors or 5xx, backend ~82 MB
 RSS. Not yet done: the Neon/Render/Vercel accounts themselves (owner action).
 
+### Watch vs threshold alerting, measured (2026-09-25) — ADR-056
+
+`python -m offline.benchmarks.agent_eval --seeds 3` (≈6 min) → `docs/AGENT_EVAL.md`. It
+runs 27 injected faults on the physical twin, with placebo and impact controls. The
+watch: 3.2 false alarms per shift vs 358, placebo 7% vs 41%, slower on torque, and
+**0/8 impactful faults caught (the baseline's 2/8 are chance or 3 h late)**.
+
+**Verify-next, from this eval:**
+- A **silence detector** in `serve/watch.py`. Deadlocked congestion loses 78–91% of output
+  and emits no events, so nothing fires.
+- The starvation hypothesis maps a breakdown's `blocked` neighbours to congestion (0/2
+  correct).
+- The paint rule excludes ambient humidity, but Mode A's physics does not.
+
 ### Twin counterfactual behind every proposal (2026-09-25) — ADR-055
 
 An outside "agentic recommendation layer" plan was compared against the repo: about 80% was

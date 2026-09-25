@@ -1,0 +1,225 @@
+{
+  "plant_id": "plant_a",
+  "git_sha": "f0aa70c1b4a567d07ef9349f3445cae5ab4550cd",
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "twin": "offline.live_twin.LiveTwinEngine",
+  "severity": 0.8,
+  "pre_onset_h": 2.0,
+  "post_onset_h": 3.0,
+  "shift_h": 8.0,
+  "faults": [
+    {
+      "scenario": "torque_degradation",
+      "station_id": 3,
+      "severity": 0.8
+    },
+    {
+      "scenario": "torque_degradation",
+      "station_id": 8,
+      "severity": 0.8
+    },
+    {
+      "scenario": "high_humidity",
+      "station_id": 16,
+      "severity": 0.8
+    },
+    {
+      "scenario": "station_breakdown",
+      "station_id": 8,
+      "severity": 0.8
+    },
+    {
+      "scenario": "buffer_congestion",
+      "station_id": 8,
+      "severity": 0.8
+    },
+    {
+      "scenario": "station_breakdown",
+      "station_id": 15,
+      "severity": 0.8
+    },
+    {
+      "scenario": "buffer_congestion",
+      "station_id": 15,
+      "severity": 0.8
+    },
+    {
+      "scenario": "station_breakdown",
+      "station_id": 22,
+      "severity": 0.8
+    },
+    {
+      "scenario": "buffer_congestion",
+      "station_id": 22,
+      "severity": 0.8
+    }
+  ],
+  "systems": {
+    "watch": {
+      "recall": 0.296,
+      "placebo_recall": 0.074,
+      "impactful_runs": 8,
+      "impactful_detected": 0,
+      "detected": 8,
+      "fault_runs": 27,
+      "median_delay_min": 17.7,
+      "exact_station_share": 1.0,
+      "root_cause_accuracy": 0.75,
+      "false_alarms_per_shift_clean": 3.2,
+      "false_alarms_per_shift_all": 3.23,
+      "by_scenario": {
+        "buffer_congestion": {
+          "runs": 9,
+          "detected": 0,
+          "placebo_detected": 0,
+          "median_loss_pct": 77.9,
+          "median_delay_min": null,
+          "root_cause_correct": 0,
+          "root_cause_of": 0
+        },
+        "high_humidity": {
+          "runs": 3,
+          "detected": 0,
+          "placebo_detected": 0,
+          "median_loss_pct": 0.0,
+          "median_delay_min": null,
+          "root_cause_correct": 0,
+          "root_cause_of": 0
+        },
+        "station_breakdown": {
+          "runs": 9,
+          "detected": 2,
+          "placebo_detected": 0,
+          "median_loss_pct": 2.9,
+          "median_delay_min": 14.0,
+          "root_cause_correct": 0,
+          "root_cause_of": 2
+        },
+        "torque_degradation": {
+          "runs": 6,
+          "detected": 6,
+          "placebo_detected": 2,
+          "median_loss_pct": 0.0,
+          "median_delay_min": 19.5,
+          "root_cause_correct": 6,
+          "root_cause_of": 6
+        }
+      }
+    },
+    "threshold": {
+      "recall": 0.37,
+      "placebo_recall": 0.407,
+      "impactful_runs": 8,
+      "impactful_detected": 2,
+      "detected": 10,
+      "fault_runs": 27,
+      "median_delay_min": 9.9,
+      "exact_station_share": 0.7,
+      "root_cause_accuracy": 0.7,
+      "false_alarms_per_shift_clean": 382.9,
+      "false_alarms_per_shift_all": 358.4,
+      "by_scenario": {
+        "buffer_congestion": {
+          "runs": 9,
+          "detected": 1,
+          "placebo_detected": 3,
+          "median_loss_pct": 77.9,
+          "median_delay_min": 0.4,
+          "root_cause_correct": 1,
+          "root_cause_of": 1
+        },
+        "high_humidity": {
+          "runs": 3,
+          "detected": 0,
+          "placebo_detected": 0,
+          "median_loss_pct": 0.0,
+          "median_delay_min": null,
+          "root_cause_correct": 0,
+          "root_cause_of": 0
+        },
+        "station_breakdown": {
+          "runs": 9,
+          "detected": 3,
+          "placebo_detected": 3,
+          "median_loss_pct": 2.9,
+          "median_delay_min": 119.4,
+          "root_cause_correct": 0,
+          "root_cause_of": 3
+        },
+        "torque_degradation": {
+          "runs": 6,
+          "detected": 6,
+          "placebo_detected": 5,
+          "median_loss_pct": 0.0,
+          "median_delay_min": 4.4,
+          "root_cause_correct": 6,
+          "root_cause_of": 6
+        }
+      }
+    },
+    "deadband": {
+      "recall": 0.37,
+      "placebo_recall": 0.407,
+      "impactful_runs": 8,
+      "impactful_detected": 2,
+      "detected": 10,
+      "fault_runs": 27,
+      "median_delay_min": 24.7,
+      "exact_station_share": 0.7,
+      "root_cause_accuracy": 0.7,
+      "false_alarms_per_shift_clean": 63.46,
+      "false_alarms_per_shift_all": 60.55,
+      "by_scenario": {
+        "buffer_congestion": {
+          "runs": 9,
+          "detected": 1,
+          "placebo_detected": 3,
+          "median_loss_pct": 77.9,
+          "median_delay_min": 0.4,
+          "root_cause_correct": 1,
+          "root_cause_of": 1
+        },
+        "high_humidity": {
+          "runs": 3,
+          "detected": 0,
+          "placebo_detected": 0,
+          "median_loss_pct": 0.0,
+          "median_delay_min": null,
+          "root_cause_correct": 0,
+          "root_cause_of": 0
+        },
+        "station_breakdown": {
+          "runs": 9,
+          "detected": 3,
+          "placebo_detected": 3,
+          "median_loss_pct": 2.9,
+          "median_delay_min": 119.4,
+          "root_cause_correct": 0,
+          "root_cause_of": 3
+        },
+        "torque_degradation": {
+          "runs": 6,
+          "detected": 6,
+          "placebo_detected": 5,
+          "median_loss_pct": 0.0,
+          "median_delay_min": 10.2,
+          "root_cause_correct": 6,
+          "root_cause_of": 6
+        }
+      }
+    }
+  },
+  "verdict": [
+    "watch vs threshold: placebo recall 7% vs 41% (detections on a clean line); impactful faults caught 0/8 vs 2/8; FEWER faults detected (8 vs 10); SLOWER or equal median detection (17.7 vs 9.9 min); FEWER false alarms per shift (3.23 vs 358.4); root cause 75% vs 70%.",
+    "watch vs deadband: placebo recall 7% vs 41% (detections on a clean line); impactful faults caught 0/8 vs 2/8; FEWER faults detected (8 vs 10); FASTER median detection (17.7 vs 24.7 min); FEWER false alarms per shift (3.23 vs 60.55); root cause 75% vs 70%."
+  ],
+  "not_measured": {
+    "containment_and_escape": "single-station incidents are defect-inert in the twin (ADR-055); an escape comparison compares zeros",
+    "llm_diagnosis": "provider quota; the deterministic diagnosis is measured"
+  },
+  "elapsed_s": 342.6
+}

@@ -1997,3 +1997,27 @@ is the gate doing its job, not a defect to tune away.
 **What this is not.** It is not a fork of the live stream-replay run (`serve/live_simulation.py`
 replays the committed stream; it is not a physical model). It is the detected condition,
 reproduced on the physical twin. The UI must say "simulated", not "predicted for this run".
+
+### ADR-056 — The watch is measured against simple threshold alerting on the physical twin, with a placebo control
+
+**Context.** The watch's thresholds were profiled on the committed replay stream (ADR-051).
+Nobody had measured whether it beats the obvious alternative, alarms on single-event
+threshold crossings, or on what data an honest comparison could run.
+
+**Decision.** `offline/benchmarks/agent_eval.py` injects faults into the physical twin, not
+the replay stream, and feeds identical events to the watch, a raw-threshold alerter and a
+threshold-plus-cooldown alerter. Two controls are part of the method, not optional:
+**placebo recall** (the same alerter scored against the fault on the same-seed clean fork)
+and **impact** (units lost vs that clean fork). Results are in `docs/AGENT_EVAL.md` and
+`artifacts/benchmarks/agent_eval_plant_a.json`.
+
+**The result is published as measured (rule 2 of CLAUDE.md), including where the watch
+loses.** It has 110× fewer false alarms than raw thresholds (3.2 vs 358 per shift), and
+its placebo rate is 7% against 41%. But it is slower on torque (19.5 vs 4.4 min), and it
+catches **0 of 8 impactful faults**. The baseline's 2 of 8 are one chance hit and one
+178-minute-late one. Deadlock-level congestion silences the stations, and an event-driven
+detector cannot fire on silence.
+
+**Not changed by this ADR.** No threshold was retuned to improve these numbers. The two gaps
+it found are recorded rather than patched: a missing silence detector, and ambient humidity
+being excluded by the paint rule.
