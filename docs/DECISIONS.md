@@ -1915,3 +1915,85 @@ network is a deploy-time requirement this repository does not implement, and
 Also in this change: the backend loads `.env.local` automatically (compose `env_file`,
 optional; `make dev-backend` sources it) and logs `genai: agent mode` or `genai:
 DETERMINISTIC mode` at startup, so a missing key is visible instead of a silent downgrade.
+
+### ADR-055 — Every proposal is simulated before a human sees it: a paired Monte Carlo fork of the physical twin
+
+**Context.** Until now an agent's proposed action reached the Proposals inbox with its
+verified evidence but no forecast. `/api/whatif` interpolates a precomputed grid (ADR-007)
+over buffer and cycle changes at a few stations; it cannot answer "what does *this* action
+do to *this* condition at *this* station", and it has no do-nothing line to compare against.
+An external design review named that the core gap in an agentic recommender:
+nothing should become a recommendation without a simulated impact and a counterfactual.
+
+**Decision.** Every watch firing spawns `python -m offline.counterfactual` beside the agent
+(`serve/routers/proposals.py::start_counterfactual`, the ADR-036 detached-job pattern:
+status file before the spawn, stdio to a per-job log, stale after `WORKER_STALE_S`).
+
+* **The fork.** `offline.live_twin.LiveTwinEngine` is warmed once, the detected condition is
+  injected, and after an onset the whole engine is `copy.deepcopy`'d (0.1 s) with every RNG
+  reseeded *in place* (the simulator holds references to them). Arms: do nothing, plus every
+  `MITIGATIONS` action whose scenarios include the condition. Default 8 replicas × 2 h.
+* **Paired.** Replica *k* uses the same seed in every arm (common random numbers), so the
+  action-minus-nothing interval measures the action, not two draws of line noise.
+* **The hypothesis comes from the evidence, never from ground truth.** The detector and its
+  measured evidence pick the scenario and a severity by a stated linear map
+  (`offline/counterfactual.py::hypothesis`, recorded in each result's `basis`).
+* **Defects are expected defects**: the sum of each inspected unit's propensity rather than
+  its Bernoulli draw. Same expectation, far less variance, which matters at well under one
+  true defect per hour.
+* **The gate.** `/api/proposals` reports `SIMULATING` while the job runs, and approval needs
+  `PROPOSED`. A job that fails or goes stale releases the gate and shows its error. A dead
+  job must not hold a human decision hostage, and a decision made without a forecast says so.
+* Every figure is `provenance: "inferred"` with `ci_low`/`ci_high` (contract #1). No dollar
+  figure is produced (contract #2).
+
+**The import wall is unchanged.** `serve/` spawns the job and reads JSON; it never imports
+`offline/`. The *jobs image* widens instead: `serve/requirements-jobs.txt` gains pandas, scipy
+and PyYAML (about 150 MB), and the Dockerfile copies `offline/` and `feature_contract.py`. This
+amends "heavy libraries never ship in the runtime image" for the job subprocesses only.
+The alternative, a precomputed grid over hypothesis × station × severity band, was rejected:
+about 1.5 h of compute per plant, and it answers a banded severity rather than the measured one.
+
+**Measured on plant_a (seed 42, 8 replicas, 2026-09-25). These are the first numbers, reported as they came out:**
+
+| Firing | Hypothesis | Action | Δ throughput vs nothing (UPH, 95% CI) | Δ expected defects |
+|---|---|---|---|---|
+| starvation S12, DOWN | station_breakdown 0.60 | `increase_feed_buffer` | **+0.46 [0.13, 0.83]**, distinguishable | +0.015 |
+| | | `maintenance_ticket` | 0.00, not distinguishable | 0.000 |
+| tool_wear S3, −15% | torque_degradation 0.68 | `maintenance_ticket` | 0.00 | −0.004 [−0.011, 0.000] |
+| paint_env, +14 pts | high_humidity 0.64 | `hvac_setpoint` | 0.00 | 0.000 |
+
+Two results that look like bugs and are not:
+1. **A worn tool at S3 does not move defects in this twin.** Mode C is torque deficit *at S3*
+   × vibration *at S8*, with `interaction_required: true`. A full-severity incident drops S3
+   torque 22% (43.3 → 34.4 Nm), but S8 vibration stays below the 92nd-percentile gate
+   (p50 83rd, max 89th). So Mode C never fires, and the propensity sum over 6 h is identical
+   to no incident (1.59). Humidity alone is inert for the same reason: Mode A also needs
+   paint-buffer dwell over 480 s. The counterfactual says "not distinguishable" because that
+   is what the twin's physics says.
+2. **`maintenance_ticket` on a breakdown shows 0.00** because the station is already down and
+   its repair was scheduled when it failed. Ending the incident prevents a recurrence but
+   cannot shorten a repair in progress.
+
+**A bug the first run caught.** `_mitigate` originally called `engine._apply_physical_state()`,
+which also re-forces a breakdown while a breakdown incident is active. An action applied
+after the station had been repaired knocked it down again: −11.7 UPH, blamed on
+`increase_feed_buffer`. The mitigation now refreshes capacity and checklist state directly,
+and `tests/test_counterfactual.py` pins this. Also noted: `IncidentState.breakdown_repair_scale`
+is defined but nothing calls it, so a breakdown incident's severity has no physical effect.
+
+**Found by looking at the rendered inbox, not by the tests.** The first version added slots
+to the buffer FEEDING the firing station, while the agent proposed slots ahead of the
+DOWNSTREAM station: the twin was forecasting a different buffer from the one a manager
+would approve. Both now mean the firing station's output buffer, and every arm carries
+`simulated_as`, which the UI shows beside the agent's params. The table's `+0.46` row was
+measured with that original UPSTREAM placement (+2 slots). Re-run live on the aligned
+action (seed 7, breakdown at S3), +4 slots on S3's output buffer gave **exactly 0.00 UPH
+in all 8 paired replicas**. A down station's output buffer only drains, so extra capacity
+there never binds, whereas upstream slots let S1–S2 keep working. **The twin
+contradicts the agent's buffer proposal**, and the inbox shows it as "no effect". That
+is the gate doing its job, not a defect to tune away.
+
+**What this is not.** It is not a fork of the live stream-replay run (`serve/live_simulation.py`
+replays the committed stream; it is not a physical model). It is the detected condition,
+reproduced on the physical twin. The UI must say "simulated", not "predicted for this run".

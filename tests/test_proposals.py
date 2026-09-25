@@ -227,3 +227,51 @@ def test_a_station_mitigation_applies_only_at_its_own_station() -> None:
     risk_only = {"mitigations": [{**MITIGATIONS["resequence_paint_queue"], "station": 0}]}
     assert _mitigated(risk_only, "high_humidity", 16, "signal") == 0.0
     assert _mitigated(risk_only, "high_humidity", 16, "risk") == 1.0
+
+
+# ---------------------------------------------------------- counterfactual (ADR-055)
+
+def test_a_proposal_waits_for_its_counterfactual(ctx, tmp_path, monkeypatch) -> None:
+    """Nothing is decidable before the twin has simulated it -- and a stalled job is
+    reported stopped, never left looking like it is still running."""
+    client, *_ = ctx
+    monkeypatch.setenv("PULSETWIN_JOBS_DIR", str(tmp_path))
+    pid = f"{RUN}-starvation"
+    _seed_agent_run(app.state.ops, pid, [
+        {"id": "a1", "action_type": "increase_feed_buffer",
+         "params": {"station_id": 3, "buffer_delta": 2}, "rationale": "r",
+         "claim_ids": ["c1"]}])
+    jobs = tmp_path / "pulsetwin_triage_runs"
+    jobs.mkdir()
+    path = jobs / f"{pid}.forecast.json"
+
+    def listed() -> dict:
+        return {p["proposal_id"]: p for p in client.get(
+            f"/api/proposals?plant_id={PLANT}&limit=50",
+            headers=MANAGER).json()["proposals"]}[pid]
+
+    path.write_text(json.dumps({"version": 1, "status": "running"}))
+    assert listed()["status"] == "SIMULATING"
+    assert client.post(f"/api/proposals/{pid}/approve", json={"action_id": "a1"},
+                       headers=MANAGER).status_code == 409
+
+    arm = {"action_type": "increase_feed_buffer", "modelled": True,
+           "throughput_uph": {"mean": 53.9, "ci_low": 53.7, "ci_high": 54.1},
+           "vs_do_nothing": {"throughput_uph": {"mean": 0.46, "ci_low": 0.13,
+                                                "ci_high": 0.83}, "distinguishable": True}}
+    nothing = {"action_type": "do_nothing", "modelled": True,
+               "throughput_uph": {"mean": 53.5, "ci_low": 53.2, "ci_high": 53.7}}
+    path.write_text(json.dumps({"version": 1, "status": "done", "provenance": "inferred",
+                                "arms": [nothing, arm]}))
+    view = listed()
+    assert view["status"] == "PROPOSED"
+    assert view["proposed_actions"][0]["simulated_impact"] == arm
+    assert view["do_nothing_forecast"] == nothing
+
+    path.write_text(json.dumps({"version": 1, "status": "running"}))
+    old = path.stat().st_mtime - 3600
+    import os
+    os.utime(path, (old, old))
+    view = listed()
+    assert view["counterfactual"]["status"] == "failed"
+    assert view["status"] == "PROPOSED"  # a dead job must not hold the decision forever

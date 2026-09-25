@@ -488,6 +488,15 @@ class LiveSimulationManager:
         if os.environ.get("PULSETWIN_JOBS_ENABLED", "1") == "0":
             return
         try:
+            # ADR-055: the counterfactual runs beside the agent, not after it -- both take
+            # about a minute and a half, and the proposal waits for both.
+            from serve.routers.proposals import start_counterfactual
+            start_counterfactual(proposal_id, plant_id, firing.detector, firing.station_id,
+                                 firing.evidence,
+                                 float(self.plants[plant_id]["budget_threshold"]))
+        except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
+            print(f"[watch] counterfactual spawn failed for {proposal_id}: {exc}")
+        try:
             from serve.routers.triage import _credential_present, start_triage_run
             name = firing.evidence.get("station_name") or f"S{firing.station_id}"
             result = start_triage_run(

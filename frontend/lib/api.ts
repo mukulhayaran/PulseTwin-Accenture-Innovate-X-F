@@ -696,6 +696,8 @@ export interface ProposedAction {
   params: Record<string, number | string>;
   rationale: string;
   claim_ids: string[];
+  /** ADR-055: this action's arm of the twin counterfactual; only on /api/proposals. */
+  simulated_impact?: ForecastArm | null;
 }
 
 export interface TriageKnowledgeCitation {
@@ -858,7 +860,7 @@ export const listTriageThreads = (plant: string, limit = 20, intent?: TriageInte
 export type WatchDetector = "starvation" | "paint_env" | "tool_wear";
 
 export type ProposalStatus =
-  | "INVESTIGATING" | "PROPOSED" | "NO_ACTION" | "AGENT_FAILED" | "NO_AGENT"
+  | "INVESTIGATING" | "SIMULATING" | "PROPOSED" | "NO_ACTION" | "AGENT_FAILED" | "NO_AGENT"
   | "APPROVED" | "APPLIED" | "EFFECTIVE" | "REJECTED";
 
 export interface ActionProposal {
@@ -876,12 +878,40 @@ export interface ActionProposal {
   agent_mode: "agent" | "deterministic" | null;
   finding: TriageFinding | null;
   proposed_actions: ProposedAction[];
+  counterfactual: Counterfactual | null;
+  do_nothing_forecast: ForecastArm | null;
   selected_action: ProposedAction | null;
   decided_by_role: string | null;
   decided_at: string | null;
   decision_note: string | null;
   applied_at: string | null;
   effective_at: string | null;
+}
+
+// ADR-055: the paired Monte Carlo fork of the physical twin behind every proposal.
+export interface Interval { mean: number; ci_low: number; ci_high: number }
+
+export interface ForecastArm {
+  action_type: ActionType | "do_nothing";
+  modelled: boolean;
+  reason?: string;
+  /** What the fork actually changed, e.g. "ends the station breakdown; +4 slots on S3's output buffer". */
+  simulated_as?: string | null;
+  throughput_uph?: Interval;
+  expected_defects?: Interval;
+  alerts?: Interval;
+  vs_do_nothing?: { throughput_uph: Interval; expected_defects: Interval; distinguishable: boolean };
+}
+
+export interface Counterfactual {
+  status: "queued" | "running" | "done" | "failed";
+  error?: string;
+  provenance?: "inferred";
+  hypothesis?: { scenario: string; severity: number; basis: string };
+  method?: { replicas: number; horizon_s: number; paired: boolean; interval: string };
+  ranking?: string[];
+  arms?: ForecastArm[];
+  elapsed_s?: number;
 }
 
 export const listProposals = (plant: string, limit = 20) =>

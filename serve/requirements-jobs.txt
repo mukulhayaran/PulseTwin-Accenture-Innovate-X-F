@@ -1,5 +1,13 @@
-# Dependencies of the detached GenAI triage subprocess only (serve/routers/triage.py spawns
-# `python -m genai.triage`). The API process never imports these -- its import wall holds.
-# Retraining and its pandas/scipy/scikit-learn/pyarrow stack were removed (ADR-053); genai/
-# imports nothing third-party but the OpenAI-wire-protocol client.
+# Dependencies of the detached job subprocesses only. The API process never imports
+# these -- its import wall holds (tests/test_serve_imports.py).
+#
+# `python -m genai.triage` (serve/routers/triage.py): nothing third-party but the
+# OpenAI-wire-protocol client.
 openai>=1.60
+# `python -m offline.counterfactual` (serve/routers/proposals.py, ADR-055): the physical
+# twin it forks is offline/live_twin, which reads plant YAML and uses pandas for its
+# calibration batch and scipy.signal.lfilter for the ambient/tool-wear processes. No
+# pyarrow, sklearn or xgboost: nothing on that path imports them.
+pandas>=2.2
+scipy>=1.14
+PyYAML>=6.0

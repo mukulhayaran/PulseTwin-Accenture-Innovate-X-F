@@ -16,6 +16,7 @@ import {
 import { cn } from "@/lib/cn";
 import { Badge, Button, Panel } from "@/components/ui";
 import { ActionRow, ACTION_LABEL, describeParams } from "@/components/copilot/FindingView";
+import { ForecastHeader, ImpactStrip, impactScale } from "@/components/ops/TwinForecast";
 
 const POLL_MS = 4000;
 
@@ -27,6 +28,7 @@ const DETECTOR_LABEL: Record<ActionProposal["detector"], string> = {
 
 const STATUS_TONE: Record<ProposalStatus, "ok" | "warn" | "danger" | "info" | "neutral" | "ai"> = {
   INVESTIGATING: "info",
+  SIMULATING: "info",
   PROPOSED: "ai",
   NO_ACTION: "neutral",
   AGENT_FAILED: "danger",
@@ -39,6 +41,7 @@ const STATUS_TONE: Record<ProposalStatus, "ok" | "warn" | "danger" | "info" | "n
 
 const STATUS_TEXT: Record<ProposalStatus, string> = {
   INVESTIGATING: "agent investigating",
+  SIMULATING: "twin simulating",
   PROPOSED: "awaiting decision",
   NO_ACTION: "no action warranted",
   AGENT_FAILED: "agent failed",
@@ -129,6 +132,7 @@ export default function ProposalInbox({
             const evidence = Object.entries(p.trigger_evidence).filter(([k]) => !HIDDEN_EVIDENCE.has(k));
             const name = p.trigger_evidence.station_name;
             const decidable = p.status === "PROPOSED";
+            const scale = impactScale(p.counterfactual);
             return (
               <li key={p.proposal_id} className="border border-line bg-canvas p-3">
                 <div className="flex flex-wrap items-center gap-2">
@@ -137,7 +141,7 @@ export default function ProposalInbox({
                     S{p.station_id}{name ? ` · ${name}` : ""}
                   </span>
                   <span className="flex-1" />
-                  <Badge variant={STATUS_TONE[p.status]} dot={p.status === "INVESTIGATING"}>
+                  <Badge variant={STATUS_TONE[p.status]} dot={p.status === "INVESTIGATING" || p.status === "SIMULATING"}>
                     {STATUS_TEXT[p.status]}
                   </Badge>
                 </div>
@@ -158,6 +162,8 @@ export default function ProposalInbox({
                 {p.finding?.summary && (
                   <p className="mt-2 text-2xs leading-relaxed text-ink-dim">{p.finding.summary}</p>
                 )}
+
+                <ForecastHeader cf={p.counterfactual} nothing={p.do_nothing_forecast} />
 
                 {p.selected_action ? (
                   <p className="mt-2 text-2xs text-ink-dim">
@@ -186,13 +192,15 @@ export default function ProposalInbox({
                               </Button>
                             )
                           }
-                        />
+                        >
+                          <ImpactStrip arm={a.simulated_impact} scale={scale} />
+                        </ActionRow>
                       ))}
                     </ul>
                   )
                 )}
 
-                {["PROPOSED", "NO_ACTION", "AGENT_FAILED", "NO_AGENT", "INVESTIGATING"].includes(p.status) && (
+                {["PROPOSED", "SIMULATING", "NO_ACTION", "AGENT_FAILED", "NO_AGENT", "INVESTIGATING"].includes(p.status) && (
                   <div className="mt-2 flex justify-end">
                     <Button
                       variant="ghost"

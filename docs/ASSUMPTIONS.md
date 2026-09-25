@@ -163,3 +163,16 @@ these are **modelled assumptions**, not measurements:
 "EFFECTIVE" on a proposal means the watch saw a full window of post-approval events back
 within its threshold. It confirms the twin behaved as these assumptions say; it is not
 evidence about a real line.
+
+### In the counterfactual fork (ADR-055)
+
+`offline/counterfactual.py` applies the SAME shares to the physical twin: an incident whose
+share is 100% is ended, and otherwise its severity is scaled by `1 − share`. Three more
+modelled assumptions sit on top of that:
+
+| Assumption | Value | Why it is an assumption |
+|---|---|---|
+| `increase_feed_buffer` adds slots to the firing station's OUTPUT buffer (the feed ahead of the downstream station, as the catalogue means it) | `FEED_BUFFER_SLOTS = 4` | matches the deterministic plan's proposal; an LLM agent's own `buffer_delta` arrives after the job has started, so each arm states what it simulated (`simulated_as`) |
+| Severity from tool-wear evidence | abs(deviation %) / 22 (the full-wear deficit) | assumes achieved torque falls in proportion to tool health, which is how `tool_health` is modelled |
+| Severity from paint evidence | humidity excess over ambient / 22 pts | linear in the incident's own full-severity magnitude |
+| Severity from starvation evidence | the stalled share, capped at 0.8 for congestion | a detector still receiving events is not looking at a zero-capacity (deadlocked) buffer |

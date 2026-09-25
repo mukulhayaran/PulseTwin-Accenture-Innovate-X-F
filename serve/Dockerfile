@@ -19,10 +19,14 @@ COPY artifacts/*.npz artifacts/*.jsonl artifacts/*.json ./artifacts/
 COPY migrations/ ./migrations/
 # The triage route launches genai/ as a detached module; the request-serving process never
 # imports it, so the API import wall holds. configs/ is read as text by serve/ (plant
-# YAMLs exist-checked by triage.py, alert_policies.yaml by serve/policy.py). No mlops/, no
-# offline/: retraining is gone (ADR-053) and nothing at runtime imports either.
+# YAMLs exist-checked by triage.py, alert_policies.yaml by serve/policy.py). No mlops/:
+# retraining is gone (ADR-053).
 COPY genai/ ./genai/
 COPY configs/ ./configs/
+# The proposals route launches `python -m offline.counterfactual` the same way (ADR-055):
+# a detached job forking the physical twin. The API process still never imports offline/.
+COPY offline/ ./offline/
+COPY feature_contract.py ./
 
 EXPOSE 7860
 # Shell form so the platform's $PORT is honoured (Render injects it); 7860 locally.

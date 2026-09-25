@@ -927,7 +927,7 @@ def run_starvation(
                 rationale=(f"Add feed slots ahead of S{down} so it keeps working while "
                            f"S{sid} recovers. "
                            + ("The effect was tested on the simulation grid."
-                              if simulated_ids else "Its effect was NOT simulated.")),
+                              if simulated_ids else "It is not on the what-if grid.")),
                 claim_ids=stall_ids + simulated_ids))
     return _finish(
         question, claims, notes,

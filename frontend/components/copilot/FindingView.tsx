@@ -57,7 +57,9 @@ export function describeParams(params: ProposedAction["params"]): string {
   return parts.join(" · ");
 }
 
-export function ActionRow({ action, trailing }: { action: ProposedAction; trailing?: React.ReactNode }) {
+export function ActionRow({
+  action, trailing, children,
+}: { action: ProposedAction; trailing?: React.ReactNode; children?: React.ReactNode }) {
   const params = describeParams(action.params);
   return (
     <li className="border border-ai/30 bg-ai/[0.05] px-2.5 py-2">
@@ -74,6 +76,7 @@ export function ActionRow({ action, trailing }: { action: ProposedAction; traili
       <div className="text-numeric mt-1 text-2xs text-ink-faint">
         rests on {action.claim_ids.join(", ")}
       </div>
+      {children}
     </li>
   );
 }

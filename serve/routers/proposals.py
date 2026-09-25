@@ -8,6 +8,11 @@
                                        to the running twin (never to real equipment)
     POST /api/proposals/{id}/reject   a human declines, with a note
 
+Every firing also spawns a Monte Carlo counterfactual (`offline.counterfactual`, ADR-055):
+the physical twin forked into paired futures -- doing nothing, and each catalogue action.
+A proposal is not decidable until that has finished: nothing reaches a human without its
+simulated impact and its do-nothing forecast beside it.
+
 The agent's proposed actions are never copied into `action_proposals`: they are read
 from the linked triage run's served (post-verification) finding, so what the agent
 proposed has one source of truth and an action the verifier dropped can never be
@@ -18,7 +23,12 @@ decides.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -28,6 +38,7 @@ from serve import db
 from serve.live_simulation import MITIGATIONS
 from serve.middleware.audit import log_action
 from serve.middleware.auth import require_role
+from serve.routers.triage import ROOT, WORKER_STALE_S, _jobs_dir
 
 router = APIRouter()
 
@@ -35,6 +46,8 @@ DETECTOR_PATTERN = "^(starvation|paint_env|tool_wear)$"
 DECIDABLE = "PROPOSED"
 AGENT_ACTIVE = ("queued", "running")
 AGENT_SERVED = ("verified", "verified_with_redactions")
+SIMULATING = "SIMULATING"
+FORECAST_ACTIVE = ("queued", "running")
 
 
 def _loads(value: Any) -> Any:
@@ -75,6 +88,45 @@ def watch_firings(request: Request, plant_id: str = "plant_a",
     return {"plant_id": plant_id, "firings": firings, "count": len(firings)}
 
 
+def _forecast_path(proposal_id: str) -> Path:
+    return _jobs_dir() / f"{proposal_id}.forecast.json"
+
+
+def start_counterfactual(proposal_id: str, plant_id: str, detector: str, station_id: int,
+                         evidence: dict[str, Any], budget_threshold: float) -> None:
+    """Spawn the detached counterfactual job -- the triage pattern: status file written
+    BEFORE the spawn, stdio to a per-job log rather than DEVNULL (CLAUDE.md section 8)."""
+    jobs = _jobs_dir()
+    jobs.mkdir(parents=True, exist_ok=True)
+    out = _forecast_path(proposal_id)
+    out.write_text(json.dumps({"version": 1, "status": "queued"}), encoding="utf-8")
+    log = open(jobs / f"{proposal_id}.forecast.log", "w", encoding="utf-8")  # noqa: SIM115
+    subprocess.Popen(
+        [sys.executable, "-m", "offline.counterfactual", "--plant", plant_id,
+         "--detector", detector, "--station", str(station_id),
+         "--evidence", json.dumps(evidence), "--budget-threshold", str(budget_threshold),
+         "--out", str(out)],
+        cwd=str(ROOT),
+        env={**os.environ, "OMP_NUM_THREADS": "1", "PYTHONPATH": str(ROOT)},
+        stdout=log, stderr=subprocess.STDOUT,
+    )
+
+
+def _counterfactual(proposal_id: str) -> dict[str, Any] | None:
+    """The job's result; None when none was started (jobs disabled, or a row older than
+    ADR-055). A job silent past WORKER_STALE_S is reported stopped, never `running`."""
+    path = _forecast_path(proposal_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        age = time.time() - path.stat().st_mtime
+    except (OSError, ValueError):
+        return None
+    if data.get("status") in FORECAST_ACTIVE and age > WORKER_STALE_S:
+        return {"version": 1, "status": "failed",
+                "error": f"worker_stopped: no result for {int(WORKER_STALE_S)}s"}
+    return data
+
+
 def _view(row: dict[str, Any], run: dict[str, Any] | None) -> dict[str, Any]:
     """A proposal as the UI sees it: stored decision + the agent's served finding.
 
@@ -82,7 +134,12 @@ def _view(row: dict[str, Any], run: dict[str, Any] | None) -> dict[str, Any]:
     whether there is anything to decide yet.
     """
     finding = _loads(run.get("finding")) if run else None
-    actions = (finding or {}).get("proposed_actions") or []
+    counterfactual = _counterfactual(row["proposal_id"])
+    arms = {a["action_type"]: a for a in (counterfactual or {}).get("arms") or []}
+    # Each verified action carries its own simulated impact; None when the catalogue
+    # action has no arm (the job has not finished, or failed).
+    actions = [{**a, "simulated_impact": arms.get(a.get("action_type"))}
+               for a in (finding or {}).get("proposed_actions") or []]
     status = row["status"]
     if status == "OPEN":
         if not row.get("triage_run_id"):
@@ -93,6 +150,9 @@ def _view(row: dict[str, Any], run: dict[str, Any] | None) -> dict[str, Any]:
             status = "AGENT_FAILED"
         else:
             status = DECIDABLE if actions else "NO_ACTION"
+        if (status == DECIDABLE and counterfactual
+                and counterfactual.get("status") in FORECAST_ACTIVE):
+            status = SIMULATING
     return {
         "proposal_id": row["proposal_id"],
         "sim_run_id": row["sim_run_id"],
@@ -108,6 +168,8 @@ def _view(row: dict[str, Any], run: dict[str, Any] | None) -> dict[str, Any]:
         "agent_mode": run.get("mode") if run else None,
         "finding": finding,
         "proposed_actions": actions,
+        "counterfactual": counterfactual,
+        "do_nothing_forecast": arms.get("do_nothing"),
         "selected_action": _loads(row.get("selected_action")),
         "decided_by_role": row.get("decided_by_role"),
         "decided_at": row.get("decided_at"),

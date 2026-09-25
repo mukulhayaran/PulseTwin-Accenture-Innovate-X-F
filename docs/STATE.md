@@ -661,6 +661,37 @@ loaded, `/api/health` = `postgresql`, feedback persisted across `restart backend
 `/supervisor` and `/ops` loaded in Playwright with no page errors or 5xx, backend ~82 MB
 RSS. Not yet done: the Neon/Render/Vercel accounts themselves (owner action).
 
+### Twin counterfactual behind every proposal (2026-09-25) — ADR-055
+
+An outside "agentic recommendation layer" plan was compared against the repo: about 80% was
+already here, often stronger. Its real gap was that nothing was *simulated* before reaching
+a human. Now every watch firing spawns `offline/counterfactual.py` beside the agent. It
+deep-copy-forks the physical twin into 8 paired replicas per arm (do nothing, plus each
+catalogue action for the detected condition) over 2 h. `/api/proposals` holds the proposal
+at `SIMULATING` until the forecast is done, then attaches `simulated_impact` to each action
+and a `do_nothing_forecast`. The inbox (`components/ops/TwinForecast.tsx`) draws each
+action as a hatched inferred Δ-UPH interval on a zero line (zero = doing nothing).
+
+Verified live (port 7861, deterministic mode): breakdown at S3 → starvation + tool_wear
+firings → both forecasts done in about 225–250 s (slower than the 90 s measured alone,
+because the live sim, two agents and two jobs share the CPU) → `PROPOSED` with impacts →
+rendered, no console errors.
+
+Bugs found by running it:
+- `engine._apply_physical_state()` re-forces a breakdown, so a mitigation knocked a repaired
+  station down again (−11.7 UPH blamed on the action). Pinned by
+  `tests/test_counterfactual.py`.
+- The fork modelled a different buffer (feeding S3) from the one the agent proposed (ahead
+  of S4). Found in the screenshot. Aligned, and every arm now shows `simulated_as`.
+- Not bugs, but they look like them: a worn tool at S3 and humidity alone are defect-inert
+  in the twin (Mode C needs S8 vibration, Mode A needs dwell), and the agent's aligned
+  buffer action shows exactly zero effect. Both are in ADR-055.
+- Pre-existing, not fixed: `IncidentState.breakdown_repair_scale` is never called.
+
+**Deploy note:** the jobs image now needs `offline/`, `feature_contract.py`, pandas, scipy
+and PyYAML (`serve/Dockerfile`, `serve/requirements-jobs.txt`, about 150 MB). This has not
+been rebuilt with `docker compose build` yet.
+
 ### Proactive watch + agent-proposed actions (2026-09-24) — ADR-051
 
 A friend's "agentic digital twin" boilerplate was assessed and not adopted as written (it
