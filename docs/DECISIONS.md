@@ -2054,3 +2054,39 @@ state, and the silent duration.
 deadlocked congestions at about 13 min with the root cause right. There are no new false
 alarms, and placebo recall is unchanged at 7%. **Not fixed:** the two impactful breakdowns
 never go silent long enough, and breakdowns are still diagnosed as congestion (0/3).
+
+### ADR-058 — What a real twin must implement to replace the synthetic one
+
+**Context.** The agentic layer is meant to run against a plant's real digital twin. It
+touches the twin in exactly one place, `offline/counterfactual.py`. The synthetic twin
+behind it (`offline.live_twin.LiveTwinEngine`) is reached through six operations, and two
+of them currently reach into private attributes. A real twin vendor needs the contract
+stated precisely, including what the synthetic twin does badly.
+
+**Decision: the contract is these six operations, written down here, not an abstract base
+class.** An interface with one implementation is scaffolding. When a second twin exists,
+turn this table into a `typing.Protocol` in `offline/counterfactual.py`, and the table is
+already its docstring.
+
+| # | Operation | What the layer needs | Synthetic twin today | Real twin must |
+|---|---|---|---|---|
+| 1 | **snapshot** | a warmed, calibrated line state at the decision point | `LiveTwinEngine(cfg, seed, ...).start()`, then `inject(Incident(...))` to reproduce the detected condition, then `advance(onset_s)` | start from the **live** state: WIP per buffer, station states, tool/incident conditions. This is better than reproducing the condition, and is the main upgrade a real twin buys |
+| 2 | **fork(snapshot, replica_seed)** | N independent futures from one state; **the same seed gives the same stochastic future in every arm** (common random numbers, so action-minus-nothing is paired) | `copy.deepcopy(engine)` + `_reseed`, which overwrites every RNG's state *in place* because the simulator holds references to them | cheap copy-on-fork, and seedable stochastic inputs (failures, cycle-time noise, operator variance). If it can only give independent draws, the paired interval widens and small effects become "within noise" |
+| 3 | **apply(action_type, params, station_id)** | change the physical condition a catalogue action changes, **without side effects** | `_mitigate`: scales or ends the incident, adds buffer slots, refreshes capacity/checklist, wakes blocked stations via `sim._release_held`. **Reaches into private state**, and deliberately avoids `_apply_physical_state()`, which re-forces a breakdown (ADR-055) | expose the action catalogue (`serve/live_simulation.py::MITIGATIONS`, `genai/finding.py::ACTION_TYPES`) as parameter changes: buffer capacity, cycle time, maintenance (restore tool / end fault), HVAC setpoint, load shift. **It must accept the agent's own params** (`buffer_delta` etc.). Today's twin uses a fixed `FEED_BUFFER_SLOTS` and says so in `simulated_as` |
+| 4 | **run_forward(seconds)** | advance simulated time; the clock **keeps moving when nothing happens** | `advance(s)` against an absolute `_clock_target`. The DES clock (`now`) freezes when the line deadlocks, which is why the eval and the watch use the target (ADR-057) | report simulated time independent of event activity |
+| 5 | **metrics()** | units completed; per-unit defect **probability** at inspection (not only the draw: expected defects is the low-variance estimator); alerts opened | `units_completed`, `alerts_opened`, `propensity` on each `inspection_outcome` event | if it has no defect model, return throughput only. The forecast then omits `expected_defects` rather than inventing it |
+| 6 | **identity** | which plant/config, and a version for provenance | `cfg.plant_id`, `method.twin` in every forecast | a model version string, recorded in each forecast's `method` |
+
+**Non-negotiables for any twin.** It is recommend-only: the twin is a *copy* the layer
+forks, and has no path to the physical line. Forecasts stay `provenance: "inferred"` with
+intervals (contract #1). Nothing in the contract carries a dollar figure (contract #2).
+
+**Known limitations a real twin should fix, recorded here so they are not rediscovered:**
+- `IncidentState.breakdown_repair_scale` is never called, so a breakdown's severity has no
+  physical effect.
+- A single-station torque or humidity incident is defect-inert. Mode C needs S3 torque and
+  S8 vibration together, and Mode A needs dwell as well as humidity. That is correct for
+  this twin's physics, but it means the defect side of every tool-wear forecast is "no
+  effect" (ADR-055).
+- The data feeds, and what is not yet wired from a real feed to the watch, are in
+  `docs/INTEGRATION.md`.

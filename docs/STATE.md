@@ -661,6 +661,16 @@ loaded, `/api/health` = `postgresql`, feedback persisted across `restart backend
 `/supervisor` and `/ops` loaded in Playwright with no page errors or 5xx, backend ~82 MB
 RSS. Not yet done: the Neon/Render/Vercel accounts themselves (owner action).
 
+### Integration contract written (2026-09-25) — ADR-058, docs/INTEGRATION.md
+
+ADR-058 states the six operations a real twin must provide (snapshot, fork with common
+random numbers, side-effect-free apply, a clock that runs while idle, metrics, identity).
+It maps each to today's `LiveTwinEngine` call, including the two that reach into private
+state. `docs/INTEGRATION.md` maps every field the layer reads to its plant source
+(OPC-UA / MES / QMS / BMS). **Its §5 lists five real gaps before a live feed:** the watch
+is not attached to MQTT data at all, `tick()` has no driver, and `ambient_humidity_pct`
+is missing from `SIG_COLS`.
+
 ### Watch vs threshold alerting, measured (2026-09-25) — ADR-056
 
 `python -m offline.benchmarks.agent_eval --seeds 3` (≈6 min) → `docs/AGENT_EVAL.md`. It
