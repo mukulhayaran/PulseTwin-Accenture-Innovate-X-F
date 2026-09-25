@@ -83,7 +83,7 @@ jobs:
           path: artifacts/benchmarks/
           if-no-files-found: error
 
-  retrain-and-verify:
+  regenerate-and-verify:
     name: Regenerate pipeline + verify artifacts
     runs-on: ubuntu-latest
     timeout-minutes: 240

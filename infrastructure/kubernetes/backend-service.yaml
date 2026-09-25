@@ -1,7 +1,7 @@
 # ClusterIP Service fronting the backend Deployment's 2 (autoscaled to 6) pods.
 # Internal-only: judged production posture routes external traffic through an ingress /
 # load balancer in front of this, not covered here since the demo serves the frontend as
-# a static export (see docker-compose.yml) rather than proxying through Kubernetes.
+# a static export (see docker-compose.prod.yml) rather than proxying through Kubernetes.
 apiVersion: v1
 kind: Service
 metadata:

@@ -36,7 +36,7 @@ this document does not re-derive either, it operationalises them.
 
 | Audience | Duration | Content |
 |---|---|---|
-| Floor supervisors | 2 hours | Reading the line map and alert cards, containment sweeps, what a HOLD/INSPECT/MONITOR action means, how to submit feedback and why it matters (it feeds `mlops/retrainer.py`'s next training run) |
+| Floor supervisors | 2 hours | Reading the line map and alert cards, containment sweeps, what a HOLD/INSPECT/MONITOR action means, how to submit feedback and why it matters (it is recorded durably and audited, and labels the next offline training build) |
 | Production managers | 1 hour | Constraint migration timeline, the what-if console, reading the station league table |
 | Plant leadership | 30 minutes | The value bridge, the alarm-budget trade-off (`docs/BUSINESS_PROPOSAL.md` §4's "binding constraint is human attention, not model quality"), the instrumentation planner |
 | System/ops team (new in the finals scope) | 2 hours | The Ops view, reading a drift alert, triggering and reviewing a retrain, the incident runbook (`docs/INCIDENT_RUNBOOK.md`) |
@@ -60,9 +60,9 @@ If precision drops below 60% for two consecutive weeks (measured from live super
 feedback, not the training-time metric), revert to shadow mode: predictions continue to be
 computed and logged but stop being surfaced as actionable alerts, exactly as
 `docs/MLOPS_LIFECYCLE.md`'s rollback trigger states. This is an organisational decision
-(who is allowed to declare it, and un-declare it) layered on top of the technical rollback
-mechanism (`POST /api/admin/rollback-model`) — the API call reverts the model; this plan
-covers who decides to call it and how the floor is told.
+(who is allowed to declare it, and un-declare it). There is no model-rollback endpoint:
+retraining and promotion were removed (ADR-053), so the served model only changes with a
+new offline build and deploy — this plan covers who decides and how the floor is told.
 
 ## Operator engagement
 
@@ -71,7 +71,8 @@ that framing rather than only asserting it: operator identity is never surfaced
 individually (CLAUDE.md, `docs/DATA_GOVERNANCE.md`), so there is no mechanism by which this
 system COULD be used to rank or discipline an individual operator even if someone wanted
 to. What supervisors see instead is their own feedback directly shaping the next model —
-a thumbs-down on a false alarm is training signal for `mlops/retrainer.py`'s next run, not
-a complaint that disappears into a ticket queue. Making that loop visible (the audit log
+a thumbs-down on a false alarm is recorded durably (the `feedback` table) and audited, not
+a complaint that disappears into a ticket queue. It is labelled evidence for the next
+offline training build; there is no online retrain to feed (ADR-053). Making that loop visible (the audit log
 entry, the toast confirmation) is deliberate: `frontend/components/shared/AuditToast.tsx`
 exists so the floor can *see* that their input was recorded, not just be told it was.

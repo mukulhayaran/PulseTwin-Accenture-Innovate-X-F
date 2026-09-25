@@ -1740,3 +1740,144 @@ worse than explaining it.
 criterion; two are operationalised adaptations and carry `_adapted` in the key, with a test
 asserting the key and the provenance string agree. We do not claim to reproduce a published
 algorithm we have adapted.
+
+### ADR-051 — Agents propose, a person decides, the twin applies
+
+**Context.** A suggestion arrived to rebuild PulseTwin as a greenfield "agentic digital twin":
+an `AutomotiveDigitalTwin` class, four rule-based agents calling mock actuator APIs to reroute
+parts, shift weld load and change HVAC setpoints autonomously, and a simulation loop. It was
+assessed and **not adopted as written**. It duplicated the twin and agent tier this repo
+already has with a weaker version of both; its "agents" were threshold rules — automation,
+not agency; its mock APIs broke the no-placeholder rule (CLAUDE.md §1); autonomous control
+of plant equipment contradicts the read-only-by-construction agent (`docs/SECURITY.md`) and
+the one-way OT→IT flow (`docs/PRODUCTION_ARCHITECTURE.md`); and one of its four use cases —
+stamping-die damage — has no data at all, because neither plant has a press shop.
+
+Two of its ideas were real gaps. Agents only ran when a person pressed a button, so nothing
+*noticed* a risk; and a finding could recommend in prose but never *propose* an action a
+person could act on in one step.
+
+**Decision.** A closed loop, with a person at the one point that matters:
+
+    watch fires -> agent investigates -> agent PROPOSES -> person approves
+                -> twin applies -> watch confirms recovery (EFFECTIVE)
+
+* **The watch** (`serve/watch.py`, stdlib only) runs on every live-simulation event. Three
+  detectors, thresholds in `configs/plant_*.yaml` under `watch:` and baked to
+  `artifacts/watch_rules_<plant>.json` by `offline/build_watch_rules.py` (serve/ cannot parse
+  YAML): **starvation** (a station down/blocked with cycle time above takt), **paint
+  environment** (zone humidity in *excess of ambient*, above the Mode A threshold), **tool
+  degradation** (torque / weld current off its per-variant baseline). A firing is latched per
+  episode, cooled down in simulated seconds, deduplicated per open proposal, and capped per
+  run so a free-tier provider quota survives a demo.
+* **Three agents** (`starvation`, `paint_env`, `tool_wear` in `genai/intents.py`) start
+  through the same `start_triage_run` as the existing auto-investigation. Each has a
+  deterministic plan (`genai/offline_triage.py`), so the loop works with no provider key.
+  One new tool, `get_watch_firings`, is GET-only: the registry stays read-only.
+* **Proposed actions** (`genai/finding.py::ACTION_TYPES`, a closed catalogue of six) must
+  cite the claims that justify them. `genai/verifier.py` serves an action only if its type
+  is catalogued, its params are present and **every cited claim verified** — an action
+  resting on a redacted number is removed with it. Dropping an action is never fatal.
+* **A person decides** through `POST /api/proposals/{id}/approve|reject` (manager and above,
+  audited, 409 on a second decision). These endpoints are **not tools**: an agent can
+  propose, only a person can approve.
+* **The twin applies** an approved action by removing part of the injected scenario's
+  effect (`serve/live_simulation.py::MITIGATIONS`). It never writes toward MQTT or any OT
+  interface. The magnitudes are modelled assumptions, recorded in `docs/ASSUMPTIONS.md`.
+
+**Measured, not assumed — the thresholds.** Every detector was profiled on the replay
+streams before it was trusted:
+
+* Zone humidity tracks ambient with sd 1.1 points (rolling-8 max excess 1.43), while the
+  mean zone humidity (64.6%) already sits *above* plant A's 55% threshold. An absolute
+  threshold would fire on every humid day, so paint keys on the excess over ambient.
+* The replay stream carries only `idle`/`starved` states, so the starvation detector is
+  silent on a normal run by construction.
+* A single run baseline read the variant mix as 24% torque "drift"; per-variant baselines
+  baked from the stream fixed it. Vibration was excluded (rolling-8 deviation 60–120% on a
+  normal run). What still fires on a normal run is exactly the **Mode C** stations — S3 on
+  plant A, S4/S11 on plant B — which carry the simulator's *designed* torque deficits. Those
+  are true positives, and a test pins the firings to the configured Mode C stations.
+* Plant B's Mode C deficit (7%) also re-fired at S25; its watch threshold is 10%.
+
+**Measured against the live provider (OpenRouter, 2026-09-24).** The deterministic path
+closed all three loops end to end (fire → propose → approve → EFFECTIVE). The model path
+was run twice. The first run exposed two prompt gaps, both caught by the gate rather than
+served: actions anchored on a *string* claim (`stalled_state`) and a *list*, which the
+verifier dropped; and a torque claim in `Nm`, which is not a claim unit and made a finding
+unparseable. `intents.ACTION_GUIDANCE` now says both in the words the model reads. On the
+second run the tool-wear agent produced a verified maintenance ticket (its load-shift
+proposal was dropped for resting on an unverified claim), and the starvation agent was
+**rejected** for citing an inferred station row as measured — contract #1 enforced on a
+model error, which is the gate doing its job.
+
+**Consequences.** `docs/SECURITY.md` §"The agent's authority" is amended: the agent still
+cannot *do* anything, and the one new write path is a human-called approval that changes
+only the simulation. Approval is exact-role gated in the UI (`ProposalInbox`, on `/manager`
+and `/ops`) and hierarchy-gated in the API, like every other mutation.
+
+### ADR-052 — Demo runtime retired; production requires Postgres (PULSETWIN_REQUIRE_POSTGRES); SQLite is build/test-only
+
+**Context.** The deployed site's health box read `database: sqlite`. No deployment set
+`DATABASE_URL`, so `serve/db.py::open_database` fell back — silently — to the read-only
+SQLite build artifact. Both deploy paths were SQLite by construction: `docker-compose.yml`
+(the "local demo") and `render.yaml` + `serve/Dockerfile.render`. Feedback lived in a
+tempdir SQLite file even on Postgres, so it reset on every restart.
+
+**Decision.** No deployment can reach SQLite; the code path stays.
+
+* `serve/db.py::_require_postgres_url` — with `PULSETWIN_REQUIRE_POSTGRES=1` and no
+  `DATABASE_URL`, `open_database` and `open_ops_only` raise `RuntimeError` at startup.
+  Every deployment sets the flag (`docker-compose.prod.yml`, `render.yaml`).
+* SQLite is kept deliberately: `artifacts/pulsetwin.db` is the build output
+  `offline/load_to_postgres.py` loads into Postgres, and the test suite runs on it.
+* `docker-compose.yml` and `serve/Dockerfile.render` are deleted. The Makefile's `demo`,
+  `smoke-demo*` and `demo-prod*` targets become `up`, `up-mqtt`, `down` over the one
+  remaining stack. The image no longer carries `pulsetwin.db` (39 MB), `mlops/`, `offline/`
+  or the retraining libraries; `requirements-jobs.txt` is `openai` alone.
+* Feedback moves into Postgres: `migrations/016_feedback.sql`, and on Postgres
+  `STATE["feedback"]` is the ops handle.
+* Free-tier cloud: Neon (Postgres) + Render (one web service, `render.yaml`) + Vercel (the
+  static export). Neon is reached on its DIRECT endpoint; the pool also sets
+  `prepare_threshold=None` (PgBouncer transaction mode breaks psycopg's auto-prepare),
+  reads its size from `PULSETWIN_PG_POOL_MAX` (Render: 5), and checks each connection on
+  checkout so one killed by Neon's idle suspend is replaced rather than raised.
+* Redis, MQTT and ingestion stay on the local stack (`serve/` never imports redis; the free
+  tier has no workers; ingestion has no MQTT TLS/auth). `/api/health` reports each as
+  `not_configured` rather than omitting it.
+
+**Consequence.** The first end-to-end run of `docker-compose.prod.yml` (2026-09-25):
+migrations 014-016 applied, the loader wrote 325,793 rows, `/api/health` reported
+`postgresql`, feedback survived a backend restart, `/supervisor` and `/ops` loaded with no
+page errors, and the backend sat at ~82 MB RSS — inside Render's 512 MB free tier.
+
+### ADR-053 — Retraining removed: static synthetic data makes it a no-op
+
+**Context.** The champion-challenger pipeline (`mlops/retrainer.py`, `mlops/evaluation.py`,
+the `/api/admin/{trigger-retrain,retrain-status,promote-model,rollback-model}` endpoints,
+`RetrainingConsole.tsx`) retrained on the same simulated data the deployed model was
+trained on. That data is static, and the pipeline is deterministic — seed 42 and
+`OMP_NUM_THREADS=1` (ADR-016) — so a retrain reproduces the deployed model. It could add
+nothing, while costing a subprocess launch path, a hot-swap seam (ADR-041), a pruning
+policy, pandas/scipy/scikit-learn/pyarrow in the runtime image, and the only endpoints
+that needed the `system` role.
+
+**Decision.** Remove retraining; keep training and monitoring.
+
+* Kept: `offline/ml/train.py` (unchanged), the numpy scorer, `mlops/drift_detector.py` and
+  `mlops/fallback.py` (run offline), and `/api/model/health` + `/api/model/registry` as
+  READ-ONLY monitoring behind `ModelHealthPanel` and `DriftMonitor`.
+* Removed: the retrainer, the comparison module, `mlops/model_registry.py` (nothing
+  surviving imported it — `serve/` records the champion itself), `serve/routers/admin.py`,
+  the console, the `retrain` target, and the tests that covered only those. Applied
+  migrations are untouched; the unused columns are harmless.
+* `serve/main.py` loads the committed `model_<plant>.npz` unconditionally. A registry row
+  can describe the served model but can no longer select another artifact — a test pins
+  that a stale "champion" row cannot change what is served.
+* A drift verdict is now information, not a trigger. `/api/model/health` no longer
+  recommends a retrain; it points at the inputs.
+* `system` still tops the role hierarchy but gates no endpoint of its own; its gate is
+  tested on the dependency directly.
+
+**If the data ever becomes live** (a real MQTT feed writing `station_readings`), retraining
+is meaningful again — as a new decision with a new ADR, not a revert of this one.

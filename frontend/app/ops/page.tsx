@@ -7,7 +7,7 @@ import {
   getRole, getStations, getSystemHealth, setRole, type Role,
 } from "@/lib/api";
 import { usePersonaAccess } from "@/lib/usePersonaAccess";
-import AccessRestricted from "@/components/shared/AccessRestricted";
+import SignInGate from "@/components/shared/SignInGate";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import RoleGate from "@/components/shared/RoleGate";
 import { useAuditToast } from "@/components/shared/AuditToast";
@@ -17,8 +17,9 @@ import SensorHealthGrid from "@/components/ops/SensorHealthGrid";
 import IngestionLagChart from "@/components/ops/IngestionLagChart";
 import SystemStatusBar from "@/components/ops/SystemStatusBar";
 import AuditLogViewer from "@/components/ops/AuditLogViewer";
-import RetrainingConsole from "@/components/ops/RetrainingConsole";
 import TriageConsole from "@/components/ops/TriageConsole";
+import AgentPanel from "@/components/copilot/AgentPanel";
+import ProposalInbox from "@/components/ops/ProposalInbox";
 import { AppShell, Select, Tooltip } from "@/components/ui";
 
 const ROLES: Role[] = ["supervisor", "manager", "leadership", "system"];
@@ -91,11 +92,11 @@ export default function OpsPage() {
   }, [plant, role, granted]);
 
   const championMetrics = registry?.history?.find((h: any) => h.status === "champion")?.metrics;
-  const hasChallenger = !!registry?.history?.some((h: any) => h.status === "challenger");
 
-  if (access.status === "pending" || access.status === "anonymous") return null;
+  if (access.status === "pending") return null;
+  if (access.status === "anonymous") return <SignInGate view="Ops" required={["system"]} />;
   if (access.status === "denied") {
-    return <AccessRestricted required={["system"]} current={access.role} />;
+    return <SignInGate view="Ops" required={["system"]} current={access.role} />;
   }
 
   return (
@@ -128,19 +129,14 @@ export default function OpsPage() {
       <div className="space-y-4">
         <SystemStatusBar system={system} />
 
-        {/* Full width and first: the verification verdict is the point of the feature,
-            and dropping "Viewing as" to supervisor makes the agent decline rather than
-            estimate -- which is the most persuasive thing on this page. */}
-        <RoleGate allowed={["manager", "leadership", "system"]}>
-          <TriageConsole plant={plant} onAction={show} />
-        </RoleGate>
-
+        {/* Health first: this page answers "is the twin itself trustworthy?", and the
+            finals script walks it in this order -- model, drift, then drop the role and
+            watch these gates close. The agents and the triage console sit last. */}
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <RoleGate allowed={["leadership", "system"]}>
             <ModelHealthPanel
               health={health}
               championMetrics={championMetrics}
-              hasChallenger={hasChallenger}
             />
           </RoleGate>
           <RoleGate allowed={["leadership", "system"]}>
@@ -159,13 +155,23 @@ export default function OpsPage() {
           <RoleGate allowed={["manager", "leadership", "system"]}>
             <IngestionLagChart key={plant} lag={lag} />
           </RoleGate>
-          <RoleGate allowed={["leadership", "system"]}>
-            <AuditLogViewer />
-          </RoleGate>
-          <RoleGate allowed={["system"]}>
-            <RetrainingConsole plant={plant} onAction={show} />
-          </RoleGate>
         </div>
+
+        <RoleGate allowed={["leadership", "system"]}>
+          <AuditLogViewer />
+        </RoleGate>
+
+        <RoleGate allowed={["manager", "leadership", "system"]}>
+          <ProposalInbox plant={plant} onAction={show} />
+        </RoleGate>
+
+        <RoleGate allowed={["manager", "leadership", "system"]}>
+          <AgentPanel plant={plant} onAction={show} />
+        </RoleGate>
+
+        <RoleGate allowed={["manager", "leadership", "system"]}>
+          <TriageConsole plant={plant} onAction={show} />
+        </RoleGate>
       </div>
 
       {ToastElement}

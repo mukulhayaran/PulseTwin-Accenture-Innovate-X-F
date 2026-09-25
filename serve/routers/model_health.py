@@ -145,7 +145,10 @@ def model_health(request: Request, plant_id: str = "plant_a",
             "measured_at": cov["timestamp"] if cov else None,
         },
         "recommendation": (
-            f"Drift detected ({overall}) -- consider triggering a retrain."
+            # ADR-053: there is no retrain to trigger -- the data is static and seed 42
+            # would reproduce the same model. Drift here means the INPUTS moved.
+            f"Drift detected ({overall}) -- review the drifting inputs and sensor "
+            f"coverage; the SPC fallback takes over if the model degrades."
             if overall != "healthy" else
             "No action needed."
         ),
@@ -156,7 +159,9 @@ def model_health(request: Request, plant_id: str = "plant_a",
 def model_registry_history(request: Request, plant_id: str = "plant_a",
                             model_type: str = "defect_risk",
                             role: str = Depends(require_role("leadership"))) -> dict[str, Any]:
-    """Full champion/challenger/retired history -- backs RetrainingConsole.tsx."""
+    """The registered models for a plant, READ-ONLY. Since ADR-053 removed retraining this
+    is the committed champion plus the SPC fallback; ModelHealthPanel reads the champion's
+    measured metrics (pr_auc) from here."""
     ops = request.app.state.ops
     rows = db.query_all(
         ops,

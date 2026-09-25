@@ -5,7 +5,6 @@ supervisor < manager < leadership < system, header `X-PulseTwin-Role`, default s
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -63,37 +62,23 @@ def test_leadership_gated_endpoint(client, role, expected):
     assert client.get("/api/economics/roi?plant_id=plant_a", headers=h(role)).status_code == expected
 
 
-@pytest.mark.parametrize("role,expected", [
-    ("supervisor", 403), ("manager", 403), ("leadership", 403),
-])
-def test_system_gated_endpoint_rejects_everything_below_system(client, role, expected):
-    r = client.post("/api/admin/trigger-retrain", json={"plant_id": "plant_a"}, headers=h(role))
-    assert r.status_code == expected
+@pytest.mark.parametrize("role", ["supervisor", "manager", "leadership"])
+def test_the_system_gate_rejects_everything_below_system(role):
+    """ADR-053 removed the only system-only endpoints (retrain/promote/rollback), so the
+    top of the hierarchy is exercised on the dependency itself rather than lost."""
+    from fastapi import HTTPException
+
+    from serve.middleware.auth import require_role
+
+    with pytest.raises(HTTPException) as exc:
+        require_role("system")(role=role)
+    assert exc.value.status_code == 403
 
 
-def test_system_role_can_trigger_retrain(client):
-    """Mocks the subprocess -- this test is about the ROLE GATE, not the training run
-    itself (mlops/retrainer.py is exercised directly by tests/test_retraining.py)."""
-    with patch("serve.routers.admin.subprocess.Popen") as mock_popen:
-        r = client.post("/api/admin/trigger-retrain", json={"plant_id": "plant_a"},
-                         headers=h("system"))
-        assert r.status_code == 200
-        assert r.json()["status"] == "queued"
-        assert mock_popen.called
+def test_the_system_gate_admits_system():
+    from serve.middleware.auth import require_role
 
-
-def test_supervisor_cannot_promote_a_model(client):
-    r = client.post("/api/admin/promote-model", json={"model_id": "does-not-exist"},
-                     headers=h("supervisor"))
-    assert r.status_code == 403
-
-
-def test_system_role_promote_reaches_business_logic(client):
-    """system role passes the gate; a bogus model_id then 404s from the handler itself,
-    proving the request got past auth and into real logic, not stopped by the gate."""
-    r = client.post("/api/admin/promote-model", json={"model_id": "does-not-exist"},
-                     headers=h("system"))
-    assert r.status_code == 404
+    assert require_role("system")(role="system") == "system"
 
 
 # -------------------------------------------------------------------- supervisor access

@@ -28,6 +28,9 @@ export interface StreamEvent {
   variant: string;
   lot_id: string;
   cycle_time_s: number;
+  /** When this unit leaves the station. Absent on some live-synthetic events. */
+  exit_ts?: string;
+  /** The station's state BEFORE it took this unit (build_artifact writes prior_state). */
   station_state: string;
   sensor_tier: "full" | "manual";
   calibrated_risk: number;
@@ -225,7 +228,7 @@ export interface Session {
 // must be DERIVED rather than remembered; a sign-in is not derived state. Without it the
 // module variable resets on every reload, and since this ships as a static export, typing
 // /manager into the address bar is a reload -- so every hard navigation would sign the
-// user out and bounce them to /login. sessionStorage rather than localStorage so the
+// user out and put them back behind the sign-in gate. sessionStorage rather than localStorage so the
 // session ends with the tab, and the value is a server-issued token that the server
 // re-validates (restoreSession) rather than a role string the client can edit into
 // whatever it likes.
@@ -257,6 +260,12 @@ function writeStoredSession(s: Session | null): void {
 }
 
 let session: Session | null = readStoredSession();
+
+/** Fired on sign-in and sign-out, so a mounted page's access check re-runs in place. */
+export const SESSION_EVENT = "pulsetwin:session";
+function announceSession(): void {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_EVENT));
+}
 let viewRole: Role | null = null;
 
 export function getSession(): Session | null {
@@ -303,6 +312,7 @@ export async function login(username: string, password: string): Promise<Session
   session = { role: r.role, token: r.token, user: r.user, expires_at: r.expires_at };
   viewRole = null;
   writeStoredSession(session);
+  announceSession();
   return session;
 }
 
@@ -312,6 +322,7 @@ export async function logout(): Promise<void> {
   session = null;
   viewRole = null;
   writeStoredSession(null);
+  announceSession();
   if (!token) return;
   try {
     const base = await apiBase();
@@ -624,7 +635,8 @@ export const closeAlert = (unitId: string, plant: string, runId: string) =>
     `/api/alerts/${encodeURIComponent(unitId)}/close`, { plant_id: plant, run_id: runId }
   );
 
-// Champion/challenger/retired history for a plant+model type -- backs RetrainingConsole.tsx.
+// The registered models for a plant, read-only (ADR-053: no retraining) -- ModelHealthPanel
+// reads the committed champion's measured metrics from here.
 export const getModelRegistry = (plant: string, modelType = "defect_risk") =>
   get<any>(`/api/model/registry?plant_id=${plant}&model_type=${modelType}`);
 
@@ -667,6 +679,31 @@ export interface TriageFinding {
   alternatives_considered: string[];
   confidence: "low" | "medium" | "high";
   unanswered: string[];
+  // ADR-046: verbatim excerpts from /api/knowledge/search, each substring-checked by the
+  // verifier -- the retrieval half of a copilot answer.
+  knowledge_citations?: TriageKnowledgeCitation[];
+  // ADR-051: served only when every claim they cite verified.
+  proposed_actions?: ProposedAction[];
+}
+
+export type ActionType =
+  | "increase_feed_buffer" | "rebalance_cycle" | "shift_weld_load"
+  | "maintenance_ticket" | "hvac_setpoint" | "resequence_paint_queue";
+
+export interface ProposedAction {
+  id: string;
+  action_type: ActionType;
+  params: Record<string, number | string>;
+  rationale: string;
+  claim_ids: string[];
+}
+
+export interface TriageKnowledgeCitation {
+  id: string;
+  quoted_text: string;
+  doc_id: string;
+  section: string;
+  citation: { call_id: string; pointer: string };
 }
 
 export interface TriageVerdict {
@@ -680,7 +717,10 @@ export interface TriageVerdict {
 // sentence: the deterministic path selects a plan on the same key with no language
 // understanding at all, which is why every button still works with no provider
 // credential. Mirrors genai/intents.py.
-export type TriageIntent = "ask" | "incident" | "handover" | "shift_intel" | "whatif";
+export type TriageIntent =
+  | "ask" | "incident" | "handover" | "shift_intel" | "whatif"
+  // ADR-051: the three watch-triggered agents -- each PROPOSES an action a human decides.
+  | "starvation" | "paint_env" | "tool_wear";
 
 export interface TriageToolEvent {
   call_id: string;
@@ -808,9 +848,56 @@ export const listTriageRuns = (plant: string, limit = 5) =>
     `/api/triage/runs?plant_id=${plant}&limit=${limit}`
   );
 
-export const listTriageThreads = (plant: string, limit = 20) =>
+/** `intent` filters on a thread's opening turn -- the copilot lists "ask" threads only. */
+export const listTriageThreads = (plant: string, limit = 20, intent?: TriageIntent) =>
   get<{ threads: TriageThread[]; count: number }>(
-    `/api/triage/threads?plant_id=${plant}&limit=${limit}`
+    `/api/triage/threads?plant_id=${plant}&limit=${limit}${intent ? `&intent=${intent}` : ""}`
+  );
+
+// ------------------------------------------------------- ADR-051: proposals
+export type WatchDetector = "starvation" | "paint_env" | "tool_wear";
+
+export type ProposalStatus =
+  | "INVESTIGATING" | "PROPOSED" | "NO_ACTION" | "AGENT_FAILED" | "NO_AGENT"
+  | "APPROVED" | "APPLIED" | "EFFECTIVE" | "REJECTED";
+
+export interface ActionProposal {
+  proposal_id: string;
+  sim_run_id: string;
+  plant_id: string;
+  detector: WatchDetector;
+  station_id: number;
+  fired_at: string;
+  created_at: string;
+  status: ProposalStatus;
+  trigger_evidence: Record<string, number | string | null>;
+  triage_run_id: string | null;
+  agent_status: TriageRun["status"] | null;
+  agent_mode: "agent" | "deterministic" | null;
+  finding: TriageFinding | null;
+  proposed_actions: ProposedAction[];
+  selected_action: ProposedAction | null;
+  decided_by_role: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  applied_at: string | null;
+  effective_at: string | null;
+}
+
+export const listProposals = (plant: string, limit = 20) =>
+  get<{ proposals: ActionProposal[]; count: number }>(
+    `/api/proposals?plant_id=${plant}&limit=${limit}`
+  );
+
+export const approveProposal = (proposalId: string, actionId: string, note?: string) =>
+  post<{ proposal_id: string; status: ProposalStatus; applied_to_twin: boolean }>(
+    `/api/proposals/${encodeURIComponent(proposalId)}/approve`,
+    { action_id: actionId, note: note ?? null }
+  );
+
+export const rejectProposal = (proposalId: string, note: string) =>
+  post<{ proposal_id: string; status: ProposalStatus }>(
+    `/api/proposals/${encodeURIComponent(proposalId)}/reject`, { note }
   );
 
 export const getTriageThread = (threadId: string) =>
@@ -964,11 +1051,3 @@ export const getEvidenceGraph = (unitId: string, plant: string) =>
     `/api/trace/evidence-graph/${encodeURIComponent(unitId)}?plant_id=${plant}`
   );
 
-export const triggerRetrain = (plant: string) =>
-  post<{ job_id: string; status: string }>("/api/admin/trigger-retrain", { plant_id: plant });
-export const getRetrainStatus = (jobId: string) =>
-  get<any>(`/api/admin/retrain-status/${jobId}`);
-export const promoteModel = (modelId: string) =>
-  post<any>("/api/admin/promote-model", { model_id: modelId });
-export const rollbackModel = (plant: string, modelType = "defect_risk") =>
-  post<any>("/api/admin/rollback-model", { plant_id: plant, model_type: modelType });

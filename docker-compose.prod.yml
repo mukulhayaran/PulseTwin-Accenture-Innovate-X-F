@@ -1,9 +1,11 @@
-# Production-shaped stack: Postgres + Redis + MQTT + the ingestion bridge + the API.
-# `docker-compose.yml` (no suffix) stays the lightweight SQLite demo runtime; this file is
-# what an enterprise IT team would actually run. See docs/PRODUCTION_ARCHITECTURE.md.
+# The full stack: Postgres + Redis + MQTT + the ingestion bridge + the API + the UI.
+# Postgres is REQUIRED (ADR-052): the backend refuses to start without DATABASE_URL, so this
+# stack can never silently serve the read-only SQLite build artifact. The cloud deploy
+# (render.yaml + Vercel) runs the backend and frontend only; Redis, MQTT and ingestion
+# stay here. See docs/PRODUCTION_ARCHITECTURE.md.
 #
-#   make demo-prod        # docker compose -f docker-compose.prod.yml up --build
-#   make demo-prod-down   # docker compose -f docker-compose.prod.yml down -v
+#   make up        # docker compose -f docker-compose.prod.yml up --build
+#   make down      # docker compose -f docker-compose.prod.yml down -v
 
 services:
   postgres:
@@ -76,7 +78,7 @@ services:
       MQTT_BROKER: mqtt
       MQTT_PORT: "1883"
       FRONTEND_HEALTH_URL: http://frontend:3000
-      PULSETWIN_FEEDBACK_DB: /data/pulsetwin_feedback.db
+      PULSETWIN_REQUIRE_POSTGRES: "1"
     ports:
       - "7860:7860"
     depends_on:
@@ -90,12 +92,10 @@ services:
         condition: service_completed_successfully
       load-data:
         condition: service_completed_successfully
-    volumes:
-      - backend_state:/data
-      # Retraining reads synthetic source data and atomically writes a candidate model;
-      # triage reads the same committed artifact snapshot as the API.
-      - ./data:/app/data:ro
-      - ./artifacts:/app/artifacts
+    # No volumes: feedback now lives in Postgres (migrations/016), and the only files the
+    # backend writes -- triage per-run .log/heartbeat files -- are ephemeral by design.
+    # The ./data and ./artifacts mounts existed for retraining (ADR-053); the image
+    # already carries artifacts/.
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:7860/api/ready')\""]
       interval: 10s
@@ -151,4 +151,3 @@ services:
 
 volumes:
   pgdata:
-  backend_state:

@@ -38,7 +38,7 @@ flowchart TB
         API["serve/ FastAPI\nimport wall: fastapi/uvicorn/pydantic/\nnumpy/orjson/psycopg/redis/jose/\nprometheus_client + stdlib ONLY"]
         SSE["SSE stream\n/api/stream"]
         FE["Frontend (static export)\nsupervisor / manager / leadership / ops"]
-        MLOPS["mlops/ (offline tier)\ndrift_detector -> retrainer -> model_registry\npandas/sklearn HERE, never in serve/"]
+        MLOPS["mlops/ (offline tier)\ndrift_detector + fallback baselines\npandas/sklearn HERE, never in serve/"]
 
         MQTT -. one-way .-> FW -. one-way .-> SUB
         SUB --> DQ --> BUF
@@ -70,15 +70,61 @@ flowchart TB
 
 ## Runtime topology (what actually runs where)
 
-| Component | Demo runtime (docker-compose.prod.yml) | Production target (infrastructure/kubernetes/) |
-|---|---|---|
-| Backend | 1 container, `uvicorn --workers 1` (ADR-009: async SSE needs the single-worker event loop) | 2-6 pods behind a Service, HPA on CPU (`hpa.yaml`) |
-| Ingestion | 1 container | 1 pod, fixed at 1 replica (`configs/deployment.yaml`: MQTT shared-subscription scaling is a backlog item, not built) |
-| Postgres | 1 container, ephemeral volume | Managed RDS/Cloud SQL, Multi-AZ (`terraform/main.tf`), or `postgres-statefulset.yaml` for a self-hosted cluster |
-| Redis | 1 container | `redis-deployment.yaml`, single instance (feature buffer only; not a HA requirement for a cache) |
-| MQTT | Eclipse Mosquitto, plaintext, local | `mqtt-deployment.yaml`; production would add TLS + broker-level ACLs restricting which topics the edge gateway may publish to |
-| Frontend | Static export served by its own container (`frontend/Dockerfile`) | Same static export, ideally behind a CDN — it is not a stateful service and does not belong inside the Kubernetes data-plane trust boundary |
+Every deployment runs on **Postgres** (ADR-052): `PULSETWIN_REQUIRE_POSTGRES=1` makes a
+missing `DATABASE_URL` a startup failure. SQLite (`artifacts/pulsetwin.db`) is the build
+output `offline/load_to_postgres.py` loads, and the test backend — never a runtime.
+
+| Component | Local stack (`make up`, docker-compose.prod.yml) | Free-tier cloud (render.yaml + Neon + Vercel) | Production target (infrastructure/kubernetes/) |
+|---|---|---|---|
+| Backend | 1 container, `uvicorn --workers 1` (ADR-009: async SSE needs the single-worker event loop) | 1 Render free web service, same image, pool capped at 5 | 2-6 pods behind a Service, HPA on CPU (`hpa.yaml`) |
+| Ingestion | 1 container | **not deployed** (no MQTT TLS/auth yet) | 1 pod, fixed at 1 replica (`configs/deployment.yaml`: MQTT shared-subscription scaling is a backlog item, not built) |
+| Postgres | 1 container, named volume | Neon free project, **direct** (non-pooled) connection | Managed RDS/Cloud SQL, Multi-AZ (`terraform/main.tf`), or `postgres-statefulset.yaml` for a self-hosted cluster |
+| Redis | 1 container | **not deployed** (`serve/` never imports redis; `/api/health` reports `not_configured`) | `redis-deployment.yaml`, single instance (feature buffer only; not a HA requirement for a cache) |
+| MQTT | Eclipse Mosquitto, plaintext, local | **not deployed** (`/api/health` reports `not_configured`) | `mqtt-deployment.yaml`; production would add TLS + broker-level ACLs restricting which topics the edge gateway may publish to |
+| Frontend | Static export served by its own container (`frontend/Dockerfile`) | Vercel, static export with clean URLs (`frontend/vercel.json`) | Same static export, ideally behind a CDN — it is not a stateful service and does not belong inside the Kubernetes data-plane trust boundary |
 
 ## What is deliberately NOT built (and why that is not a gap)
 
-Per the finals brief's own anti-pattern list: no live Kubernetes deployment (`docker-compose.prod.yml` is the demo runtime), no Airflow/Kubeflow for `mlops/retrainer.py` (a plain script that runs end to end is the honest amount of infrastructure for a manually- or cron-triggered monthly retrain), no in-demo Grafana (the Ops view, `frontend/app/ops/page.tsx`, reads the same underlying numbers directly from the API). `infrastructure/terraform/main.tf` is never `terraform apply`'d — see that file's own header.
+Per the finals brief's own anti-pattern list: no live Kubernetes deployment (`docker-compose.prod.yml` is the local runtime, `render.yaml` the free-tier cloud one), no retraining pipeline at all — retraining was removed because the training data is a static seed-42 simulation that a retrain would only reproduce (ADR-053), no in-demo Grafana (the Ops view, `frontend/app/ops/page.tsx`, reads the same underlying numbers directly from the API). `infrastructure/terraform/main.tf` is never `terraform apply`'d — see that file's own header.
+
+## DEPLOY — free tier (Neon + Render + Vercel)
+
+The whole cloud deploy is three free accounts. `render.yaml` is the backend blueprint; the
+rest is dashboard clicks.
+
+**a. Neon (Postgres).** New project → **Connection Details** → turn **Connection pooling
+OFF** → copy the **direct** connection string. Its host has no `-pooler` suffix and it
+already ends in `?sslmode=require`. The pooled endpoint is PgBouncer in transaction mode;
+the pool sets `prepare_threshold=None` as a safeguard (`serve/db_postgres.py`), but use the
+direct one.
+
+**b. Seed it once, from the laptop** (needs `artifacts/pulsetwin.db`, which is committed):
+
+```bash
+DATABASE_URL='<neon direct string>' python -m migrations.migrate
+DATABASE_URL='<neon direct string>' python -m offline.load_to_postgres
+```
+
+Both hand the URL to `psycopg.connect` unchanged, so `?sslmode=require` is honoured.
+Re-running is safe: applied migrations are skipped, and the loader replaces the build tables.
+
+**c. Render (backend).** **New → Blueprint** → select this repo → Render reads
+`render.yaml`. Paste the three secrets it asks for: `DATABASE_URL` (the Neon direct
+string), `PULSETWIN_CORS_ORIGINS` (the Vercel URL, e.g. `https://<app>.vercel.app`, no
+trailing slash), and `PULSETWIN_GENAI_API_KEY` (optional — without it the copilot runs its
+deterministic path). The blueprint already sets `PULSETWIN_REQUIRE_POSTGRES=1` and
+`PULSETWIN_PG_POOL_MAX=5`; the health check is `/api/ready`.
+
+**d. Vercel (frontend).** **Add New → Project** → import this repo → set **Root Directory**
+to `frontend` (framework: Next.js) → add the environment variable `NEXT_PUBLIC_API_BASE` =
+the Render URL (`https://<service>.onrender.com`). `npm run build` runs
+`scripts/write-runtime-config.js`, which writes it into `public/config.json`; the committed
+file keeps `http://localhost:7860` for local dev, so the Render URL is never hardcoded.
+`frontend/vercel.json` enables clean URLs (`/overview`, not `/overview.html`, which would
+trigger hydration error #418 — CLAUDE.md §8).
+
+**e. Before presenting.** Open `https://<service>.onrender.com/api/ready`. The free
+instance sleeps after 15 minutes idle and the first request takes about a minute. Neon's
+compute also suspends after ~5 minutes idle and resumes on the first query (~1 s); the
+pool's connection check replaces the dropped connection. Then confirm `/api/health` shows
+`"database": "postgresql"`, with `redis` and `mqtt` reported as `not_configured`.

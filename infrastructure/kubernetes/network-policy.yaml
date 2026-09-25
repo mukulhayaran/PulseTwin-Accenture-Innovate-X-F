@@ -34,7 +34,7 @@
 # with zero egress and that is exactly correct for a broker.
 #
 # Assumption: the frontend is served as a static export outside this namespace (see
-# repo-root docker-compose.yml's `frontend` service and CLAUDE.md SS7), not as a pod
+# repo-root docker-compose.prod.yml's `frontend` service and CLAUDE.md SS7), not as a pod
 # inside `pulsetwin` — so there is no frontend NetworkPolicy here. If a future revision
 # containerizes the frontend inside this cluster, it would need: egress limited to
 # pulsetwin-backend:7860 + DNS, and pulsetwin-backend would need an Ingress-side

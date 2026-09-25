@@ -62,10 +62,11 @@ configs/*.yaml → offline/  (pandas, sklearn, scipy — heavy, batch, offline)
                              starlette (ASGI base), subprocess (job spawn)
 ```
 
-`mlops/` sits on the **offline** side of the wall and may use pandas/sklearn freely. When
-`serve/` needs to trigger it — `POST /api/admin/trigger-retrain` — it spawns
-`python -m mlops.retrainer` as a detached subprocess rather than importing it (ADR-036).
-"Precompute heavy, serve thin" extends to "trigger heavy, don't host it."
+`mlops/` sits on the **offline** side of the wall and may use pandas/sklearn freely; it is
+run offline (`make drift-check`), never from `serve/`. When `serve/` needs heavy work at
+request time — a GenAI triage run — it spawns `python -m genai.triage` as a detached
+subprocess rather than importing it (ADR-036). "Precompute heavy, serve thin" extends to
+"trigger heavy, don't host it." (Retraining, the other spawned job, was removed: ADR-053.)
 
 The runtime image contains **no model library**. The trained ensemble is flattened to
 plain numpy arrays and walked by ~90 lines in `serve/scorer.py`, proven identical to

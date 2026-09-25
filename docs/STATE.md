@@ -609,6 +609,42 @@ which this deliberately does NOT close. `tests/test_auth.py` (80) unchanged and 
 `test_api`/`test_audit`/`test_triage_api`/`test_intelligence_api`/`test_qa_regressions`
 (148) unchanged and passing. `npx tsc --noEmit` clean.
 
+### Production-only: SQLite demo runtime and retraining retired (2026-09-25) — ADR-052, ADR-053
+
+The deployed site reported `database: sqlite` because nothing set `DATABASE_URL`; both
+deploy paths were SQLite. Now every deployment sets `PULSETWIN_REQUIRE_POSTGRES=1` and fails
+at startup without Postgres; `docker-compose.yml` and `serve/Dockerfile.render` are gone;
+feedback lives in Postgres (migration 016); the cloud target is Neon + Render + Vercel
+(`docs/PRODUCTION_ARCHITECTURE.md` §DEPLOY). Retraining was removed — static seed-42 data
+makes a retrain reproduce the deployed model. **First end-to-end run of
+`docker-compose.prod.yml` (2026-09-25): PASSED** — migrations 014-016 applied, 325,793 rows
+loaded, `/api/health` = `postgresql`, feedback persisted across `restart backend`,
+`/supervisor` and `/ops` loaded in Playwright with no page errors or 5xx, backend ~82 MB
+RSS. Not yet done: the Neon/Render/Vercel accounts themselves (owner action).
+
+### Proactive watch + agent-proposed actions (2026-09-24) — ADR-051
+
+A friend's "agentic digital twin" boilerplate was assessed and not adopted as written (it
+duplicated the twin and the agents with weaker versions, used mock actuators, and asked for
+a stamping-die agent with no data behind it). Its two real ideas were built instead:
+`serve/watch.py` detects starvation, paint-environment and tool-degradation risk on every
+live-simulation event; a firing starts one of three new agents (`starvation`, `paint_env`,
+`tool_wear`), each of which PROPOSES actions from a closed catalogue that the verifier
+grades like numbers; a manager approves in the Proposals inbox (`/manager`, `/ops`); the
+twin applies it; the watch confirms recovery (EFFECTIVE). Verified end to end on all three
+scenarios in deterministic mode, and against OpenRouter (see ADR-051 for what the live model
+got wrong and what the gate caught). Thresholds were profiled on the replay streams before
+being trusted; the only normal-run firings are the designed Mode C torque deficits.
+
+Also fixed this session: a triage worker that raised left its row at `running` forever —
+it now records `worker_crashed: ...`, and `GET /api/triage/runs/{id}` reports a run with no
+heartbeat for 15 minutes as `worker_stopped`. `openai` was missing from `.venv` entirely,
+so the agent path had never run from this checkout's backend.
+
+**Not done:** `artifacts/watch_rules_*.json` must be force-added when artifacts are next
+committed (`artifacts/` is gitignored). The test suite still writes to the dev ops DB
+(372 never-started `queued` rows found) — see the weakness below.
+
 ### Known test-isolation weakness
 
 `tests/test_qa_regressions.py`'s model-registry tests read the **default temp ops DB** and

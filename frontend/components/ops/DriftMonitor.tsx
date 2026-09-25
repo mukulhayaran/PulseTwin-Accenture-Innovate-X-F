@@ -41,7 +41,7 @@ export default function DriftMonitor({ psiSummary, calibration, sensorCoverage }
   const band = worst ? bandFor(worst.psi) : null;
 
   return (
-    <Panel title="Drift monitor" note="current snapshot — mlops/drift_detector.py runs periodically">
+    <Panel title="Drift monitor" note="snapshot written by mlops/drift_detector.py, run offline (make drift-check)">
       <div className="mb-4">
         <div className="mb-2 flex items-baseline justify-between gap-2">
           <Tooltip content="Population Stability Index per feature. Warning band > 0.1, alert > 0.2 — both counted here, matching the detector's own verdict.">

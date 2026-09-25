@@ -13,6 +13,7 @@ directly.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import date, datetime
 from decimal import Decimal
@@ -73,7 +74,21 @@ def get_pool(database_url: str) -> ConnectionPool:
     with _pools_lock:
         pool = _pools.get(database_url)
         if pool is None:
-            pool = ConnectionPool(database_url, min_size=1, max_size=20, open=True)
+            pool = ConnectionPool(
+                database_url, min_size=1,
+                # 20 locally; Render sets 5 -- one worker never needs more, and Neon's
+                # free compute caps the whole project at ~100 connections.
+                max_size=int(os.environ.get("PULSETWIN_PG_POOL_MAX", "20")),
+                # prepare_threshold=None: never server-side-prepare. Harmless on a direct
+                # connection, and it keeps a pooled (PgBouncer, transaction-mode) Neon
+                # endpoint from failing on prepared statements that don't survive a
+                # transaction boundary. Use the DIRECT endpoint anyway (ADR-052).
+                kwargs={"prepare_threshold": None},
+                # Neon suspends compute after ~5 min idle, killing idle connections. Check
+                # each one on checkout so a dead one is replaced, not handed to a request.
+                check=ConnectionPool.check_connection,
+                open=True,
+            )
             pool.wait(timeout=30)
             _pools[database_url] = pool
         return pool

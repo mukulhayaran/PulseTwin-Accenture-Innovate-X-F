@@ -23,7 +23,8 @@ the one before it can:
     supervisor  -- stream, predict, trace/containment, feedback, bottleneck (read)
     manager     -- + whatif, bottleneck (full), station stats, trends
     leadership  -- + economics, instrumentation plan, model health
-    system      -- + admin endpoints (retrain, promote, rollback, config)
+    system      -- + everything below; no endpoint requires it alone since ADR-053
+                   removed the retrain/promote/rollback admin endpoints
 """
 
 from __future__ import annotations

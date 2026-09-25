@@ -4,8 +4,8 @@ Hackathon Round 2 prototype. Mixed-model vehicle assembly line digital twin.
 
 **STATUS: feature-complete, both rounds, plus a GenAI tier.** All ten phases of the
 original brief are built — simulator, ML pipeline, artifacts, API, three persona views.
-The finals upgrade (F1-F8) sits on top: PostgreSQL, MQTT ingestion, MLOps
-(drift/retrain/registry/fallback), RBAC + audit trail, graceful degradation, a fourth Ops
+The finals upgrade (F1-F8) sits on top: PostgreSQL, MQTT ingestion, read-only model
+monitoring (drift/registry/fallback — retraining was removed, ADR-053), RBAC + audit trail, graceful degradation, a fourth Ops
 persona, K8s/Terraform manifests, eight production-readiness documents. Since then: a
 full frontend redesign (Tailwind v4 + Radix + Motion), `genai/` — an agentic triage tier
 with a deterministic verification gate — and, on top of that, an **AI Operations Copilot**:
@@ -18,8 +18,11 @@ list. `docs/AUDIT.md` covers why the build deviates from `pulsetwin_final_prompt
 **Do not re-read the whole codebase to get oriented.** §4 below maps every subsystem to
 its file and its governing doc. `docs/STATE.md`'s ledger is the change history.
 
-**Still unverified:** `docker compose -f docker-compose.prod.yml up` has never been run
-end to end. The agent path **has** now run against a live provider (OpenRouter,
+**Production-only (ADR-052):** there is no SQLite demo runtime. Every deployment sets
+`PULSETWIN_REQUIRE_POSTGRES=1`, so a missing `DATABASE_URL` fails at startup; SQLite
+(`artifacts/pulsetwin.db`) is the build output and the test backend only. The full stack
+(`make up`) ran end to end for the first time on 2026-09-25 (docs/STATE.md). The cloud
+deploy is Neon + Render + Vercel — `docs/PRODUCTION_ARCHITECTURE.md` §DEPLOY. The agent path **has** now run against a live provider (OpenRouter,
 2026-09-21): cold-cache start, soft-degrade to L4, six tool calls, 4/5 claims verified
 with the fifth correctly redacted for a ratio-vs-percent mismatch — plus a 10/10 run on
 `incident`. The four defects that first live run exposed are ADR-040. See §8 for the
@@ -85,7 +88,7 @@ it must not walk fastapi's transitive graph (starlette/anyio) or it fails instan
 ADR-033 for why they don't violate the wall. `paho-mqtt` is used only by `ingestion/`,
 a separate deployable that never imports into `serve/`. `starlette` is fastapi's own ASGI
 middleware base (a direct import, not transitive graph-walking); `subprocess` launches the
-retrain job as a detached process instead of hosting `mlops/` in `serve/` — see ADR-036.
+GenAI triage run as a detached process instead of hosting `genai/` in `serve/` — see ADR-036.
 
 Heavy libraries live in `offline/` and never ship in the runtime image.
 **Precompute heavy, serve thin.**
@@ -94,7 +97,7 @@ Heavy libraries live in `offline/` and never ship in the runtime image.
 absent from `ALLOWED`, so `tests/test_serve_imports.py` already fails on any
 `import genai` inside `serve/` — that test needed **no edit** to cover the GenAI tier,
 which is a better outcome than an amendment. `serve/routers/triage.py` triggers a run
-with `subprocess.Popen` exactly as `admin.py` triggers retraining. Never add `openai`,
+with `subprocess.Popen` (ADR-036). Never add `openai`,
 `anthropic`, `groq`, `openrouter`, or any provider SDK to the allowlist (ADR-037). The
 provider has now moved TWICE — to Groq in ADR-038, to OpenRouter in ADR-040 — and the
 DEPENDENCY did not change either time, because all three speak the OpenAI wire protocol.
@@ -134,7 +137,7 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 |---|---|
 | `docs/STATE.md` | **Start here.** Progress ledger, every bug found, next action. |
 | `docs/SPEC.md` | The corrected canonical spec. This is the Round 2 build target. |
-| `docs/DECISIONS.md` | 48 numbered ADRs — why we deviate from the original prompt. |
+| `docs/DECISIONS.md` | 53 numbered ADRs — why we deviate from the original prompt. |
 | `docs/AUDIT.md` | The 31-finding flaw analysis of the original prompt (plus B34). |
 | `pulsetwin_final_prompt.md` | The original Round 2 brief. **Historical only — do not edit.** Note: it contains NO finals section and no mention of GenAI, despite older text claiming otherwise. |
 
@@ -148,10 +151,11 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 | Runtime API | `serve/main.py` (+ 9 routers) — 37 endpoints | `docs/ARCHITECTURE.md` |
 | Numpy scorer | `serve/scorer.py` — decision-path, NOT SHAP | ADR-015 |
 | MQTT ingestion | `ingestion/` — separate deployable | `docs/PRODUCTION_ARCHITECTURE.md` |
-| MLOps | `mlops/{drift_detector,retrainer,model_registry,evaluation,fallback}.py` | `docs/MLOPS_LIFECYCLE.md` |
+| Model monitoring (read-only) | `mlops/{drift_detector,fallback}.py` — run offline; retraining removed (ADR-053) | `docs/MLOPS_LIFECYCLE.md` |
 | **GenAI triage** | `genai/` — separate deployable, never imported by `serve/` | **ADR-037** |
 | Multi-agent orchestration | `genai/orchestrator.py` — `incident` only, 3 specialists + synthesizer | **ADR-045** |
 | Knowledge retrieval | `offline/build_knowledge_index.py` + `serve/knowledge_index.py` — lexical TF-IDF, no embeddings | **ADR-046** |
+| Proactive watch + proposals | `serve/watch.py` (detectors) · `serve/routers/proposals.py` (human approve/reject) · `offline/build_watch_rules.py` (YAML → `artifacts/watch_rules_<plant>.json`) | **ADR-051** |
 | Frontend | `frontend/app/{overview,supervisor,manager,leadership,ops,copilot}` + `components/ui/` | §7 below, **ADR-047** |
 
 **`genai/` file roles** (all provider-independent except `client.py`):
@@ -195,21 +199,21 @@ make generate            # simulate both plants
 make train               # train models (per-plant)
 make build-artifact      # bake SQLite + model_<plant>.npz + stream JSONL
 make build-knowledge-index  # bake the engineering-knowledge TF-IDF index (ADR-046)
+python -m offline.build_watch_rules  # bake configs/*.yaml `watch:` + stream baselines (ADR-051)
 make test                # pytest tests/ -v   (611 tests — it runs real models; ~18 min
                           # was measured pre-ADR-045/046, not remeasured against the
                           # larger current count)
-make demo                # docker compose: backend + frontend (SQLite runtime)
 
 make dev-backend     # uvicorn on :7860
 make dev-frontend    # next dev on :3000
 
-# finals upgrade
-make demo-prod       # docker compose -f docker-compose.prod.yml (postgres/redis/mqtt/ingestion)
-make demo-prod-down  # ...and tear it down, volumes included
+# the stack -- Postgres only (ADR-052); the cloud deploy is docs/PRODUCTION_ARCHITECTURE.md §DEPLOY
+make up              # docker compose -f docker-compose.prod.yml (postgres/redis/mqtt/ingestion/ui)
+make up-mqtt         # ...plus the synthetic MQTT publisher
+make down            # ...and tear it down, volumes included
 make migrate         # apply migrations/*.sql to Postgres
 make load-data       # bridge the committed artifact into Postgres
-make drift-check     # python -m mlops.drift_detector
-make retrain         # python -m mlops.retrainer (champion-challenger)
+make drift-check     # python -m mlops.drift_detector (read-only monitoring, run offline)
 make test-all        # pytest tests/ -v --tb=short
 
 # genai tier (ADR-037/038/040/045/046) -- needs a running backend; a provider key is optional
@@ -376,7 +380,7 @@ Read this before debugging anything. Every line below was paid for once.
   two processes do. `db.execute` commits *after* the statement, so a statement that raises
   (e.g. a duplicate INSERT) leaves a write transaction open and blocks every later write.
 - The ops DB is genuinely **multi-process** — the backend holds a long-lived handle while
-  `mlops.retrainer` and `genai.triage` are spawned detached. It is opened WAL +
+  `genai.triage` is spawned detached. It is opened WAL +
   `busy_timeout`; do not remove those.
 - **A detached child's failure is invisible** if its stdio goes to `DEVNULL` — the row just
   sits at `queued` forever. `serve/routers/triage.py` writes a per-run `.log` beside the

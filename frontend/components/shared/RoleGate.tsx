@@ -21,8 +21,7 @@ export default function RoleGate({ allowed, children, fallback }: RoleGateProps)
 
   // `fallback ?? default` was wrong: ?? only short-circuits on null/undefined, so an
   // explicit fallback={null} -- meaning "render nothing here" -- still produced the
-  // default lock card. RetrainingConsole passes null for its header button, which
-  // wedged a full lock panel into a Panel header for every non-system role.
+  // default lock card, which wedges a full lock panel into e.g. a Panel header.
   if (fallback !== undefined) return <>{fallback}</>;
 
   return (

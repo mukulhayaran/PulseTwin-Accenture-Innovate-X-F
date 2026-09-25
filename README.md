@@ -23,33 +23,39 @@ make train           # train per-plant models      (~2 min)
 make build-artifact  # bake SQLite + numpy models  (~1 min)
 make test            # full suite (it runs real models, so allow several minutes)
 
-make dev-backend     # API on :7860
+make dev-backend     # API on :7860 (local dev on the SQLite build artifact)
 make dev-frontend    # UI on :3000
-make smoke-demo      # health + readiness + 10-event live-synthetic run
+python scripts/smoke_demo.py   # health + readiness + 10-event live-synthetic run
 ```
 
 The committed artifacts already contain everything, so `make dev-backend` works without
-running the pipeline at all.
+running the pipeline at all. That is a developer convenience, not a runtime: every
+deployment requires Postgres (ADR-052).
 
-### Production stack (finals upgrade)
+### The stack (Postgres only)
 
 The Supervisor now exposes two honest data-source modes: **Recorded Replay** and a
 server-owned **Live Synthetic Simulation**. Live synthetic runs have a run ID, seed,
 scenario, shared clock/state, persistent alerts, and inspection outcomes; the screen is
 always labelled to say that no real factory data is connected.
 
-The production-shaped stack adds PostgreSQL, Redis, an MQTT broker, automatic artifact
-loading, backend, ingestion, and the frontend:
+The stack runs PostgreSQL, Redis, an MQTT broker, automatic artifact loading, backend,
+ingestion, and the frontend. The backend refuses to start without Postgres
+(`PULSETWIN_REQUIRE_POSTGRES=1`, ADR-052):
 
 ```bash
-make demo-prod       # complete production-shaped stack; UI on :3000, API on :7860
-make demo-mqtt       # same stack plus the deterministic MQTT edge publisher
-make smoke-demo-full # verify DB, Redis, MQTT, publisher, ingestion, scoring, API + UI
+make up              # the full stack; UI on :3000, API on :7860
+make up-mqtt         # same stack plus the deterministic MQTT edge publisher
+make down            # tear it down, volumes included
+PULSETWIN_REQUIRE_FULL_DEMO=1 python scripts/smoke_demo.py  # DB, Redis, MQTT, publisher, ingestion, scoring, API + UI
 make migrate         # apply migrations/*.sql to Postgres
 make load-data       # bridge the committed artifact into Postgres
 make drift-check     # PSI / calibration / sensor-coverage drift report
-make retrain         # champion-challenger retraining run
 ```
+
+The free-tier cloud deploy (Neon + Render + Vercel) is step by step in
+`docs/PRODUCTION_ARCHITECTURE.md` §DEPLOY. Retraining was removed (ADR-053): the data is a
+static seed-42 simulation, so a retrain would reproduce the deployed model.
 
 See `docs/LIVE_SYNTHETIC_DEMO.md` for the event contract, API lifecycle, and a
 three-minute demonstration script.
@@ -254,10 +260,10 @@ The full arithmetic is in `docs/AUDIT.md` §B34.
   ingestion/     MQTT (Unified Namespace) → dedup/reorder → data quality
         │        the ONLY component allowed to touch the OT network
         ▼
-  PostgreSQL     migrations/001-005; SQLite remains the local-dev fallback
+  PostgreSQL     migrations/001-016; REQUIRED by every deployment (SQLite = build/test only)
         ▲
         │
-  mlops/         drift detection → champion-challenger retrain → registry
+  mlops/         drift detection + SPC fallback baselines (read-only; no retraining)
                  pandas/sklearn live HERE, never in serve/
 
   ── agentic tier ────────────────────────────────────────────────────
@@ -287,9 +293,8 @@ banned outright, and the test fails the build if one appears.
 - **Plant B performs materially worse** (recall 6% at budget vs 28%). Its Mode B fires on
   13.6% of visits rather than 4.5%, so the operating threshold lands differently. Reported
   as measured; not tuned to match plant A.
-- **Feedback is ephemeral** in the SQLite demo runtime. The free-tier filesystem does not
-  persist; `make demo-prod` writes to Postgres instead, and the production path is
-  documented in `docs/ARCHITECTURE.md`.
+- **Feedback is durable only on Postgres** — which every deployment now is. Local dev on
+  the SQLite build artifact keeps it in a tempdir file that does not survive a restart.
 - **There is no authentication, only authorisation.** The finals upgrade added real RBAC
   (four roles, server-enforced) and an audit trail over every mutating action — but the
   role arrives in an `X-PulseTwin-Role` header that any caller can set, and CORS still
@@ -344,7 +349,7 @@ Finals upgrade — production readiness:
 |---|---|
 | `docs/PRODUCTION_ARCHITECTURE.md` | The OT/IT diagram, one-way data flow, and what each property is enforced by |
 | `docs/SECURITY.md` | RBAC table, audit trail, encryption, secrets, the OIDC upgrade path, compliance |
-| `docs/MLOPS_LIFECYCLE.md` | Train → shadow → drift → retrain → compare → promote, with the real thresholds |
+| `docs/MLOPS_LIFECYCLE.md` | Train offline → serve → read-only drift monitoring, with the real thresholds; why retraining was removed |
 | `docs/DATA_GOVERNANCE.md` | Classification, retention, anonymisation, right-to-deletion |
 | `docs/CHANGE_MANAGEMENT.md` | Stakeholders, comms, training, per-phase success criteria, rollback |
 | `docs/SCALING_COST_MODEL.md` | 1 / 5 / 20 plants, priced off the *harder* plant's measured economics |

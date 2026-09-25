@@ -25,18 +25,11 @@ through the supervisor escalation chain (`EscalationChain.tsx`).
    within the range `mlops/drift_detector.py` itself treats as "shift, watch it," not
    "act now."
 3. **Degraded (calibration alert, or a majority of tracked features shifted):**
-   - Trigger a retrain: `POST /api/admin/trigger-retrain` (`system` role, or the
-     **Trigger Retrain** button in `RetrainingConsole.tsx`).
-   - Poll `GET /api/admin/retrain-status/{job_id}` until `status: "complete"`.
-   - Review the comparison report. If `recommendation: "PROMOTE"`, promote via
-     `POST /api/admin/promote-model` after human sign-off (`docs/MLOPS_LIFECYCLE.md`
-     Stage 7's minimum shadow period still applies before promotion in a live
-     deployment — do not promote same-day against a live population, even if this demo's
-     retrain-and-promote loop can technically do so immediately).
-   - If `recommendation: "REJECT"`, the drift is real but a same-architecture retrain does
-     not fix it — escalate to the ML engineering team; the root cause is likely a genuine
-     process change (new supplier, tooling change) that needs a feature-engineering
-     response, not just fresh weights.
+   - There is no retrain to trigger (ADR-053): the training data is a static seed-42
+     simulation, so a retrain would reproduce the same model. Treat a degraded verdict as
+     a data problem — a sensor dropout, a coverage drop, or (on a live feed) a genuine
+     process change — and escalate to the ML engineering team for an offline rebuild
+     with new data or features.
 4. **While the drift is unresolved:** `serve/main.py`'s `/api/predict/defect` continues to
    serve the current champion — there is no automatic "drift = switch to fallback" wiring
    in this build (only a broken/corrupt model file forces the fallback path, see §4 of

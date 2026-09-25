@@ -120,18 +120,6 @@ def test_model_health_age_days_is_never_negative(client):
         _drop_registry_row(ops, "qa_regress_champion")
 
 
-def test_registry_timestamps_are_utc_not_local():
-    """A local-naive stamp and a UTC one differ by the host offset; on UTC+5:30 that was
-    enough to make a just-trained model look a day old in the future."""
-    from mlops.model_registry import _utc_now
-
-    stamped = datetime.fromisoformat(_utc_now().replace("Z", "+00:00"))
-    assert abs((datetime.now(timezone.utc) - stamped).total_seconds()) < 120
-
-
-# ---------------------------------------------------------------------- RBAC / supervisor
-
-
 def test_supervisor_can_read_sensor_dropouts(client):
     """/supervisor pins itself to the supervisor role and renders SensorDropoutAlert from
     this data. It used to poll /api/system/health, which requires `manager`, and took a
@@ -289,108 +277,7 @@ def test_ingestion_lag_survives_a_naive_last_reading_timestamp(client):
     assert r.json()["samples"] >= 1
 
 
-# --------------------------------------------------------------------- MLOps lifecycle
-
-
-def test_a_failed_retrain_is_recorded_in_the_registry(tmp_path, monkeypatch):
-    """retrainer.run() calls mark_failed() from its except block, but training usually
-    fails BEFORE register() inserts the row -- and mark_failed was UPDATE-only, so it
-    matched zero rows and the failure left no trace. `failed` is one of the four states
-    migrations/003 defines and it was unreachable on the path that produces it."""
-    monkeypatch.setenv("PULSETWIN_OPS_DB", str(tmp_path / "ops.db"))
-    monkeypatch.setenv("PULSETWIN_JOBS_DIR", str(tmp_path))
-
-    from mlops import model_registry
-
-    model_registry.mark_failed("plant_a_defect_v999999", notes="simulated training failure")
-    row = model_registry.get("plant_a_defect_v999999")
-    assert row is not None, "a failed challenger left no row in the registry"
-    assert row["status"] == "failed"
-    assert row["plant_id"] == "plant_a"
-
-
-def test_promotion_actually_changes_what_is_served(client):
-    """docs/MLOPS_LIFECYCLE.md stage 7 says POST /api/admin/promote-model "is the only
-    code path that changes what /api/predict/defect actually serves". It changed a
-    registry row and nothing else: /api/predict/defect returned a byte-identical
-    probability before and after promoting a different model. Promotion was cosmetic.
-    """
-    ops = app.state.ops
-    system = {"X-PulseTwin-Role": "system"}
-    # Register the plant's OWN committed artifact as a challenger, then promote it. The
-    # swap is observable through the response contract without assuming two models differ.
-    artifact = ROOT / "artifacts" / "model_plant_a.npz"
-    if not artifact.exists():
-        pytest.skip("plant_a model artifact not built")
-    _drop_registry_row(ops, "qa_regress_swap")
-    db.execute(
-        ops,
-        """INSERT INTO model_registry
-               (model_id, model_type, version, status, plant_id, trained_at,
-                training_data_range, metrics, artifact_path, notes)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        ("qa_regress_swap", "defect_risk", 2, "challenger", "plant_a",
-         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "", "{}",
-         str(artifact), "qa regression"),
-    )
-    try:
-        r = client.post("/api/admin/promote-model", json={"model_id": "qa_regress_swap"},
-                        headers=system)
-        assert r.status_code == 200, r.text
-        serving = r.json().get("serving")
-        assert serving is not None, (
-            "promote-model does not report whether it swapped the scorer")
-        assert serving["swapped"] is True, f"scorer was not hot-swapped: {serving}"
-    finally:
-        # Promotion RETIRES the previous champion, so leaving this row behind also leaves
-        # plant_a with a champion pointing at a test fixture for every later test in the
-        # session and every later run on this machine.
-        _drop_registry_row(ops, "qa_regress_swap")
-
-
-def test_challenger_artifacts_are_pruned(tmp_path, monkeypatch):
-    """One .npz per challenger is what makes `artifact_path` trustworthy, but one file per
-    run with nothing pruning them grows without bound -- a suite that retrains a few times
-    per run fills artifacts/ by itself. Cap kept well above any plausible rollback depth so
-    a rollback target is never the file this deletes."""
-    from mlops import retrainer
-
-    monkeypatch.setattr(retrainer, "ARTIFACTS", tmp_path)
-    for i in range(retrainer.KEEP_CHALLENGER_ARTIFACTS + 5):
-        (tmp_path / f"model_plant_a_defect_v{1000 + i}.npz").write_bytes(b"x")
-    (tmp_path / "model_plant_a.npz").write_bytes(b"keep-me")
-    (tmp_path / "model_plant_b_defect_v1.npz").write_bytes(b"other-plant")
-
-    retrainer._prune_challenger_artifacts("plant_a")
-
-    assert len(list(tmp_path.glob("model_plant_a_defect_v*.npz"))) == \
-        retrainer.KEEP_CHALLENGER_ARTIFACTS
-    assert (tmp_path / "model_plant_a.npz").exists(), "pruned the committed champion artifact"
-    assert (tmp_path / "model_plant_b_defect_v1.npz").exists(), "pruned another plant's artifact"
-
-
-def test_each_challenger_gets_its_own_artifact_file():
-    """Every registry row pointed at one reused `model_<plant>_challenger.npz`, so the
-    next retrain overwrote the weights behind a row already marked `champion` -- and a
-    promotion reading `artifact_path` would load whatever the latest run happened to
-    leave there."""
-    src = (ROOT / "mlops" / "retrainer.py").read_text(encoding="utf-8")
-    assert 'f"model_{challenger_id}.npz"' in src, (
-        "challengers still share a single fixed .npz path"
-    )
-
-
-def test_rollback_records_an_approver_in_both_implementations():
-    """serve/routers/admin.py and mlops/model_registry.py hold duplicate promote/rollback
-    SQL and their own docstrings say to keep them in sync. The registry copy set only
-    promoted_at on rollback, so the same action recorded an approver through the API and
-    none through the module."""
-    reg = (ROOT / "mlops" / "model_registry.py").read_text(encoding="utf-8")
-    rollback_body = reg[reg.index("def rollback("):reg.index("def mark_failed(")]
-    assert "promoted_by=?" in rollback_body
-
-
-# ------------------------------------------------------------------- ingestion seams
+# ------------------------------------------------------------------- MQTT ingestion
 
 
 def test_reorder_window_actually_buffers_and_reorders():

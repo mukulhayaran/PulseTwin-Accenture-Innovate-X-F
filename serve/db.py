@@ -196,6 +196,22 @@ CREATE TABLE IF NOT EXISTS triage_tool_calls (
     phase TEXT, agent TEXT);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_triage_calls_run
     ON triage_tool_calls (run_id, call_id);
+
+-- ADR-051: one row per watch firing. The agent's proposed actions are NOT copied here --
+-- they are read from the linked triage run's VERIFIED finding, so there is one source of
+-- truth for what the agent proposed. This row holds only what a human decided.
+CREATE TABLE IF NOT EXISTS action_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    sim_run_id TEXT NOT NULL, plant_id TEXT NOT NULL,
+    detector TEXT NOT NULL, station_id INTEGER NOT NULL,
+    fired_at TEXT NOT NULL, trigger_evidence TEXT NOT NULL,
+    triage_run_id TEXT,
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    selected_action TEXT, decided_by_role TEXT, decided_at TEXT, decision_note TEXT,
+    applied_at TEXT, effective_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_action_proposals_plant
+    ON action_proposals (plant_id, created_at DESC);
 """
 
 # Columns added to tables that already exist on disk. See _ensure_columns.
@@ -308,8 +324,8 @@ def open_ops_db() -> sqlite3.Connection:
     con = sqlite3.connect(path, check_same_thread=False, timeout=15.0)
     con.row_factory = sqlite3.Row
     # WAL + a real busy timeout, because this file is genuinely MULTI-PROCESS: the
-    # backend holds a long-lived connection while `mlops.retrainer` and `genai.triage`
-    # are spawned as detached subprocesses (ADR-036) and write to the same tables.
+    # backend holds a long-lived connection while `genai.triage` is spawned as a detached
+    # subprocess (ADR-036) and writes to the same tables.
     #
     # Under the default DELETE journal a writer is blocked by any open reader, so the
     # child would die on `sqlite3.OperationalError: database is locked` while the row it
@@ -333,6 +349,24 @@ def open_ops_db() -> sqlite3.Connection:
     return con
 
 
+def _require_postgres_url() -> str | None:
+    """DATABASE_URL, or None when running on SQLite is allowed.
+
+    ADR-052: every DEPLOYMENT sets PULSETWIN_REQUIRE_POSTGRES=1, so a missing DATABASE_URL
+    is a startup failure there instead of a silent fallback to the read-only SQLite build
+    artifact -- the fallback that left a deployed site reporting `database: sqlite`.
+    SQLite itself stays: it is the artifact offline/load_to_postgres.py loads, and the
+    backend the test suite runs on.
+    """
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url and os.environ.get("PULSETWIN_REQUIRE_POSTGRES") == "1":
+        raise RuntimeError(
+            "PULSETWIN_REQUIRE_POSTGRES=1 but DATABASE_URL is not set. This deployment "
+            "must run on Postgres; set DATABASE_URL (for Neon, the DIRECT connection "
+            "string with ?sslmode=require) instead of falling back to SQLite.")
+    return database_url or None
+
+
 def open_database(artifact_db_path: str | Path) -> tuple[Any, Any, str]:
     """Returns (main_con, ops_con, backend_name).
 
@@ -341,7 +375,7 @@ def open_database(artifact_db_path: str | Path) -> tuple[Any, Any, str]:
     drift_metrics, sensor_health). They are the SAME handle on Postgres and two DIFFERENT
     connections on the SQLite fallback -- see the module docstring.
     """
-    database_url = os.environ.get("DATABASE_URL")
+    database_url = _require_postgres_url()
     if database_url:
         handle = _pg_module().open_handle(database_url)
         return handle, handle, "postgresql"
@@ -351,11 +385,11 @@ def open_database(artifact_db_path: str | Path) -> tuple[Any, Any, str]:
 
 def open_ops_only() -> tuple[Any, str]:
     """Just the operational-tables handle (audit_log, model_registry, drift_metrics,
-    sensor_health) -- for offline/mlops code that never touches the precomputed artifact
-    tables. Same DATABASE_URL dispatch as open_database(), so mlops/ and serve/'s new
-    routers always agree on where these tables live.
+    sensor_health) -- for offline code (mlops/drift_detector.py, genai/) that never touches
+    the precomputed artifact tables. Same DATABASE_URL dispatch as open_database(), so
+    those and serve/'s routers always agree on where these tables live.
     """
-    database_url = os.environ.get("DATABASE_URL")
+    database_url = _require_postgres_url()
     if database_url:
         handle = _pg_module().open_handle(database_url)
         return handle, "postgresql"

@@ -2,7 +2,7 @@
 
 Two things this file decides, and the second matters more:
 
-1. What the agent can DO. Eighteen functions, seventeen of them GET. The one non-GET
+1. What the agent can DO. Twenty functions, nineteen of them GET. The one non-GET
    posts to a SIMULATOR, not to the line.
 2. What LEAVES THE NETWORK.
 
@@ -44,6 +44,13 @@ STILL ABSENT, and still a governance decision rather than an oversight:
      /api/admin/*
          Mutating. Absent from the registry entirely. The registry contains no tool that
          can change a model, a config, or the line.
+
+ADMITTED by ADR-051:
+
+  /api/watch/firings   what the proactive watch saw (detector, station, measured window
+                       evidence). Read-only. The PROPOSAL endpoints beside it
+                       (/api/proposals/*/approve|reject) are NOT tools: an agent may
+                       propose an action in its finding, and only a human can decide it.
 
 `tests/test_genai_tools.py` asserts the registry's path set EQUALS the approved list, so
 widening the egress surface requires editing a test -- the same trick
@@ -378,6 +385,25 @@ def build_registry(plant_ids: list[str]) -> dict[str, ToolSpec]:
             "GET", "/api/economics/instrumentation-plan", "leadership",
             _obj(["plant_id"], {"plant_id": plant}), _q(plant_id="plant_id"),
         ),
+        # ------------------------------------------------------------------- ADR-051
+        ToolSpec(
+            "get_watch_firings",
+            "The live watch's recent firings: which detector (starvation, paint_env, "
+            "tool_wear) fired at which station, when, and the MEASURED window evidence "
+            "that crossed the threshold -- e.g. stalled_share, "
+            "humidity_excess_over_ambient_pct, deviation_pct. Start here for a "
+            "watch-triggered investigation and cite its evidence values. Empty when "
+            "nothing has fired.",
+            "Checking production state",
+            "GET", "/api/watch/firings", "manager",
+            _obj(["plant_id"], {
+                "plant_id": plant,
+                "detector": {"type": "string",
+                             "enum": ["starvation", "paint_env", "tool_wear"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            }),
+            _q(plant_id="plant_id", detector="detector", limit="limit"),
+        ),
         # ------------------------------------------------------------------- ADR-046
         ToolSpec(
             "search_engineering_knowledge",
@@ -491,8 +517,8 @@ def dispatch(
     path = spec.path
     if spec.path_params:
         # Substitute placeholders ourselves and URL-QUOTE each value. A tool argument must
-        # never be able to add a path segment: without quoting, a unit_id of "../../admin/
-        # promote-model" would walk straight out of the egress allowlist that this
+        # never be able to add a path segment: without quoting, a unit_id of "../../audit/
+        # log" would walk straight out of the egress allowlist that this
         # registry exists to BE. `safe=""` quotes the slash too, which is the whole point.
         substituted: dict[str, str] = {}
         for key in spec.path_params:

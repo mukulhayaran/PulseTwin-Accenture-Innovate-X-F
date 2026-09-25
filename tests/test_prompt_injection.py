@@ -120,10 +120,10 @@ def test_the_registry_contains_nothing_that_mutates_the_line(registry) -> None:
 
 def test_an_injected_path_cannot_escape_the_allowlist(registry, api) -> None:
     """Path-param tools format a value into a URL. Without quoting, a unit_id of
-    `../../admin/promote-model` would walk straight out of the egress allowlist that
+    `../../audit/log` would walk straight out of the egress allowlist that
     this registry exists to BE."""
     out = T.dispatch(registry, api, "get_containment", json.dumps(
-        {"plant_id": PLANT, "unit_id": "../../admin/promote-model"}))
+        {"plant_id": PLANT, "unit_id": "../../audit/log"}))
     assert out.get("ok") is not True
     assert out["error"] in ("not_found", "invalid_arguments") or \
         out["error"].startswith("http_")

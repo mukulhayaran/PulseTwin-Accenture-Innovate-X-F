@@ -8,20 +8,22 @@ COPY serve/requirements-jobs.txt .
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-jobs.txt
 
 COPY serve/ ./serve/
-COPY artifacts/ ./artifacts/
+# What the API reads at runtime: models, fallbacks, replay streams, the knowledge index and
+# watch rules. NOT pulsetwin.db (39 MB): it is the SQLite build artifact the loader puts
+# into Postgres, and a deployment must never open it (ADR-052, PULSETWIN_REQUIRE_POSTGRES).
+COPY artifacts/*.npz artifacts/*.jsonl artifacts/*.json ./artifacts/
 # The `migrate` service (docker-compose.prod.yml) reuses this image with its CMD
 # overridden to `python -m migrations.migrate` -- migrations/migrate.py's own docstring
 # says so. Without this, that service would build fine and crash at runtime with
 # ModuleNotFoundError, since nothing else in this Dockerfile puts migrations/ on the image.
 COPY migrations/ ./migrations/
-# Admin and triage routes launch these as detached modules. They are never imported by
-# the request-serving process, preserving the API import wall while making the routes
-# executable in the same production image.
+# The triage route launches genai/ as a detached module; the request-serving process never
+# imports it, so the API import wall holds. configs/ is read as text by serve/ (plant
+# YAMLs exist-checked by triage.py, alert_policies.yaml by serve/policy.py). No mlops/, no
+# offline/: retraining is gone (ADR-053) and nothing at runtime imports either.
 COPY genai/ ./genai/
-COPY mlops/ ./mlops/
-COPY offline/ ./offline/
 COPY configs/ ./configs/
-COPY feature_contract.py ./feature_contract.py
 
 EXPOSE 7860
-CMD ["uvicorn", "serve.main:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1"]
+# Shell form so the platform's $PORT is honoured (Render injects it); 7860 locally.
+CMD uvicorn serve.main:app --host 0.0.0.0 --port ${PORT:-7860} --workers 1

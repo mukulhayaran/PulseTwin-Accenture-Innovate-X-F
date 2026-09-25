@@ -1,69 +1,58 @@
 # MLOps Lifecycle
 
-Answers "how do you know when the model is wrong?" — the finals judges' second question.
-Every stage below names the file that implements it; nothing is aspirational without
-saying so.
+Answers "how do you know when the model is wrong?" Every stage below names the file that
+implements it; nothing is aspirational without saying so.
+
+**Retraining was removed (ADR-053).** The data this system learns from is a static
+simulation, generated with seed 42 and deterministic end to end (`OMP_NUM_THREADS=1`,
+ADR-016). A retrain over the same data reproduces the deployed model exactly, so the
+champion-challenger pipeline (`mlops/retrainer.py`, `mlops/evaluation.py`, the
+`/api/admin/*` promote/rollback endpoints and the Ops-view retraining console) could only
+ever re-derive what is already serving. What remains is training once, offline, and
+**read-only monitoring**.
 
 ## Lifecycle
 
 ```mermaid
 flowchart LR
-    A[Train] --> B[Validate]
-    B --> C[Register as champion\nor challenger]
-    C --> D[Shadow / monitor]
-    D --> E{Drift detector\nPSI, calibration,\ncoverage}
-    E -->|healthy| D
-    E -->|warning/degraded| F[Alert]
-    F --> G[Retrain\nchampion-challenger]
-    G --> H[Compare\nmlops/evaluation.py]
-    H --> I{Human review}
-    I -->|PROMOTE| J[mlops/model_registry.py\npromote + hot-swap]
-    I -->|REJECT| D
-    J --> D
-    D -.fallback path.-> K[SPC fallback\nserve/fallback_scorer.py]
+    A[Train offline\noffline/ml/train.py] --> B[Validate\nmetrics.json]
+    B --> C[Serve the committed model\nserve/scorer.py]
+    C --> D{Drift detector\nPSI, calibration,\ncoverage}
+    D -->|healthy| C
+    D -->|warning/degraded| E[Reported on /api/model/health\nno automatic action]
+    C -.primary fails to score.-> F[SPC fallback\nserve/fallback_scorer.py]
 ```
 
-## Stage 1 — Train
+## Train
 
-`offline/ml/train.py` (existing pipeline, unchanged by the finals upgrade) fits a
-HistGradientBoosting model with Platt calibration on the featurised, time-split data
-(`offline/ml/featurize.py`, ADR-010's timestamp-based leakage guard). `mlops/retrainer.py`
-calls the same `train_module.run(...)` a human or `make retrain` would — the champion and
-every challenger are trained by the identical code path, never a divergent "production"
-variant.
+`offline/ml/train.py` fits a HistGradientBoosting model with Platt calibration on the
+featurised, time-split data (`offline/ml/featurize.py`, ADR-010's timestamp-based leakage
+guard), and `offline/build_artifact.py` bakes it to `artifacts/model_<plant>.npz` for the
+numpy scorer. `make train` rebuilds it; the nightly workflow regenerates the whole pipeline
+and flags any headline metric that moved.
 
-## Stage 2 — Validate
+## Validate
 
 Temporal cross-validation metrics (`pr_auc`, `thresholds.precision_at_budget`,
 `thresholds.recall_at_budget`, `reliability` bins for calibration) are written to
-`metrics.json` by the training run itself — this is the existing Round-2 pipeline, not
-new.
+`metrics.json` by the training run itself.
 
-## Stage 3 — Register
+## Register and serve
 
-`mlops/model_registry.py::register()` inserts a row into `model_registry`
-(`migrations/003`) with `status='champion'` (first model for a plant, bootstrapped
-unconditionally — `mlops/retrainer.py`'s bootstrap branch) or `status='challenger'` (every
-subsequent retrain). Exactly one champion per `(plant_id, model_type)` is enforced by
-`admin.py::promote_model`/`rollback_model`'s retire-then-promote sequencing, not a
-database constraint — see `docs/DECISIONS.md` ADR-034 for why a real Postgres FK, added
-for this finals round, is trusted over an implicit invariant wherever one exists.
+At startup `serve/main.py` loads the committed `model_<plant>.npz` and records it in
+`model_registry` as the plant's champion, with its real measured metrics
+(`_bootstrap_registry_champion`), plus the SPC fallback. With no promotion path, a registry
+row can describe the served model but can never select a different one.
 
-## Stage 4 — Shadow / monitor
+## Monitor (read-only)
 
-The **champion** serves live predictions (`serve/scorer.py`, `/api/predict/defect`). A
-**fallback** SPC scorer (`serve/fallback_scorer.py`, single 3-sigma rule) runs
-continuously in shadow — its predictions are logged, never surfaced, unless the primary
-model fails to score (a corrupt/incompatible `.npz`), in which case the response is
-labelled `"FALLBACK MODE"` in plain text so the UI never presents a fallback number as
-though the real model spoke. **Shadow precision/recall are reported as measured, with no
-floor** — see `docs/DECISIONS.md` ADR-035: the textbook 8-rule Nelson battery scores
-3.0%/100% precision/recall against this line's genuinely autocorrelated physics, which is
-exactly why the live fallback path deliberately implements only the single 3-sigma rule,
-not the full battery.
+A **fallback** SPC scorer (`serve/fallback_scorer.py`, single 3-sigma rule, baselines
+exported offline by `mlops/fallback.py`) runs in shadow — its predictions are logged, never
+surfaced, unless the primary model fails to score, in which case the response is labelled
+`"FALLBACK MODE"` in plain text. Shadow precision/recall are reported as measured, with no
+floor (ADR-035).
 
-`mlops/drift_detector.py` runs periodically (`python -m mlops.drift_detector --config
-configs/plant_a.yaml`, or `make drift-check`) and writes to `drift_metrics`
+`mlops/drift_detector.py` is run offline (`make drift-check`) and writes to `drift_metrics`
 (`migrations/004`):
 
 | Metric | Threshold | What it means |
@@ -72,113 +61,15 @@ configs/plant_a.yaml`, or `make drift-check`) and writes to `drift_metrics`
 | Calibration deviation | alert > 15pp | In any prediction decile, does predicted risk still match observed defect rate? |
 | Sensor coverage | alert if full-coverage fraction drops > 5pp vs training | Is the model now receiving worse-instrumented data than it was trained on? |
 
-**Stated honestly, not glossed over:** this system replays a fixed simulated dataset, not
-a live incoming stream. "Current" in the table above is the model's own held-out test
-split (ordered by `prediction_ts`, most recent 500 units); "reference" is the training
-split. That is a real, answerable drift question — does serving-time data still look like
-training-time data — computed from what actually exists, not a placeholder. **Once a
-genuinely live feed exists** (`ingestion/` running against a real MQTT source), `current`
-becomes a real rolling window sourced from `station_readings` instead of a parquet split;
-nothing else in the pipeline changes, because `drift_metrics`, `/api/model/health`, and
-`DriftMonitor.tsx` already consume whatever `drift_detector.py` writes without caring
-where the rows came from.
+"Current" is the model's own held-out test split (most recent 500 units by
+`prediction_ts`); "reference" is the training split. `GET /api/model/health` is the single
+read surface — champion identity/age, drift summary, fallback shadow stats, sensor
+coverage — rendered in `ModelHealthPanel.tsx` and `DriftMonitor.tsx` on the Ops view. A
+drift warning there is information for a person, not a trigger: there is nothing to
+retrain *on* until the data itself changes.
 
-`GET /api/model/health` is the single read surface for all of the above — champion
-identity/age, drift summary, fallback shadow stats, sensor coverage — rendered live in
-`ModelHealthPanel.tsx` and `DriftMonitor.tsx` on the Ops view.
+## If the data ever becomes live
 
-## Stage 5 — Retrain (champion-challenger)
-
-Triggered manually (`make retrain`), on a schedule (a cron calling the same command — not
-built as a scheduler in this repo, per the anti-pattern guidance against Airflow/Kubeflow
-for a piece this size), or over the API (`POST /api/admin/trigger-retrain`, `system` role
-only, spawns `python -m mlops.retrainer` as a **detached subprocess** — `serve/` never
-imports `mlops`, which pulls in pandas/sklearn transitively and would breach the import
-wall, ADR-036). The challenger trains with a deliberately different, documented
-hyperparameter set (`mlops/retrainer.py`'s `CHALLENGER_HYPERPARAMS`) — CLAUDE.md's "seed
-42 everywhere" rule rules out manufacturing a difference by varying `random_state`, so the
-difference has to be a real configuration choice.
-
-**Recommended cadence:** monthly scheduled, plus triggered immediately on any `degraded`
-drift alert. There is no evidence in this project to size a different cadence against —
-this is a stated policy, not a measured optimum, and is flagged as such.
-
-## Stage 6 — Compare
-
-`mlops/evaluation.py::compare()` — the promotion rule is **all three, not a weighted
-average**, so one worse metric cannot hide behind two better ones:
-
-1. Challenger PR-AUC strictly greater than champion's.
-2. Challenger precision-at-budget greater than or equal to champion's.
-3. Challenger's max calibration deviation less than or equal to champion's.
-
-`recommendation: "PROMOTE"` only if all three hold; otherwise `"REJECT"`.
-`requires_human_approval: true` unconditionally — the pipeline never self-promotes past
-the bootstrap case (no prior champion for a plant).
-
-## Stage 7 — Human review and promotion
-
-`RetrainingConsole.tsx` on the Ops view renders the full comparison (`system` role,
-gated by `RoleGate`) with **Promote Challenger** / **Reject** actions.
-`POST /api/admin/promote-model` retires the current champion and promotes the challenger
-in one call, logs `model_promoted` to the audit trail with the approving role, and is the
-only code path that changes what `/api/predict/defect` actually serves. **Reject** has no
-backend mutation — an un-promoted challenger already has zero effect on serving, so
-"rejecting" it is a client-side dismissal of the review, not an undo of anything.
-
-**What "changes what is served" means concretely, and its one remaining limit.** Promotion
-loads the promoted row's `artifact_path` into the live scorer map
-(`serve/routers/admin.py::_activate_scorer`), so the next request is scored by the new
-model; the response's `serving` block reports whether that swap succeeded and names the
-artifact. The swap deliberately does not rewrite the committed `artifacts/model_<plant>.npz`
-(a version-controlled build output, ADR-027) — but a process restart no longer reverts to
-it silently. `serve/main.py::lifespan` asks `model_registry` for the current champion's
-`artifact_path` at startup (ADR-041) and loads that, falling back to the committed file
-only if no champion row exists yet or its artifact is missing. The registry row is the
-source of truth for both a live process and its next restart, on the single-replica
-topology this demo and `docker-compose.prod.yml` both run (ADR-009).
-
-**The one remaining limit is multi-replica, not restart.** In the documented production
-topology (2-6 backend pods behind a Service, `docs/PRODUCTION_ARCHITECTURE.md`), a
-promotion's in-memory hot-swap only reaches the ONE pod that happened to receive that
-`POST /api/admin/promote-model` request — the others keep serving the old model, with no
-error, until each is individually restarted (at which point ADR-041's startup lookup picks
-up the new champion). A real multi-replica rollout needs either a rolling restart step
-after promotion (documented as the operational runbook step, cheapest) or a live
-reconciliation signal across pods (Redis pub/sub or a short poll — not built; ADR-041
-names it as the deferred alternative).
-
-*Corrected 2026-09-16.* Until then this paragraph's claim was false in the strongest
-possible way: promote/rollback rewrote `model_registry` rows and nothing else, so
-`/api/predict/defect` returned a byte-identical probability before and after promoting a
-different model. Every challenger also exported to a single reused
-`model_<plant>_challenger.npz`, so each retrain overwrote the weights behind rows already
-marked `champion`; challengers now get one file each, keyed by model id. Found by
-promoting a model and diffing the prediction, not by reading the code.
-
-**Shadow period before promotion:** minimum 1 week of shadow monitoring in a real
-deployment before a challenger is eligible for promotion review, even if `compare()`
-recommends PROMOTE immediately after training — a single comparison against one held-out
-split is necessary but not sufficient evidence that a model behaves well against a live
-population. Not enforced in code in this build (the demo has no live population to shadow
-against for a week); stated here as the policy a production rollout would gate on.
-
-## Rollback
-
-`POST /api/admin/rollback-model` (`system` role): retires the current champion and
-restores the most recently retired one for that `(plant_id, model_type)`. One call, no
-retraining involved — this is the "the model doesn't just predict, it predicts when it
-CAN'T predict, and someone can act on that in one click" story for a judge asking "what
-if the new model is actually worse."
-
-**Trigger for a manual rollback:** sustained precision below 60% for two consecutive
-weeks of live feedback (mirrors `docs/CHANGE_MANAGEMENT.md`'s rollback plan), or a
-`degraded` drift status that a retrain does not resolve.
-
-## Model retirement
-
-Models older than 6 months, and any model retired by a promotion or rollback more than
-6 months ago, are archived: `model_registry.status` moves from `retired` to no further
-transition (there is no `archived` status enum value in `migrations/003` — this is a
-stated retention policy for the artifact files on disk, `.npz` deletion after 6 months
-past retirement, not a database state machine this build implements).
+Retraining becomes meaningful again only when the training data can change — a real MQTT
+feed through `ingestion/` writing `station_readings`. Reintroducing it then is a new
+decision (a new ADR), not a revert of ADR-053.

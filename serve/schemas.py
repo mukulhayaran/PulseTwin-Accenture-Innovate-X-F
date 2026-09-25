@@ -18,6 +18,11 @@ class HealthResponse(BaseModel):
     station_counts: dict[str, int]
     artifact_built_at: str | None = None
     database: str = "sqlite"
+    # ADR-052: the cloud deploy (Render) runs without Redis and MQTT -- they live on the
+    # laptop compose stack only. Reported honestly rather than omitted:
+    # "not_configured" | "reachable" | "unreachable".
+    redis: str = "not_configured"
+    mqtt: str = "not_configured"
 
 
 class StationConfigResponse(BaseModel):

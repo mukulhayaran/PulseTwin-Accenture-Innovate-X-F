@@ -3,9 +3,8 @@
     python -m genai.triage --plant plant_a --question "..." [--run-id X] [--mode auto]
     python -m genai.triage --plant plant_a --intent handover --mode deterministic
 
-Spawned detached by `serve/routers/triage.py`, exactly as `mlops.retrainer` is spawned by
-`serve/routers/admin.py` (ADR-036: process management, not compute). Also runnable by
-hand, which is how the live smoke test works.
+Spawned detached by `serve/routers/triage.py` (ADR-036: process management, not
+compute). Also runnable by hand, which is how the live smoke test works.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import secrets
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -63,8 +63,8 @@ _TOOL_KEYS = frozenset({"call_id", "tool_name", "phase", "agent", "status", "dur
 def _heartbeat(run_id: str, payload: dict[str, Any]) -> None:
     """Live progress only. The ops DB is authoritative for the verdict.
 
-    RetrainingConsole.tsx's own comment records the cost of the other choice: the
-    retrain compare() verdict lives ONLY in an ephemeral job file and is lost on restart.
+    The retired retraining job (ADR-053) showed the cost of the other choice: its compare()
+    verdict lived ONLY in an ephemeral job file and was lost on restart.
 
     Filtered through `_HEARTBEAT_KEYS` on the way out, so adding a field to a progress
     call site cannot accidentally publish model text.
@@ -289,6 +289,18 @@ def _persist(con, run_id, result, ver, served, raw_finding, started, *,
     return out
 
 
+def mark_crashed(run_id: str, exc: BaseException, latency_s: float) -> dict[str, Any]:
+    error = f"worker_crashed: {type(exc).__name__}: {exc}"[:300]
+    con, _ = db_handle()
+    store.finish_run(con, run_id, status="failed", finding=None, finding_raw=None,
+                     verification=None, claims_total=0, claims_verified=0,
+                     iterations=0, tool_calls=0, prompt_tokens=0, completion_tokens=0,
+                     latency_s=latency_s, error=error)
+    out = {"run_id": run_id, "status": "failed", "error": error}
+    _heartbeat(run_id, {**out, "done": True, "tools": []})
+    return out
+
+
 def db_handle():
     from serve import db
     return db.open_ops_only()
@@ -337,11 +349,20 @@ def main(argv: list[str] | None = None) -> int:
             intent=args.intent, station_id=args.station_id,
         )
 
-    out = run(plant_id=args.plant, question=args.question, run_id=run_id,
-              api_base=args.api_base, acting_role=args.role,
-              requested_by=args.requested_by, mode=args.mode,
-              intent=args.intent, station_id=args.station_id,
-              thread_id=args.thread_id, turn_index=args.turn_index)
+    started = time.monotonic()
+    try:
+        out = run(plant_id=args.plant, question=args.question, run_id=run_id,
+                  api_base=args.api_base, acting_role=args.role,
+                  requested_by=args.requested_by, mode=args.mode,
+                  intent=args.intent, station_id=args.station_id,
+                  thread_id=args.thread_id, turn_index=args.turn_index)
+    except Exception as exc:
+        # Anything that escapes run() -- a missing `openai` package, a provider SDK
+        # change, a bug -- would otherwise kill this process with the row still at
+        # `running`, and the UI would poll it forever. Record WHY on the row, end the
+        # heartbeat, and keep the traceback in the per-run .log beside it.
+        traceback.print_exc()
+        out = mark_crashed(run_id, exc, time.monotonic() - started)
     print(json.dumps(out, indent=2))
     return 0 if out["status"] != "failed" else 1
 

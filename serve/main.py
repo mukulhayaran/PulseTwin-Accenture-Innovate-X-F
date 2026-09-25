@@ -54,7 +54,7 @@ from serve.middleware import jwt_auth
 from serve.middleware.rate_limit import RateLimitMiddleware
 from serve.privacy import contains_operator_identity
 from serve.routers import (
-    admin, alerts_mgmt, audit, auth_demo, intelligence, knowledge, model_health,
+    alerts_mgmt, audit, auth_demo, intelligence, knowledge, model_health, proposals,
     simulations, system, triage,
 )
 from serve.knowledge_index import KnowledgeIndex
@@ -85,43 +85,13 @@ def rss_mb() -> tuple[float | None, str]:
         return None, "unavailable"
 
 
-def _resolve_champion_artifact(plant_id: str, committed_path: Path) -> tuple[Path, str | None]:
-    """Which model actually loads at startup, and the registry ↔ runtime seam this closes.
-
-    Before this, startup ALWAYS loaded the committed `model_<plant>.npz`, never consulting
-    `model_registry` -- so `admin.py::_activate_scorer`'s promotion hot-swap only lived in
-    that one process's memory. A restart (crash, redeploy, `--reload`) silently reverted to
-    the pre-promotion model while `model_registry` kept reporting the promoted challenger as
-    champion: the exact "which model is actually running?" question docs/STATE.md flags as
-    the one open finding a judge could ask and not get a truthful answer to. Now startup
-    asks the registry first, so a promotion survives a restart the same way it survives a
-    request. Falls back to the committed artifact if there is no champion row yet, or its
-    file is missing (e.g. a challenger .npz that did not travel with a copied ops DB) --
-    never leaves a plant unscored over a registry lookup.
-    """
-    row = db.query_one(
-        STATE["ops"],
-        """SELECT model_id, artifact_path FROM model_registry
-           WHERE plant_id=? AND model_type='defect_risk' AND status='champion'
-           ORDER BY trained_at DESC LIMIT 1""",
-        (plant_id,),
-    )
-    if row and row.get("artifact_path"):
-        path = Path(row["artifact_path"])
-        if not path.is_absolute():
-            path = ROOT / path
-        if path.exists():
-            return path, row["model_id"]
-    return committed_path, None
-
-
 def _bootstrap_registry_champion(plant_id: str, committed_path: Path) -> None:
     """Give the committed build-time artifact a real registry row the first time a plant is
-    served with no prior champion, so `model_registry` is never silent about the model that
-    is actually answering `/api/predict/defect` (docs/STATE.md: "the model that serves
-    traffic is not in the registry"). Metrics are the real, measured values from the
-    `metrics` table -- not fabricated -- so `ModelHealthPanel`'s `pr_auc` reads a number
-    instead of "—" for a plant that has never been retrained.
+    served, so `model_registry` is never silent about the model that is actually answering
+    `/api/predict/defect`. Since ADR-053 removed retraining this is the ONLY champion a plant
+    ever has: the committed model trained offline with seed 42. Metrics are the real,
+    measured values from the `metrics` table -- not fabricated -- so `ModelHealthPanel`'s
+    `pr_auc` reads a number instead of "—".
 
     Idempotent on a deterministic model_id: a restart against the same long-lived ops DB
     (docs/STATE.md bug #69/#70 -- this file is not rebuilt per run) must not double-insert.
@@ -191,25 +161,21 @@ async def lifespan(app: FastAPI):
     )
     STATE["started"] = time.time()
     STATE["con"], STATE["ops"], STATE["backend"] = db.open_database(ARTIFACTS / "pulsetwin.db")
-    STATE["feedback"] = db.open_feedback_db()
+    # On Postgres, feedback is a table in the ops database (migrations/016) so it survives
+    # a restart; the tempdir SQLite file it used to live in is wiped on every Render deploy.
+    STATE["feedback"] = (STATE["ops"] if STATE["backend"] == "postgresql"
+                         else db.open_feedback_db())
     for row in db.query_all(STATE["con"], "SELECT * FROM plant_meta"):
         pid = row["plant_id"]
         STATE["plants"][pid] = row
+        # ADR-053: there is no promotion, so the committed seed-42 model is the only one a
+        # plant ever serves -- no registry lookup can select a different artifact.
         committed_npz = ARTIFACTS / f"model_{pid}.npz"
-        npz, champion_id = _resolve_champion_artifact(pid, committed_npz)
-        if npz.exists():
-            STATE["scorers"][pid] = Scorer(npz)
-            if champion_id is None:
-                _bootstrap_registry_champion(pid, committed_npz)
-                champion_id = f"{pid}_defect_risk_committed"
-            registry = db.query_one(
-                STATE["ops"], "SELECT version FROM model_registry WHERE model_id=?",
-                (champion_id,),
-            )
-            STATE["model_info"][pid] = {
-                "model_id": champion_id,
-                "version": int((registry or {}).get("version") or 1),
-            }
+        if committed_npz.exists():
+            STATE["scorers"][pid] = Scorer(committed_npz)
+            _bootstrap_registry_champion(pid, committed_npz)
+            STATE["model_info"][pid] = {"model_id": f"{pid}_defect_risk_committed",
+                                        "version": 1}
         fb_npz = ARTIFACTS / f"fallback_{pid}.npz"
         if fb_npz.exists():
             STATE["fallback_scorers"][pid] = FallbackScorer(fb_npz)
@@ -233,12 +199,7 @@ async def lifespan(app: FastAPI):
     app.state.backend = STATE["backend"]
     app.state.started = STATE["started"]
     app.state.plants = STATE["plants"]
-    # The SAME dict object, not a copy: serve/routers/admin.py swaps an entry in here when
-    # a challenger is promoted, and _predict() below reads STATE["scorers"], so both must
-    # see the one mapping. Without this, promotion updated a registry row and nothing
-    # else -- /api/predict/defect kept serving the old model forever, while
-    # docs/MLOPS_LIFECYCLE.md claimed promotion "is the only code path that changes what
-    # /api/predict/defect actually serves".
+    # The SAME dict object, not a copy, so routers and _predict() below read one mapping.
     app.state.scorers = STATE["scorers"]
     app.state.model_info = STATE["model_info"]
     app.state.knowledge_index = STATE["knowledge_index"]
@@ -290,11 +251,11 @@ app.include_router(model_health.router)
 app.include_router(system.router)
 app.include_router(audit.router)
 app.include_router(alerts_mgmt.router)
-app.include_router(admin.router)
 app.include_router(triage.router)
 app.include_router(intelligence.router)
 app.include_router(simulations.router)
 app.include_router(knowledge.router)
+app.include_router(proposals.router)
 
 
 def _plant(plant_id: str) -> dict:
@@ -311,6 +272,7 @@ def _plant(plant_id: str) -> dict:
 def health() -> HealthResponse:
     mb, src = rss_mb()
     plants = list(STATE["plants"].values())
+    redis_url = urllib.parse.urlparse(os.environ.get("REDIS_URL", ""))
     return HealthResponse(
         status="ok",
         rss_mb=mb,
@@ -320,7 +282,18 @@ def health() -> HealthResponse:
         station_counts={p["plant_id"]: p["station_count"] for p in plants},
         artifact_built_at=plants[0]["built_at"] if plants else None,
         database=STATE["backend"],
+        redis=_dependency_status(redis_url.hostname, redis_url.port or 6379),
+        mqtt=_dependency_status(os.environ.get("MQTT_BROKER"),
+                                int(os.environ.get("MQTT_PORT", "1883"))),
     )
+
+
+def _dependency_status(host: str | None, port: int) -> str:
+    """Only PROBE a dependency that is configured: the cloud deploy has neither Redis nor
+    MQTT, and a health check must not spend a timeout proving it."""
+    if not host:
+        return "not_configured"
+    return "reachable" if _tcp_check(host, port) else "unreachable"
 
 
 @app.get("/api/config/plants")
@@ -1401,4 +1374,7 @@ def feedback(req: FeedbackRequest, request: Request, role: str = Depends(get_rol
     n = db.query_one(STATE["feedback"], "SELECT COUNT(*) c FROM feedback")
     log_action(request, STATE["ops"], role, "feedback_submitted", "unit", req.unit_id,
                {"plant_id": req.plant_id, "verdict": req.verdict})
-    return {"stored": True, "total": n["c"] if n else 0, "persistence": "ephemeral"}
+    # Postgres keeps feedback across restarts (migrations/016); the SQLite file used by
+    # local dev and tests lives in a tempdir and does not.
+    persistence = "durable" if STATE["backend"] == "postgresql" else "ephemeral"
+    return {"stored": True, "total": n["c"] if n else 0, "persistence": persistence}

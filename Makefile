@@ -5,8 +5,8 @@ export OMP_NUM_THREADS = 1
 
 PY = python
 
-.PHONY: generate train build-artifact build-knowledge-index test demo dev-backend dev-frontend clean \
-        migrate load-data demo-prod demo-mqtt demo-prod-down test-all drift-check retrain smoke-demo smoke-demo-full
+.PHONY: generate train build-artifact build-knowledge-index test dev-backend dev-frontend clean \
+        migrate load-data up up-mqtt down test-all drift-check
 
 generate:
 	$(PY) -m offline.simulator.generate --config configs/plant_a.yaml
@@ -38,16 +38,8 @@ dev-frontend:
 clean:
 	rm -rf data/ artifacts/
 
-demo:
-	docker compose up --build
-
-smoke-demo:
-	$(PY) scripts/smoke_demo.py
-
-smoke-demo-full:
-	PULSETWIN_REQUIRE_FULL_DEMO=1 $(PY) scripts/smoke_demo.py
-
-# ---- finals upgrade: production stack (docs/PRODUCTION_ARCHITECTURE.md) --------------
+# ---- the stack (docs/PRODUCTION_ARCHITECTURE.md). Postgres only: ADR-052 retired the
+# SQLite demo runtime; SQLite remains the build output and the test backend.
 
 migrate:
 	$(PY) -m migrations.migrate
@@ -55,13 +47,13 @@ migrate:
 load-data:
 	$(PY) -m offline.load_to_postgres
 
-demo-prod:
+up:
 	docker compose -f docker-compose.prod.yml up --build
 
-demo-mqtt:
+up-mqtt:
 	docker compose -f docker-compose.prod.yml --profile mqtt-demo up --build
 
-demo-prod-down:
+down:
 	docker compose -f docker-compose.prod.yml down -v
 
 test-all:
@@ -69,6 +61,3 @@ test-all:
 
 drift-check:
 	$(PY) -m mlops.drift_detector --config configs/plant_a.yaml
-
-retrain:
-	$(PY) -m mlops.retrainer --config configs/plant_a.yaml

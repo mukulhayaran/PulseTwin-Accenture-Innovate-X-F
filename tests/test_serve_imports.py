@@ -27,8 +27,8 @@ ALLOWED = {
     "prometheus_fastapi_instrumentator",
     # ADR-036: starlette is fastapi's own ASGI base (BaseHTTPMiddleware has no fastapi
     # wrapper) -- a direct import, not the transitive graph this test deliberately avoids
-    # walking. subprocess spawns the retrain job as a detached process rather than hosting
-    # mlops/ in serve/ -- process management, not compute.
+    # walking. subprocess spawns the genai/ triage run as a detached process rather than
+    # hosting genai/ in serve/ -- process management, not compute.
     "starlette", "subprocess",
     # stdlib
     "sqlite3", "json", "math", "pathlib", "os", "sys", "time", "asyncio", "typing",

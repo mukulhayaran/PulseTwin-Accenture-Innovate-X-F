@@ -88,9 +88,11 @@ signed-in role on the wrong view gets `AccessRestricted`, not a redirect.
 |---|---|
 | **none — open** | `/api/health`, `/api/config/plants`, `/api/config/stations`, `/api/stream`, `/api/predict/defect`, `/api/units`, `/api/units/{id}`, `/api/trace/containment/{id}`, `/api/bottleneck/current`, `/api/bottleneck/history`, `/api/stations/stats`, `/api/metrics`, `/api/whatif/stations`, `/api/triage/availability` |
 | `supervisor` (any valid role) | `/api/alerts/escalation-policy`, `/api/system/sensor-dropouts`, `/api/alerts/triage`, `/api/system/data-quality`, `/api/trace/evidence-graph/{id}`; and, via `get_role` rather than `require_role`, `POST /api/feedback` and `POST /api/alerts/{id}/acknowledge` — these accept any role but *record which one acted* |
-| `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag`, `/api/shift/summary`, `POST /api/triage/runs`, `GET /api/triage/runs`, `GET /api/triage/runs/{id}`, `GET /api/triage/threads`, `GET /api/triage/threads/{id}`, `GET /api/triage/intents` |
+| `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag`, `/api/shift/summary`, `POST /api/triage/runs`, `GET /api/triage/runs`, `GET /api/triage/runs/{id}`, `GET /api/triage/threads`, `GET /api/triage/threads/{id}`, `GET /api/triage/intents`, `GET /api/watch/firings`, `GET /api/proposals`, `POST /api/proposals/{id}/approve`, `POST /api/proposals/{id}/reject` (ADR-051) |
 | `leadership` | `/api/economics/roi`, `/api/economics/instrumentation-plan`, `/api/model/health`, `/api/model/registry`, `/api/audit/log`, `/api/audit/actions` |
-| `system` | `/api/admin/trigger-retrain`, `/api/admin/retrain-status/{id}`, `/api/admin/promote-model`, `/api/admin/rollback-model` |
+
+`system` outranks every row above but gates no endpoint of its own: the retrain, promote
+and rollback admin endpoints it used to guard were removed with retraining (ADR-053).
 
 `/api/system/sensor-dropouts` is the narrow, supervisor-level slice of `/api/system/health`:
 the same active-dropout list, without the uptime and connection-pool internals. It exists
@@ -120,8 +122,8 @@ Enforcement of what *is* gated is server-side only and cannot be bypassed from t
 is a client-side *mirror* of this table, not a second enforcement point: its own comment
 says so ("this does NOT replace server enforcement"). `frontend/app/ops/page.tsx` is the
 one view built to demonstrate the hierarchy live — a "Viewing as" selector lets a demo
-drop from `system` to `manager` and watch the model-health, drift, audit-log, and
-retraining panels gate themselves off in real time via `RoleGate`, rather than only
+drop from `system` to `manager` and watch the model-health, drift and audit-log panels
+gate themselves off in real time via `RoleGate`, rather than only
 being described in this document.
 
 **Rate limiting** (`serve/middleware/rate_limit.py`) is per-role, in-memory, single-process
@@ -143,9 +145,7 @@ JSON payload, IP address. The eight covered actions — verify with
 | `containment_decision_recorded` | `POST /api/trace/containment/decisions` — records the model suggestion and human decision, but excludes the free-text validation note from the general audit payload |
 | `whatif_simulation_run` | `POST /api/whatif` |
 | `alert_acknowledged` | `POST /api/alerts/{id}/acknowledge` |
-| `retrain_triggered` | `POST /api/admin/trigger-retrain` |
-| `model_promoted` | `POST /api/admin/promote-model` |
-| `model_rolled_back` | `POST /api/admin/rollback-model` |
+| `proposal_approved` / `proposal_rejected` | `POST /api/proposals/{id}/approve` / `reject` (ADR-051) |
 | `triage_run_started` | `POST /api/triage/runs` — payload records `plant_id`, the capped `acting_role`, the mode, the `intent`, and the `thread_id`/`turn_index` so a whole conversation is reconstructable from the audit trail |
 
 ### The GenAI tier's security posture (ADR-037)
@@ -182,10 +182,10 @@ for facts, so an injected instruction cannot manufacture a *verified* number. It
 manufacture prose — which is why the verifier redacts any sentence carrying an uncited
 figure.
 
-### The agent's authority (ADR-037, ADR-038, ADR-039)
+### The agent's authority (ADR-037, ADR-038, ADR-039, ADR-051)
 
 The copilot is **read-only by construction**, not by policy. Its entire vocabulary is the
-eighteen entries in `genai/tools.py::build_registry`, and seventeen are GETs; the one POST
+twenty entries in `genai/tools.py::build_registry`, and nineteen are GETs; the one POST
 targets `/api/whatif`, a precomputed simulator that changes nothing. There is no tool that
 can promote a model, edit a config, acknowledge an alert or stop the line, so "the agent
 was instructed to do X" has no path to X — `dispatch` answers an unknown tool name with
@@ -199,6 +199,15 @@ Four boundaries, each with a test:
 | Egress | the tool registry IS the allowlist; its path set is asserted equal to a list written longhand | `tests/test_genai_tools.py` |
 | Path injection | path parameters are URL-quoted with `safe=""`, so a unit id cannot add a segment and walk out of the allowlist | `tests/test_prompt_injection.py` |
 | Grounding | a claim must resolve to a number in the recorded transcript; injected prose can manufacture a sentence, never a verified figure | `tests/test_prompt_injection.py` |
+
+**Proposing is not doing (ADR-051).** A watch-triggered agent may return
+`proposed_actions` from a closed catalogue of six, each citing the claims that justify it;
+the verifier serves an action only if every cited claim verified. Deciding one is a
+separate, human-called endpoint — `POST /api/proposals/{id}/approve|reject`, manager and
+above, audited, 409 on a second decision — and it is deliberately **not** in the tool
+registry, so no instruction to an agent can reach it. An approved action changes only the
+running *simulation* (`serve/live_simulation.py::MITIGATIONS`); nothing writes toward MQTT
+or any OT interface, so the one-way OT→IT boundary is unchanged.
 
 **Retrieved data is DATA.** Tool results reach the model as `role: "tool"` messages
 carrying our own runner-assigned `call_id`, never as system or assistant turns. An

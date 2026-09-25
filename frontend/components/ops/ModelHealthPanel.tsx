@@ -6,13 +6,11 @@
 // `championMetrics` so this panel can show a real PR-AUC rather than a fabricated one.
 
 import { cn } from "@/lib/cn";
-import { Badge, Button, Panel, Skeleton, Tooltip } from "@/components/ui";
+import { Badge, Panel, Skeleton, Tooltip } from "@/components/ui";
 
 interface Props {
   health: any | null;
   championMetrics?: any | null;
-  hasChallenger?: boolean;
-  onViewComparison?: () => void;
 }
 
 const STATUS_VARIANT: Record<string, "ok" | "warn" | "danger"> = {
@@ -22,7 +20,7 @@ const STATUS_VARIANT: Record<string, "ok" | "warn" | "danger"> = {
 };
 
 export default function ModelHealthPanel({
-  health, championMetrics, hasChallenger, onViewComparison,
+  health, championMetrics,
 }: Props) {
   if (!health) {
     return (
@@ -105,11 +103,6 @@ export default function ModelHealthPanel({
         {health.recommendation}
       </p>
 
-      {hasChallenger && (
-        <Button variant="ai" size="xs" className="mt-3" onClick={onViewComparison}>
-          View comparison report ↓
-        </Button>
-      )}
     </Panel>
   );
 }

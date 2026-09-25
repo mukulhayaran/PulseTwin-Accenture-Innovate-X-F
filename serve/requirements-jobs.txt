@@ -1,9 +1,5 @@
-# Dependencies used only by detached retraining and GenAI subprocesses. The API
-# process keeps its import wall; these packages are present so its existing job routes
-# do not fail with ModuleNotFoundError inside the production demo container.
-pandas>=2.2
-scipy>=1.14
-scikit-learn>=1.5
-pyarrow>=17
-PyYAML>=6.0
+# Dependencies of the detached GenAI triage subprocess only (serve/routers/triage.py spawns
+# `python -m genai.triage`). The API process never imports these -- its import wall holds.
+# Retraining and its pandas/scipy/scikit-learn/pyarrow stack were removed (ADR-053); genai/
+# imports nothing third-party but the OpenAI-wire-protocol client.
 openai>=1.60

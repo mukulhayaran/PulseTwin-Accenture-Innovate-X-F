@@ -1,21 +1,32 @@
-# Render Blueprint for the trimmed backend (serve/Dockerfile.render). Frontend deploys
-# separately as a Vercel static export, per docker-compose.yml's own note that production
-# targets HF Spaces + Vercel -- this is a free-tier alternative to HF Spaces for the
-# backend only, not a replacement for the frontend's home.
+# Render Blueprint -- the backend API only (ADR-052). The frontend is a Vercel static
+# export; Redis, MQTT and the ingestion bridge are NOT deployed to the cloud (serve/ never
+# imports redis, the free tier has no background workers, and ingestion has no MQTT
+# TLS/auth) -- they stay on the local `make up` stack, and /api/health reports them as
+# "not_configured" here rather than pretending.
 #
-# No PULSETWIN_FEEDBACK_DB / PULSETWIN_OPS_DB set on purpose: Render's free plan has no
-# attached persistent disk, so both fall back to the container's local tempdir
-# (serve/db.py) exactly as they do with no volume in local dev. Feedback, audit-log, and
-# triage-thread rows reset on every redeploy/restart -- acceptable for a demo instance,
-# not for anything meant to retain state.
+# Postgres is REQUIRED: PULSETWIN_REQUIRE_POSTGRES=1 makes a missing DATABASE_URL a startup
+# failure instead of a silent fallback to the read-only SQLite build artifact. Use Neon's
+# DIRECT connection string (host WITHOUT "-pooler"; it already carries ?sslmode=require).
+#
+# The free instance sleeps after 15 min idle; the first request after that takes ~1 min.
+# See docs/PRODUCTION_ARCHITECTURE.md §DEPLOY.
 services:
   - type: web
     name: pulsetwin-backend
     runtime: docker
-    dockerfilePath: ./serve/Dockerfile.render
+    dockerfilePath: ./serve/Dockerfile
     dockerContext: .
     plan: free
     healthCheckPath: /api/ready
     envVars:
-      - key: PULSETWIN_JOBS_ENABLED
-        value: "0"
+      - key: DATABASE_URL
+        sync: false          # Neon direct connection string, pasted in the dashboard
+      - key: PULSETWIN_REQUIRE_POSTGRES
+        value: "1"
+      - key: PULSETWIN_PG_POOL_MAX
+        value: "5"
+      - key: PULSETWIN_CORS_ORIGINS
+        sync: false          # the Vercel URL, e.g. https://pulsetwin.vercel.app
+      - key: PULSETWIN_GENAI_API_KEY
+        sync: false          # OpenRouter key for the copilot; optional -- without it the
+                             # copilot answers on its deterministic, no-LLM path

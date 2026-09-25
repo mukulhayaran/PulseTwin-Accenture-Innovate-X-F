@@ -1,8 +1,8 @@
 """Agentic triage: trigger a run, poll it, read the verified finding.
 
-The heavy half (`genai/`) is spawned as a DETACHED SUBPROCESS exactly as
-`serve/routers/admin.py` spawns `mlops.retrainer` -- `genai` is not on serve/'s import
-allowlist and must never be (CLAUDE.md §2 / ADR-036). "Trigger heavy, don't host it."
+The heavy half (`genai/`) is spawned as a DETACHED SUBPROCESS -- `genai` is not on
+serve/'s import allowlist and must never be (CLAUDE.md §2 / ADR-036). "Trigger heavy,
+don't host it."
 
 `tests/test_serve_imports.py` needed NO edit to cover this: `genai` is absent from its
 ALLOWED set, so any `import genai` here would already fail the wall test. The wall held
@@ -12,15 +12,17 @@ without being widened, which is the point.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import os
 import secrets
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from serve import db
@@ -44,9 +46,12 @@ INTENT_LABELS = {
     "handover": "Generate shift handover",
     "shift_intel": "Generate shift intelligence",
     "whatif": "Run a what-if",
+    "starvation": "Prevent line starvation",
+    "paint_env": "Mitigate paint environment risk",
+    "tool_wear": "Assess tool degradation",
 }
 INTENT_KEYS = frozenset(INTENT_LABELS)
-INTENT_PATTERN = "^(ask|incident|handover|shift_intel|whatif)$"
+INTENT_PATTERN = "^(ask|incident|handover|shift_intel|whatif|starvation|paint_env|tool_wear)$"
 
 # The phase trail the UI renders. Mirrors genai/tools.py::PHASE_ORDER, for the same
 # import-wall reason. The first entry is written by THIS module before the worker exists.
@@ -66,7 +71,7 @@ PHASE_ORDER = (
 HEARTBEAT_VERSION = 2
 
 # Mirrors genai/config.py's credential names. Duplicated rather than imported for the
-# same import-wall reason admin.py duplicates model_registry's SQL -- keep the two in
+# same import-wall reason serve/ mirrors any genai/ constant -- keep the two in
 # sync; a change to one without the other is a bug. `tests/test_triage_api.py` reads
 # these symbolically and asserts they equal genai's, so drift is a test failure.
 #
@@ -288,7 +293,7 @@ def start_run(req: TriageRequest, request: Request,
     question = (req.question or "").strip()
     if req.intent == "ask":
         if len(question) < 4:
-            raise HTTPException(422, "question is required for intent 'ask'")
+            raise HTTPException(422, f"question is required for intent '{req.intent}'")
     elif not question:
         # A named action still needs a `question` on the row: it is what the thread
         # renders as the operator's turn, immediately, before the worker has started.
@@ -391,7 +396,13 @@ def get_run(run_id: str, request: Request, include_evidence: bool = False,
     # when the database has none: once the worker has persisted its calls, the DB is
     # authoritative and re-reading the file would make the trail flicker backwards at the
     # handover. A flicker at exactly that moment looks like a bug on a projector.
-    if row.get("status") in ("queued", "running"):
+    if row.get("status") in ("queued", "running") and _worker_is_dead(run_id, row.get("created_at")):
+        # A worker killed outright (OOM, memory reaper, kill -9) cannot record its own
+        # failure. Report it rather than let the panel poll a dead run forever. The row
+        # is left as-is: a GET does not write, and the worker may still finish it.
+        out["status"] = "failed"
+        out["error"] = "worker_stopped: no progress for "                        f"{int(WORKER_STALE_S // 60)} minutes"
+    elif row.get("status") in ("queued", "running"):
         hb = _read_heartbeat(run_id)
         if hb:
             out["progress"] = {
@@ -407,6 +418,24 @@ def get_run(run_id: str, request: Request, include_evidence: bool = False,
                 out["tool_ledger"] = hb.get("tools", [])
     out["phase_order"] = list(PHASE_ORDER)
     return out
+
+
+# Three times genai/config.py's RUN_WALLCLOCK_CAP_S (300s). The worker rewrites its
+# heartbeat on every phase and tool call, so this much silence means the process is gone.
+WORKER_STALE_S = 900.0
+
+
+def _worker_is_dead(run_id: str, created_at: Any) -> bool:
+    """No heartbeat write for WORKER_STALE_S. With no heartbeat file at all (it was
+    written to a different jobs dir, or cleaned up), judge by the row's age instead."""
+    try:
+        last = (_jobs_dir() / f"{run_id}.json").stat().st_mtime
+    except OSError:
+        try:
+            last = datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return False  # nothing to judge by: never guess "dead"
+    return time.time() - last > WORKER_STALE_S
 
 
 def _read_heartbeat(run_id: str) -> dict[str, Any] | None:
@@ -430,15 +459,23 @@ def _read_heartbeat(run_id: str) -> dict[str, Any] | None:
 
 @router.get("/api/triage/threads")
 def list_threads(request: Request, plant_id: str = "plant_a", limit: int = 20,
+                 intent: str | None = Query(default=None, pattern=INTENT_PATTERN),
                  role: str = Depends(require_role("manager"))) -> dict[str, Any]:
+    """`intent` filters on the thread's OPENING turn: the copilot lists `ask` threads
+    (conversations) only, so agent runs from /manager and /ops never appear there."""
     limit = max(1, min(int(limit), 50))
+    where, params = "t.plant_id = ?", [plant_id]
+    if intent:
+        where += (" AND EXISTS (SELECT 1 FROM triage_runs r WHERE r.thread_id = "
+                  "t.thread_id AND r.turn_index = 0 AND r.intent = ?)")
+        params.append(intent)
     rows = db.query_all(
         request.app.state.ops,
-        """SELECT thread_id, created_at, plant_id, title, opened_by, turn_count,
-                  last_run_at
-             FROM triage_threads WHERE plant_id = ?
-            ORDER BY COALESCE(last_run_at, created_at) DESC LIMIT ?""",
-        (plant_id, limit),
+        f"""SELECT t.thread_id, t.created_at, t.plant_id, t.title, t.opened_by,
+                   t.turn_count, t.last_run_at
+              FROM triage_threads t WHERE {where}
+             ORDER BY COALESCE(t.last_run_at, t.created_at) DESC LIMIT ?""",
+        (*params, limit),
     )
     return {"threads": rows, "count": len(rows)}
 

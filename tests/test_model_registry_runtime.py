@@ -1,19 +1,15 @@
-"""serve/main.py's registry <-> runtime-scorer seam (ADR-041).
+"""serve/main.py's registry <-> runtime-scorer seam.
 
-Before this fix, `lifespan()` always loaded `artifacts/model_<plant>.npz` and never
-consulted `model_registry` -- so `admin.py::_activate_scorer`'s promotion hot-swap lived
-only in that one process's memory, and a restart silently reverted to the pre-promotion
-model while the registry kept reporting the promoted challenger as champion. This is the
-one open finding docs/STATE.md calls out as "the model that serves traffic is not in the
-registry" -- and, worse than that finding states, a *promoted* model didn't survive a
-restart either. Both directions are tested here against the real committed artifact, no
-mocks.
+The committed seed-42 model is registered as champion at startup, so `model_registry` is
+never silent about the model answering /api/predict/defect. Since ADR-053 removed
+retraining and promotion, that committed model is the ONLY one served -- a registry row
+can describe it but can no longer select a different artifact. Tested against the real
+committed artifact, no mocks.
 """
 
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -75,117 +71,17 @@ def test_bootstrap_is_idempotent_across_restarts(isolated_ops_db):
         assert len(rows) == 1
 
 
-def test_resolve_champion_prefers_a_registry_row_over_the_committed_default(isolated_ops_db, tmp_path):
-    """The exact seam: once a champion row exists (as it does after any promotion --
-    admin.py writes one, mlops.retrainer.run() writes one), startup must load ITS
-    artifact_path, not silently fall back to the committed file, or a promotion would
-    not survive a restart."""
+def test_a_stale_champion_row_cannot_change_the_served_model(isolated_ops_db):
+    """ADR-053: with promotion gone, the committed seed-42 model is the only one served.
+    A champion row left over from before -- e.g. in an ops DB carried across -- must not
+    select a different artifact, and the model reported must be the committed one."""
     with TestClient(app):
-        pass  # first boot bootstraps plant_a/plant_b as champions of the committed artifact
-
-    alt_artifact = tmp_path / "model_plant_a_alt.npz"
-    shutil.copy(ROOT / "artifacts" / "model_plant_a.npz", alt_artifact)
-
-    con, ops, _backend = servedb.open_database(ROOT / "artifacts" / "pulsetwin.db")
-    servedb.execute(
-        ops,
-        "UPDATE model_registry SET status='retired', retired_at='2026-09-21T00:00:00Z' "
-        "WHERE plant_id='plant_a' AND status='champion'",
-    )
-    servedb.execute(
-        ops,
-        """INSERT INTO model_registry
-               (model_id, model_type, version, status, plant_id, trained_at,
-                training_data_range, metrics, artifact_path, notes)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        ("plant_a_defect_risk_test_challenger", "defect_risk", 2, "champion", "plant_a",
-         "2026-09-21T00:00:00Z", "test", "{}", str(alt_artifact), "test-injected champion"),
-    )
-    con.close()
-
-    # Exercise the resolver directly against this connection -- precise, and avoids
-    # needing the Scorer to expose which file it was loaded from just to assert on it.
-    servemain.STATE["ops"] = ops
-    try:
-        resolved_path, champion_id = servemain._resolve_champion_artifact(
-            "plant_a", ROOT / "artifacts" / "model_plant_a.npz"
-        )
-    finally:
-        ops.close()
-
-    assert champion_id == "plant_a_defect_risk_test_challenger"
-    assert resolved_path == alt_artifact
-
-
-def test_promotion_via_the_real_api_survives_a_restart(isolated_ops_db):
-    """The full path an operator actually drives: POST /api/admin/promote-model, then a
-    restart. Manually reproduced once against a real `docker kill` + restart of the
-    backend container in docker-compose.prod.yml against real Postgres -- this is the same
-    scenario against SQLite and the TestClient, so it runs in the fast suite too.
-
-    Also pins `persists_across_restart` in the response, which was hardcoded `False` in
-    `admin.py::_activate_scorer` until this pass -- true before ADR-041, silently wrong
-    after it, and nothing had asserted on it either way.
-    """
-    with TestClient(app):
-        pass  # bootstrap plant_a as champion of the committed artifact
-
-    con, ops, _backend = servedb.open_database(ROOT / "artifacts" / "pulsetwin.db")
-    servedb.execute(
-        ops,
-        """INSERT INTO model_registry
-               (model_id, model_type, version, status, plant_id, trained_at,
-                training_data_range, metrics, artifact_path, notes)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        ("plant_a_defect_risk_promo_test", "defect_risk", 2, "challenger", "plant_a",
-         "2026-09-21T00:00:00Z", "test", "{}",
-         str(ROOT / "artifacts" / "model_plant_a.npz"), "promotion round-trip test"),
-    )
-    con.close()
-
-    with TestClient(app, headers={"X-PulseTwin-Role": "system"}) as client:
-        resp = client.post("/api/admin/promote-model",
-                            json={"model_id": "plant_a_defect_risk_promo_test"})
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["promoted"] == "plant_a_defect_risk_promo_test"
-        assert body["serving"]["swapped"] is True
-        assert body["serving"]["persists_across_restart"] is True
-
-    # "Restart": exit and re-enter the lifespan context, same as the process ending and a
-    # new one starting -- nothing here is a mock of that boundary.
-    with TestClient(app) as client:
-        row = servedb.query_one(
+        servedb.execute(
             app.state.ops,
-            "SELECT model_id FROM model_registry WHERE plant_id='plant_a' AND status='champion'",
+            """INSERT INTO model_registry (model_id, model_type, version, status, plant_id,
+                   trained_at, metrics, artifact_path) VALUES (?,?,?,?,?,?,?,?)""",
+            ("plant_a_defect_v_stale", "defect_risk", 9, "champion", "plant_a",
+             "2099-01-01T00:00:00Z", "{}", str(ROOT / "artifacts" / "model_plant_a.npz")),
         )
-        assert row["model_id"] == "plant_a_defect_risk_promo_test"
-        pred = client.post("/api/predict/defect",
-                            json={"plant_id": "plant_a", "unit_id": "U030733"},
-                            headers={"X-PulseTwin-Role": "supervisor"})
-        assert pred.status_code == 200, pred.text
-
-
-def test_resolve_champion_falls_back_when_the_registry_artifact_is_missing(isolated_ops_db):
-    """A registry row surviving a copy to a machine without the challenger .npz files must
-    not leave a plant unscored -- fall back to the committed artifact rather than crash."""
     with TestClient(app):
-        pass
-
-    con, ops, _backend = servedb.open_database(ROOT / "artifacts" / "pulsetwin.db")
-    servedb.execute(
-        ops,
-        "UPDATE model_registry SET artifact_path='/nonexistent/model_ghost.npz' "
-        "WHERE model_id='plant_a_defect_risk_committed'",
-    )
-
-    servemain.STATE["ops"] = ops
-    committed = ROOT / "artifacts" / "model_plant_a.npz"
-    try:
-        resolved_path, champion_id = servemain._resolve_champion_artifact("plant_a", committed)
-    finally:
-        ops.close()
-        con.close()
-
-    assert resolved_path == committed
-    assert champion_id is None
+        assert app.state.model_info["plant_a"]["model_id"] == "plant_a_defect_risk_committed"
