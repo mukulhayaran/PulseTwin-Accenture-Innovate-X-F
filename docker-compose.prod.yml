@@ -72,6 +72,12 @@ services:
     build:
       context: .
       dockerfile: serve/Dockerfile
+    # The GenAI provider key (PULSETWIN_GENAI_API_KEY) and model settings, from the
+    # gitignored .env.local, so the agents always run on the real model. Optional: without
+    # the file the backend still starts, in the no-LLM deterministic mode, and logs so.
+    env_file:
+      - path: .env.local
+        required: false
     environment:
       DATABASE_URL: postgresql://pulsetwin:pulsetwin_dev@postgres:5432/pulsetwin
       REDIS_URL: redis://redis:6379

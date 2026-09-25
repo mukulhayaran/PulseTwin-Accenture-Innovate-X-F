@@ -6,7 +6,8 @@ Hackathon Round 2 prototype. Mixed-model vehicle assembly line digital twin.
 original brief are built — simulator, ML pipeline, artifacts, API, three persona views.
 The finals upgrade (F1-F8) sits on top: PostgreSQL, MQTT ingestion, read-only model
 monitoring (drift/registry/fallback — retraining was removed, ADR-053), RBAC + audit trail, graceful degradation, a fourth Ops
-persona, K8s/Terraform manifests, eight production-readiness documents. Since then: a
+persona, eight production-readiness documents (the never-applied K8s/Terraform
+manifests were removed, ADR-054). Since then: a
 full frontend redesign (Tailwind v4 + Radix + Motion), `genai/` — an agentic triage tier
 with a deterministic verification gate — and, on top of that, an **AI Operations Copilot**:
 multi-turn threads, five named actions, eighteen tools, four new deterministic
@@ -137,7 +138,7 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 |---|---|
 | `docs/STATE.md` | **Start here.** Progress ledger, every bug found, next action. |
 | `docs/SPEC.md` | The corrected canonical spec. This is the Round 2 build target. |
-| `docs/DECISIONS.md` | 53 numbered ADRs — why we deviate from the original prompt. |
+| `docs/DECISIONS.md` | 54 numbered ADRs — why we deviate from the original prompt. |
 | `docs/AUDIT.md` | The 31-finding flaw analysis of the original prompt (plus B34). |
 | `pulsetwin_final_prompt.md` | The original Round 2 brief. **Historical only — do not edit.** Note: it contains NO finals section and no mention of GenAI, despite older text claiming otherwise. |
 
@@ -231,8 +232,9 @@ The key goes in **`PULSETWIN_GENAI_API_KEY`**, never in a provider-named variabl
 `genai/config.py::KEY_ENVS` takes the first name that is SET, and `GROQ_API_KEY` is
 ahead of `OPENROUTER_API_KEY` in that list — so an environment holding both sends the
 Groq key to OpenRouter and every run dies on a bare `provider_status_401` (ADR-040).
-Nothing in this repo auto-loads `.env.local`; export it, or the defaults in
-`genai/config.py` are exactly what runs.
+`.env.local` (gitignored) is loaded automatically by `make up` (compose `env_file`) and
+`make dev-backend`; a bare `uvicorn` or `docker compose` run outside those does NOT load it.
+The backend logs `genai: agent mode` or `genai: DETERMINISTIC mode` at startup — check it.
 
 Always `OMP_NUM_THREADS=1` for anything touching training.
 

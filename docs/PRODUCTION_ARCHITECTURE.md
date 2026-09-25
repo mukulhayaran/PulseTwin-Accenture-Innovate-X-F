@@ -29,8 +29,8 @@ flowchart TB
         FW["Only outbound MQTT (1883) permitted,\ninitiated from the IT side.\nNo IT->OT path exists at any layer."]
     end
 
-    subgraph IT["IT NETWORK — Kubernetes namespace: pulsetwin"]
-        SUB["ingestion/mqtt_subscriber.py\nTHE ONLY POD ALLOWED TO REACH MQTT\n(infrastructure/kubernetes/network-policy.yaml)"]
+    subgraph IT["IT NETWORK"]
+        SUB["ingestion/mqtt_subscriber.py\nTHE ONLY COMPONENT WITH AN MQTT CLIENT\n(network segmentation: deploy-time, ADR-054)"]
         DQ["ingestion/data_quality.py\ndedup, late-arrival reorder, range validation"]
         BUF["ingestion/feature_buffer.py\nRedis-backed sliding window per unit"]
         PG[("PostgreSQL\nmigrations/001-004\npartitioned by plant_id")]
@@ -60,13 +60,13 @@ flowchart TB
 | Property | Enforced by |
 |---|---|
 | One-way OT → IT data flow | `ingestion/mqtt_subscriber.py` never publishes to MQTT, only subscribes; no code path writes back |
-| `ingestion` is the only OT/IT bridge | `infrastructure/kubernetes/network-policy.yaml` policies 2 and 5 (egress from ingestion to mqtt; ingress to mqtt from ingestion only) |
-| `serve/` cannot reach MQTT even if compromised | Not a missing feature — `paho-mqtt` is never on `serve/`'s import allowlist (ADR-033), and `network-policy.yaml` policy 3 gives the backend pod no egress rule to the broker at all |
-| No internet egress from the data plane | `configs/deployment.yaml` `network.internet_egress_allowed: false`; `infrastructure/terraform/main.tf`'s VPC module has no NAT gateway on the private subnets |
+| `ingestion` is the only OT/IT bridge | Code: `ingestion/` is the only deployable with an MQTT client. **Not network-enforced in this repo** — the Kubernetes NetworkPolicy drafted for it was never applied and was removed (ADR-054); a real plant network must enforce it at deploy time |
+| `serve/` cannot reach MQTT even if compromised | `paho-mqtt` is never on `serve/`'s import allowlist (ADR-033), so the backend has no MQTT client code; network-level denial is the same deploy-time requirement as above |
+| No internet egress from the data plane | Design intent (`configs/deployment.yaml` `network.internet_egress_allowed: false`); not enforceable on Render's free tier, which is internet-facing by design |
 | Encryption in transit | TLS terminated at the ingress/load balancer (not modelled in Compose); MQTT would run TLS-wrapped (8883) in a real OT bridge, not the plaintext 1883 this demo uses locally |
-| Encryption at rest | `infrastructure/terraform/main.tf`'s `aws_db_instance` sets `storage_encrypted = true` |
+| Encryption at rest | Neon encrypts storage at rest; the connection string's `sslmode=require` encrypts every database connection in transit |
 | No model library in the runtime image | `tests/test_serve_imports.py` — `pandas`/`sklearn`/`xgboost`/`shap`/`scipy` are BANNED, not merely unused |
-| Config-driven scaling | `configs/deployment.yaml` is the single source of replica counts/resources that both `infrastructure/kubernetes/*.yaml` and this document's numbers are copied from |
+| Config-driven scaling | `configs/deployment.yaml` holds the sizing intent this document's numbers are copied from |
 
 ## Runtime topology (what actually runs where)
 
@@ -74,18 +74,18 @@ Every deployment runs on **Postgres** (ADR-052): `PULSETWIN_REQUIRE_POSTGRES=1` 
 missing `DATABASE_URL` a startup failure. SQLite (`artifacts/pulsetwin.db`) is the build
 output `offline/load_to_postgres.py` loads, and the test backend — never a runtime.
 
-| Component | Local stack (`make up`, docker-compose.prod.yml) | Free-tier cloud (render.yaml + Neon + Vercel) | Production target (infrastructure/kubernetes/) |
+| Component | Local stack (`make up`, docker-compose.prod.yml) | Free-tier cloud (render.yaml + Neon + Vercel) | Scaled design (not built; sizing in `configs/deployment.yaml`) |
 |---|---|---|---|
-| Backend | 1 container, `uvicorn --workers 1` (ADR-009: async SSE needs the single-worker event loop) | 1 Render free web service, same image, pool capped at 5 | 2-6 pods behind a Service, HPA on CPU (`hpa.yaml`) |
-| Ingestion | 1 container | **not deployed** (no MQTT TLS/auth yet) | 1 pod, fixed at 1 replica (`configs/deployment.yaml`: MQTT shared-subscription scaling is a backlog item, not built) |
-| Postgres | 1 container, named volume | Neon free project, **direct** (non-pooled) connection | Managed RDS/Cloud SQL, Multi-AZ (`terraform/main.tf`), or `postgres-statefulset.yaml` for a self-hosted cluster |
-| Redis | 1 container | **not deployed** (`serve/` never imports redis; `/api/health` reports `not_configured`) | `redis-deployment.yaml`, single instance (feature buffer only; not a HA requirement for a cache) |
-| MQTT | Eclipse Mosquitto, plaintext, local | **not deployed** (`/api/health` reports `not_configured`) | `mqtt-deployment.yaml`; production would add TLS + broker-level ACLs restricting which topics the edge gateway may publish to |
-| Frontend | Static export served by its own container (`frontend/Dockerfile`) | Vercel, static export with clean URLs (`frontend/vercel.json`) | Same static export, ideally behind a CDN — it is not a stateful service and does not belong inside the Kubernetes data-plane trust boundary |
+| Backend | 1 container, `uvicorn --workers 1` (ADR-009: async SSE needs the single-worker event loop) | 1 Render free web service, same image, pool capped at 5 | 2-6 replicas behind a load balancer, autoscaled on CPU |
+| Ingestion | 1 container | **not deployed** (no MQTT TLS/auth yet) | 1 replica (MQTT shared-subscription scaling is a backlog item, not built) |
+| Postgres | 1 container, named volume | Neon free project, **direct** (non-pooled) connection | Managed Postgres (RDS/Cloud SQL), Multi-AZ, one instance per plant |
+| Redis | 1 container | **not deployed** (`serve/` never imports redis; `/api/health` reports `not_configured`) | Single managed instance (feature buffer only; not an HA requirement for a cache) |
+| MQTT | Eclipse Mosquitto, plaintext, local | **not deployed** (`/api/health` reports `not_configured`) | Managed/hardened broker with TLS (8883) and broker-level topic ACLs for the edge gateway |
+| Frontend | Static export served by its own container (`frontend/Dockerfile`) | Vercel, static export with clean URLs (`frontend/vercel.json`) | Same static export behind a CDN — not a stateful service, and outside the data-plane trust boundary |
 
 ## What is deliberately NOT built (and why that is not a gap)
 
-Per the finals brief's own anti-pattern list: no live Kubernetes deployment (`docker-compose.prod.yml` is the local runtime, `render.yaml` the free-tier cloud one), no retraining pipeline at all — retraining was removed because the training data is a static seed-42 simulation that a retrain would only reproduce (ADR-053), no in-demo Grafana (the Ops view, `frontend/app/ops/page.tsx`, reads the same underlying numbers directly from the API). `infrastructure/terraform/main.tf` is never `terraform apply`'d — see that file's own header.
+Per the finals brief's own anti-pattern list: no live Kubernetes deployment (`docker-compose.prod.yml` is the local runtime, `render.yaml` the free-tier cloud one), no retraining pipeline at all — retraining was removed because the training data is a static seed-42 simulation that a retrain would only reproduce (ADR-053), no in-demo Grafana (the Ops view, `frontend/app/ops/page.tsx`, reads the same underlying numbers directly from the API). The Kubernetes and Terraform manifests that once sketched the scaled design were never applied and were removed (ADR-054).
 
 ## DEPLOY — free tier (Neon + Render + Vercel)
 

@@ -3,6 +3,34 @@
 > **READ THIS FIRST, EVERY SESSION.** Then `docs/SPEC.md` for the build target.
 > Update the ledger and the "next action" line at the end of every phase.
 
+## Homepage photo update — 2026-09-25
+
+- Replaced the landing chassis illustration with the user's BMW photograph,
+  treated in the existing blue/navy palette and shipped as a local 134 KB WebP.
+- Added a concept-labeled vehicle introduction with Quality, Assembly, and
+  Traceability controls, SVG connectors, subtle pointer motion and hover zoom.
+  Keyboard, touch and reduced-motion paths are supported; no simulated telemetry
+  is presented as live data. Added header workspace access and refined link/card
+  hover states while retaining the established light/dark section rhythm.
+- Verified `npm run typecheck`, the production static export, and local Chrome
+  checks at 320, 390, 768, 1024, 1280 and 1440 pixels. No horizontal overflow or
+  browser exceptions. Narrow-screen header wrapping and overlay text placement
+  were corrected during visual review. QA output: `artifacts/homepage-preview/`.
+- Image treatment and final prompt: `docs/bmw-homepage-image.md`.
+- Layout refinement: reduced the vehicle panel to at most 560px, cropped excess
+  sky with a 3:2 viewport, and blended the edges into the white canvas. Moved the
+  explanatory text beneath the photo, simplified the controls and reduced marker
+  graphics while keeping 44px touch targets. The header, hero and lower sections
+  now share a 1280px container. TypeScript and the six-width interaction checks
+  pass, including keyboard, touch, reduced motion and marker crop boundaries.
+- Refreshed the local Docker frontend on port 3000 with
+  `docker compose -f docker-compose.prod.yml up -d --no-deps --build frontend`.
+  The running container had retained its previous build despite the workspace
+  changes. Verified the new photo, interactive controls and workspace navigation
+  directly at `http://localhost:3000/`, with no browser exceptions.
+- Next action for this update: ready for visual review on port 3000; no external
+  deployment performed.
+
 ---
 
 ## Clock — Round 2 CLOSED, Finals upgrade IN PROGRESS
@@ -608,6 +636,17 @@ exactly as before" — the last one pinning the header seam `docs/SECURITY.md` d
 which this deliberately does NOT close. `tests/test_auth.py` (80) unchanged and passing;
 `test_api`/`test_audit`/`test_triage_api`/`test_intelligence_api`/`test_qa_regressions`
 (148) unchanged and passing. `npx tsc --noEmit` clean.
+
+### Non-production code removed; backend always loads the key (2026-09-25) — ADR-054
+
+Deleted `benchmark/` (external AI4I/Bosch harness + 3 tests + its dependency group and
+nightly job) and the never-applied `infrastructure/kubernetes/` + `terraform/`; docs that
+cited them as enforcement now name the real control or say plainly there is none in this
+repo. `offline/benchmarks/` (ADR-050) is kept. The backend now loads `.env.local` itself
+(compose `env_file`, `make dev-backend`) and logs its GenAI mode at startup; verified in the
+container: `genai: agent mode`, and a live run verified 7/7 claims. Docker: the stale
+publisher container/image removed; other projects' images left untouched. Demo parts
+(MQTT publisher, demo docs, demo accounts, live simulation) deliberately KEPT for now.
 
 ### Production-only: SQLite demo runtime and retraining retired (2026-09-25) — ADR-052, ADR-053
 

@@ -34,5 +34,3 @@ frontend/tsconfig.tsbuildinfo
 # Parquet caches never committed, matching artifacts/'s "commit derived output once, never
 # raw bulk data" convention. tests/fixtures/*.csv (small, curated) are NOT covered by this
 # and stay tracked.
-benchmark/data/
-benchmark/reports/

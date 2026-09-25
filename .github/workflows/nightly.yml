@@ -139,27 +139,3 @@ jobs:
             artifacts/MANIFEST.json
           if-no-files-found: error
 
-  external-benchmark:
-    name: External public-dataset benchmark (AI4I)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-      - run: uv sync --frozen --group dev --group ml --group benchmark-external
-
-      - name: Run the external benchmark
-        # Deliberately a separate job and a separate dependency group: this is the ONLY
-        # thing in the repo that touches data PulseTwin did not generate, and it must
-        # never become a prerequisite for running or testing the product. It validates
-        # the training/evaluation PIPELINE, not the automotive defect task -- see
-        # docs/CLAIMS.md for the wording this result is and is not allowed to support.
-        run: uv run python -m benchmark.run --dataset ai4i --task defect_prediction
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: external-benchmark-reports
-          path: benchmark/reports/
-          if-no-files-found: error

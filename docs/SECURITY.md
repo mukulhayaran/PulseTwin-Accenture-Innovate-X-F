@@ -254,20 +254,19 @@ than relying on the absence of application code as the only guarantee.
 
 ## Data encryption
 
-| | Demo | Production |
+| | Local stack (`make up`) | Free-tier cloud (Render + Neon + Vercel) |
 |---|---|---|
-| In transit | Plaintext HTTP/MQTT (localhost, Docker network) | TLS 1.3 at the ingress/load balancer; MQTT over TLS (8883) — see `docs/PRODUCTION_ARCHITECTURE.md` |
-| At rest | SQLite file, no encryption | `infrastructure/terraform/main.tf`'s `aws_db_instance` sets `storage_encrypted = true` (AES-256) |
+| In transit | Plaintext HTTP/MQTT (localhost, Docker network) | HTTPS terminated by Render and Vercel; `sslmode=require` on every Neon connection. MQTT is not deployed to the cloud |
+| At rest | Postgres volume on the laptop, unencrypted | Neon encrypts storage at rest |
 
 ## Network segmentation
 
-`infrastructure/kubernetes/network-policy.yaml` is the enforcement layer, not this
-document — see its own extensive header comment for the full policy-by-policy reasoning.
-The one-sentence version: `ingestion` is the only pod that can reach MQTT; `serve`
-(backend) can reach Postgres and Redis but has no rule granting it MQTT egress at all;
-every pod is default-deny-egress with the internet excluded entirely. This is a control
-enforced by the CNI, not by application code — even a fully compromised backend process
-cannot open a connection to the OT network.
+The design: `ingestion` is the only component that can reach MQTT; `serve` (backend)
+reaches Postgres and Redis but never the broker; everything is default-deny-egress. In
+this repo only the code half is enforced — `serve/` has no MQTT client and cannot import
+one (the import wall). The network half was drafted as a Kubernetes NetworkPolicy that was
+never applied and has been removed (ADR-054): on a real plant network, segmentation must
+be enforced at deploy time by the network team, and this document is not that control.
 
 ## Secrets management
 
@@ -275,12 +274,10 @@ cannot open a connection to the OT network.
 placeholder password) — acceptable only because nothing here is a real credential and the
 stack is never exposed outside localhost.
 
-**Production:** Kubernetes `Secret` objects (`infrastructure/kubernetes/backend-deployment.yaml`'s
-`pulsetwin-secrets`), with a note in that manifest that a real rollout populates them via
-a secret manager (AWS Secrets Manager / External Secrets Operator) at deploy time, never
-checked into a manifest. `infrastructure/terraform/main.tf`'s `aws_db_instance` uses
-`manage_master_user_password = true` specifically so Terraform state never contains a
-plaintext database password.
+**Cloud:** secrets are entered in the Render dashboard (`sync: false` in `render.yaml`,
+so they are never in the repo): `DATABASE_URL`, `PULSETWIN_GENAI_API_KEY`,
+`PULSETWIN_CORS_ORIGINS`. Locally the GenAI key lives in `.env.local`, which is gitignored
+and read by the stack at start-up.
 
 ## Vulnerability management
 

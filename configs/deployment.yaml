@@ -1,10 +1,10 @@
 # PulseTwin — Deployment configuration
 #
-# The source of truth infrastructure/kubernetes/*.yaml is written FROM. Kept as data
-# rather than duplicated across YAML manifests so "how many replicas does the backend
-# run" has exactly one answer. serve/ never reads this file at runtime (CLAUDE.md SS2 bans
-# `yaml` inside the import wall) -- it is read by infrastructure authoring and by
-# docs/PRODUCTION_ARCHITECTURE.md / docs/SCALING_COST_MODEL.md.
+# The reviewable sizing/topology intent for a scaled deployment. The Kubernetes and
+# Terraform manifests once written from it were never applied and were removed (ADR-054);
+# the live deploy is docker-compose.prod.yml locally and render.yaml + Neon + Vercel in
+# the cloud. serve/ never reads this file at runtime (CLAUDE.md SS2 bans `yaml` inside the
+# import wall) -- it is read by docs/PRODUCTION_ARCHITECTURE.md / docs/SCALING_COST_MODEL.md.
 
 services:
   backend:
@@ -54,8 +54,8 @@ services:
       limits: { cpu: "250m", memory: "128Mi" }
 
 network:
-  # docs/PRODUCTION_ARCHITECTURE.md / infrastructure/kubernetes/network-policy.yaml.
-  # ingestion is the ONLY pod allowed to reach both mqtt (OT side) and postgres (IT side).
+  # docs/PRODUCTION_ARCHITECTURE.md. Design intent: ingestion is the ONLY component that
+  # reaches both mqtt (OT side) and postgres (IT side).
   ot_it_bridge_pod: ingestion
   backend_allowed_egress: [postgres, redis]
   frontend_allowed_egress: [backend]

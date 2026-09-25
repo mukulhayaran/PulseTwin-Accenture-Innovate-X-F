@@ -345,3 +345,7 @@ automotive assembly defect prediction, and it must never be presented alongside 
 figure without that distinction being unmissable. AI4I's failure modes are directly
 observable in its features; PulseTwin's simulator deliberately hides its dominant causes.
 See `docs/CLAIMS.md` §5.
+
+**Historical.** The external-benchmark harness (`benchmark/`) was removed with the move to a
+production-only repo (ADR-054). The figure above was measured on 2026-09-22 and is kept as
+a published result, but it is no longer reproducible from this repository.

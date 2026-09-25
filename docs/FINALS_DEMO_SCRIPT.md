@@ -106,10 +106,9 @@ publisher, ingestion projection, online scoring, backend, and frontend are all r
 1. Switch plant selector to Plant B on any view — full reload, same UI, same code,
    different station count and variant mix. **Line:** "Zero pipeline code changed for
    this."
-2. Show `infrastructure/kubernetes/hpa.yaml` and `network-policy.yaml` for 15 seconds:
-   "2-to-6 replica autoscaling, and a network policy that makes it structurally
-   impossible for the backend to reach the factory floor's MQTT broker — even if the
-   backend were fully compromised."
+2. Show `render.yaml` and `docs/PRODUCTION_ARCHITECTURE.md` §DEPLOY for 15 seconds:
+   "It runs on Postgres or not at all, and the backend has no MQTT client code to reach
+   the factory floor with — the import wall forbids it."
 3. Show `docs/SCALING_COST_MODEL.md`'s headline table: "1 plant to 20 plants, and we
    price it against our WORSE-performing simulated plant, not our better one, on purpose."
 4. Back on `/ops`, open `AuditLogViewer.tsx`: "Every mutating action — a promoted model,

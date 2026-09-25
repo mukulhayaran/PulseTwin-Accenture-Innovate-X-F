@@ -190,6 +190,12 @@ async def lifespan(app: FastAPI):
           f"{len(STATE['scorers'])} scorers, "
           f"knowledge_index={'loaded' if STATE['knowledge_index'] else 'absent'}, "
           f"RSS={mb if mb else 'n/a'} ({src})")
+    # Say which mode the agents are in, loudly: a missing key is a silent downgrade to the
+    # rule-based path otherwise, and a demo would not notice until the answers read canned.
+    from serve.routers.triage import _credential_present
+    print("[pulsetwin] genai: " + (
+        "agent mode -- provider key present" if _credential_present() else
+        "DETERMINISTIC mode -- no provider key (set PULSETWIN_GENAI_API_KEY in .env.local)"))
 
     # Exposed via app.state (not the STATE global) so serve/routers/* modules can reach
     # them without importing serve.main -- which would import routers, which import

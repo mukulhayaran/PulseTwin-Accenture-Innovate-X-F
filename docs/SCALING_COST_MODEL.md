@@ -30,8 +30,8 @@ Derived from `configs/deployment.yaml`'s resource sizing × AWS on-demand list p
 | Component | Basis | 1 Plant | 5 Plants | 20 Plants |
 |---|---|---|---|---|
 | EKS control plane | $73/mo flat, shared across all plants in one cluster | $73 | $73 | $73–150 (a second regional cluster becomes reasonable near this scale) |
-| Worker nodes | `configs/deployment.yaml` backend/ingestion sizing; HPA scales the workload pool (`hpa.yaml`, 2-6 replicas) as request volume grows with plant count | ~$180 | ~$305 | ~$850 |
-| Postgres (RDS, Multi-AZ) | **One instance per plant** — `infrastructure/terraform/main.tf`'s `aws_db_instance` is `for_each`'d over `var.plant_ids`, so this line scales linearly, unlike the shared-cluster compute above | ~$204 | ~$1,020 | ~$4,080 |
+| Worker nodes | `configs/deployment.yaml` backend/ingestion sizing; an autoscaler (2-6 replicas) scales the workload pool as request volume grows with plant count | ~$180 | ~$305 | ~$850 |
+| Postgres (RDS, Multi-AZ) | **One instance per plant** by design, so this line scales linearly, unlike the shared-cluster compute above | ~$204 | ~$1,020 | ~$4,080 |
 | Redis + load balancer | Shared, scales slowly | ~$28 | ~$28 | ~$80 |
 | **Total** | | **~$485/mo** | **~$1,426/mo** | **~$5,083/mo** |
 

@@ -13,7 +13,7 @@ this document does not re-derive either, it operationalises them.
 | Plant manager | Sponsor, budget owner | The business case (`docs/BUSINESS_PROPOSAL.md` §4) and a rollback plan they can point to when someone asks "what if it's wrong" |
 | Floor supervisors | Daily users (`supervisor` role) | A system that reduces false alarms over time, not one more thing that pages them; their feedback thumbs-up/down (`POST /api/feedback`) must visibly change something |
 | Union representative | Operator-concern advocate | Written proof — not a verbal assurance — that individual operator performance is never surfaced. CLAUDE.md's operator-privacy contract and `docs/DATA_GOVERNANCE.md`'s anonymisation section are exactly the artifact this stakeholder should be handed, not a summary of them |
-| IT security | Approval gate before any network touches the plant | `docs/SECURITY.md` and `infrastructure/kubernetes/network-policy.yaml` — the one-way OT/IT bridge argument has to survive their review on its technical merits, not on trust |
+| IT security | Approval gate before any network touches the plant | `docs/SECURITY.md` §Network segmentation — the one-way OT/IT bridge argument has to survive their review on its technical merits, not on trust |
 | Maintenance team | Sensor installation (Phase 3 retrofit) | `docs/SCALING_COST_MODEL.md`'s instrumentation costs and `/api/economics/instrumentation-plan`'s ranked retrofit list, so their work is prioritised by measured value, not guesswork |
 
 ## Communication plan

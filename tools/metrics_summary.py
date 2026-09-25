@@ -46,7 +46,6 @@ ARTIFACTS = ROOT / "artifacts"
 DB_PATH = ARTIFACTS / "pulsetwin.db"
 SUMMARY_PATH = ARTIFACTS / "metrics_summary.json"
 BENCH_DIR = ARTIFACTS / "benchmarks"
-EXTERNAL_REPORTS = ROOT / "benchmark" / "reports"
 
 SCHEMA_VERSION = 1
 
@@ -117,44 +116,6 @@ def _sensor_degradation() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _external_benchmark() -> dict:
-    """Most recent AI4I report per task. Kept deliberately separate from PulseTwin's own
-    numbers: it validates the pipeline on data PulseTwin did not generate, and it says
-    nothing about automotive defect prediction (docs/CLAIMS.md)."""
-    if not EXTERNAL_REPORTS.exists():
-        return {"status": NOT_RUN}
-    latest: dict[str, dict] = {}
-    for path in sorted(EXTERNAL_REPORTS.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            continue
-        task = data.get("task")
-        if not task:
-            continue
-        stamp = data.get("timestamp", "")
-        if task not in latest or stamp > latest[task].get("timestamp", ""):
-            latest[task] = data
-    if not latest:
-        return {"status": NOT_RUN}
-    return {
-        "status": "OK",
-        "tasks": {
-            task: {
-                "dataset_id": data.get("dataset_id"),
-                "dataset_name": data.get("dataset_name"),
-                "run_id": data.get("run_id"),
-                "timestamp": data.get("timestamp"),
-                "model_name": data.get("model_name"),
-                "split_strategy": data.get("split_strategy"),
-                "n_rows": data.get("n_rows"),
-                "target_prevalence": data.get("target_prevalence"),
-                "metrics": data.get("metrics", {}),
-            }
-            for task, data in latest.items()
-        },
-    }
-
 
 def build() -> dict:
     from tools.verify_artifacts import git_sha  # local import: tools is not a package dep
@@ -171,7 +132,6 @@ def build() -> dict:
         "plants": _db_metrics(),
         "bottleneck_benchmark": _bottleneck_benchmark(),
         "sensor_degradation": _sensor_degradation(),
-        "external_benchmark": _external_benchmark(),
     }
 
 
@@ -204,8 +164,7 @@ def load_summary() -> dict:
 def resolve(flat: dict[str, object], key: str) -> object:
     """Look a marker key up, accepting both the fully-qualified and the `plants.`-implied
     form so README markers read as `plant_a.pr_auc` rather than `plants.plant_a.pr_auc`."""
-    for candidate in (key, f"plants.{key}", f"bottleneck_benchmark.{key}",
-                      f"external_benchmark.{key}"):
+    for candidate in (key, f"plants.{key}", f"bottleneck_benchmark.{key}"):
         if candidate in flat:
             return flat[candidate]
     raise KeyError(key)
@@ -288,8 +247,7 @@ def main(argv: list[str] | None = None) -> int:
             f"wrote {SUMMARY_PATH.relative_to(ROOT)}\n"
             f"  plants: {plants}\n"
             f"  bottleneck benchmark: {summary['bottleneck_benchmark'].get('status')}\n"
-            f"  sensor degradation:   {summary['sensor_degradation'].get('status')}\n"
-            f"  external benchmark:   {summary['external_benchmark'].get('status')}"
+            f"  sensor degradation:   {summary['sensor_degradation'].get('status')}"
         )
         return 0
 

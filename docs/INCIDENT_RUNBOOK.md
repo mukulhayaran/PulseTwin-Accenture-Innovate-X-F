@@ -80,10 +80,11 @@ amber border on the affected station tile, plus a line-map banner) and
 **Trigger:** `GET /api/system/health`'s `database.connected: false`, or the API returning
 5xx on any endpoint that queries Postgres.
 
-**Automatic failover:** in the production target (`infrastructure/terraform/main.tf`'s
-`aws_db_instance` with `multi_az = true`), RDS fails over to the standby automatically —
-typically 60–120 seconds, during which connections fail and should be retried by the
-client, not treated as a sustained outage.
+**Automatic failover:** the free-tier Neon database has no standby. A managed Multi-AZ
+Postgres (the scaled design) fails over automatically — typically 60–120 seconds, during
+which connections fail and should be retried, not treated as a sustained outage. On Neon
+the equivalent symptom is a compute that suspended after ~5 minutes idle: the first query
+resumes it (~1 s) and the pool's connection check replaces the dropped connection.
 
 **Manual intervention, if failover does not resolve it within 5 minutes:**
 

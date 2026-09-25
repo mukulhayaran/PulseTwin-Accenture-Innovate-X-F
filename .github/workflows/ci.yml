@@ -102,8 +102,8 @@ jobs:
         #   * generated_at  -- datetime.now() at write time;
         #   * git_sha       -- the commit being built, so it differs from the commit that
         #                      last regenerated the file, always;
-        #   * any section whose inputs are gitignored (external_benchmark needs
-        #     benchmark/data/, sensor_degradation needs its artifacts) degrades to
+        #   * any section whose inputs are gitignored (sensor_degradation needs its
+        #     artifacts) degrades to
         #     "NOT RUN" in a clean checkout while the committed copy holds real results.
         # So the diff compares the METRIC CONTENT with those excluded. That still fails on
         # a hand-edited number, which is the thing worth failing on.

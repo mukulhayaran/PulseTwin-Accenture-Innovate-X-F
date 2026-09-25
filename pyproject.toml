@@ -81,15 +81,6 @@ ingestion = [
     "PyYAML>=6.0",
 ]
 
-# The external public-dataset benchmark (benchmark/, AI4I 2020). Separated because it is
-# the only thing in the repo that touches data PulseTwin did not generate, and because it
-# must never be a prerequisite for running or testing the product.
-benchmark-external = [
-    "pandas>=2.2",
-    "scikit-learn>=1.5",
-    "requests>=2.32",
-]
-
 [tool.uv]
 default-groups = ["dev", "ml"]
 

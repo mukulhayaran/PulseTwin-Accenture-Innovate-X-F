@@ -61,7 +61,6 @@ SOURCE_GROUPS: dict[str, list[str]] = {
     "artifact_builder": ["offline/build_artifact.py", "offline/ml/scenarios.py"],
     "knowledge": ["offline/build_knowledge_index.py", "offline/knowledge/*.py"],
     "fallback": ["mlops/fallback.py"],
-    "external_benchmark": ["benchmark/*.py", "benchmark/adapters/*.py"],
 }
 
 

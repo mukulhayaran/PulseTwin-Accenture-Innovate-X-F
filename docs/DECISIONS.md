@@ -1881,3 +1881,37 @@ that needed the `system` role.
 
 **If the data ever becomes live** (a real MQTT feed writing `station_readings`), retraining
 is meaningful again — as a new decision with a new ADR, not a revert of this one.
+
+### ADR-054 — Non-production code removed: the external benchmark and the never-applied K8s/Terraform
+
+**Context.** Moving to a production-only repository (ADR-052), two trees shipped nothing
+and ran nowhere. `benchmark/` was the external public-dataset harness (AI4I 2020, Bosch,
+an RCA evaluator): it validated the training pipeline on data PulseTwin did not generate,
+needed its own dependency group, and ran only in a nightly job. `infrastructure/kubernetes/`
+and `infrastructure/terraform/` described a scaled deployment that was never applied — the
+real deploys are `docker-compose.prod.yml` and `render.yaml` + Neon + Vercel.
+
+**Decision.** Delete both.
+
+* `benchmark/` and its three tests (`test_benchmark_adapters`, `_masking`, `_rca_eval`), the
+  `benchmark-external` dependency group (`uv.lock` refreshed: `requests` and its deps drop
+  out), the nightly `external-benchmark` job, and the `external_benchmark` section of
+  `tools/metrics_summary.py` and the committed `artifacts/metrics_summary.json`. The AI4I
+  figure stays in `docs/MODEL_CARD.md`, marked historical and no longer reproducible here.
+* NOT removed: `offline/benchmarks/` — the bottleneck benchmark behind ADR-050's measured
+  ground truth, which produces the committed `artifacts/benchmarks/` results.
+* `infrastructure/kubernetes/` and `infrastructure/terraform/`. `infrastructure/monitoring/`
+  and `mosquitto.conf` stay (the local stack mounts the latter).
+
+**The honest cost, stated.** Several documents cited those manifests as the *enforcement*
+of a control — the network-level OT/IT segmentation, encryption at rest, Secret objects.
+They were never applied, so they enforced nothing; the documents now say which control is
+real and where. What remains enforced in code: `serve/` has no MQTT client and cannot
+import one (the import wall). Encryption at rest and in transit come from Neon
+(`sslmode=require`) and from Render/Vercel's HTTPS. Network segmentation on a real plant
+network is a deploy-time requirement this repository does not implement, and
+`docs/SECURITY.md` now says exactly that rather than pointing at a file.
+
+Also in this change: the backend loads `.env.local` automatically (compose `env_file`,
+optional; `make dev-backend` sources it) and logs `genai: agent mode` or `genai:
+DETERMINISTIC mode` at startup, so a missing key is visible instead of a silent downgrade.

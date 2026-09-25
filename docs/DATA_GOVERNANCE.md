@@ -93,8 +93,9 @@ a checkable claim, not an assumption a judge has to take on faith:
 
 Plant telemetry and every table derived from it stay within the plant's own geographic
 region / cloud region. No cross-region replication of raw telemetry.
-`infrastructure/terraform/main.tf`'s `aws_db_instance` is provisioned per plant
-(`for_each = toset(var.plant_ids)`) specifically so a multi-region rollout keeps each
-plant's data resident to one region rather than centralizing it — the "config-driven,
+The design is one database per plant, so a multi-region rollout keeps each plant's
+data resident to one region rather than centralizing it (the Terraform sketch of this was
+never applied and was removed, ADR-054; the free-tier deploy is a single Neon project
+in one region) — the "config-driven,
 one YAML file per plant" model (CLAUDE.md, `docs/ARCHITECTURE.md` §Multi-plant) extends to
 where the data physically lives, not only to how the pipeline is configured.

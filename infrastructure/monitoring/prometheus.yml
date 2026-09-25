@@ -29,9 +29,8 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       # Docker Compose service name (docker-compose.prod.yml's `backend` service, port
-      # 7860). A Kubernetes deployment would instead use a ServiceMonitor / pod annotation
-      # discovery against infrastructure/kubernetes/backend-service.yaml -- static_configs
-      # is the honest choice for what this repo's actual demo runtime is.
+      # 7860). An orchestrated deployment would use service discovery instead --
+      # static_configs is the honest choice for the stack this repo actually runs.
       - targets: ["backend:7860"]
         labels:
           component: api

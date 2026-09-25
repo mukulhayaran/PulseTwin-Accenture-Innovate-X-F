@@ -29,8 +29,9 @@ build-knowledge-index:
 test:
 	$(PY) -m pytest tests/ -q
 
+# Loads .env.local (the GenAI key) when present, so the agents run on the real model.
 dev-backend:
-	$(PY) -m uvicorn serve.main:app --reload --port 7860
+	set -a; [ -f .env.local ] && . ./.env.local; set +a; $(PY) -m uvicorn serve.main:app --reload --port 7860
 
 dev-frontend:
 	cd frontend && npm run dev

@@ -133,9 +133,10 @@ What the finals upgrade did add, and what is genuinely enforced today:
 - **An audit trail** over every mutating action (`migrations/002`,
   `serve/middleware/audit.py`), queryable and restricted to `leadership`/`system`.
 - **Per-role rate limiting**, in-memory and therefore single-process only.
-- **A one-way OT/IT boundary** in the deployment manifests: `ingestion` is the only
-  component permitted to reach the MQTT broker, and `serve/` has no rule granting it that
-  egress at all (`infrastructure/kubernetes/network-policy.yaml`).
+- **A one-way OT/IT boundary**: `ingestion` is the only component with MQTT client code,
+  and `serve/` cannot import one (the import wall). A network-level policy enforcing it
+  was drafted as Kubernetes manifests that were never applied and were removed
+  (ADR-054) — on a real plant network that segmentation is a deploy-time requirement.
 
 Production still needs: real authentication (OIDC/JWT — `docs/SECURITY.md` has the swap,
 which touches one function body), origin allow-listing instead of `*`, Redis-backed rate
