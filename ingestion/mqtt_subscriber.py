@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import itertools
+from collections import OrderedDict
 import json
 import os
 import queue
@@ -44,6 +45,7 @@ from ingestion.unified_namespace import parse_topic
 REORDER_WINDOW_S = 60.0
 DEDUP_TTL_S = 120.0
 DROPOUT_CHECK_INTERVAL_S = 10.0
+PENDING_SIGNALS_MAX = 5000
 SIG_COLS = ("torque_nm", "vibration_mm_s", "temperature_c", "weld_current_a",
             "humidity_pct", "film_thickness_um")
 
@@ -101,6 +103,10 @@ class Ingestor:
             pid: FeatureBuffer(redis_url, prediction_cutoff_station(pid), feature_context(pid))
             for pid in plant_ids
         }
+        # (plant, unit, station) -> that visit's telemetry signals, held until its state
+        # message arrives so the projected station event carries both (ADR-059): the watch
+        # reads torque/humidity and state from ONE event. Bounded; oldest dropped first.
+        self._pending_signals: OrderedDict[tuple[str, str, int], dict] = OrderedDict()
         self.n_processed = 0
         self.n_deduped = 0
         self.n_invalid = 0
@@ -146,16 +152,31 @@ class Ingestor:
         self.watermark = max(self.watermark, event_ts)
         self.last_message_at = arrival_ts
         heapq.heappush(self.reorder_heap, (event_ts, next(self._seq), record))
+        if record["unit_id"] is not None and record["signals"]:
+            key = (parsed.plant_id, str(record["unit_id"]), parsed.station_id)
+            self._pending_signals[key] = record["signals"]
+            self._pending_signals.move_to_end(key)
+            while len(self._pending_signals) > PENDING_SIGNALS_MAX:
+                self._pending_signals.popitem(last=False)
 
     def _on_state(self, parsed, body: dict, arrival_ts: float) -> None:
         del arrival_ts
         unit_id = body.get("unit_id")
         if unit_id is None:
+            # A PLC state change with no unit -- "S12 went DOWN". It used to be dropped
+            # here, which is exactly the signal a breakdown diagnosis needs (ADR-059).
+            self.live.station_state(parsed.plant_id, parsed.station_id, body)
             return
         buf = self.buffers.get(parsed.plant_id)
         if buf is not None:
             buf.add_station_context(parsed.plant_id, str(unit_id), parsed.station_id, body)
-        self.live.station_state(parsed.plant_id, parsed.station_id, body)
+        signals = self._pending_signals.pop((parsed.plant_id, str(unit_id), parsed.station_id),
+                                            None)
+        # A real edge must publish a visit's telemetry BEFORE its state message; if it
+        # arrives after, the event is projected without signals (the reading still lands
+        # in station_readings through the reorder path).
+        self.live.station_state(parsed.plant_id, parsed.station_id,
+                                {**signals, **body} if signals else body)
         if (parsed.plant_id, parsed.station_id) in self.live.inspection_stations and buf is not None:
             row = self.con.execute(
                 "SELECT actual_defect FROM units WHERE plant_id=%s AND unit_id=%s",

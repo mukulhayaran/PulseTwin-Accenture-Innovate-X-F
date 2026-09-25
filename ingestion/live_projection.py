@@ -39,6 +39,15 @@ class LiveProjection:
 
     def lifecycle(self, plant_id: str, body: dict[str, Any]) -> None:
         run_id = str(body["run_id"])
+        if body.get("heartbeat"):
+            # The edge is alive and its data clock stands at `ts` (ADR-059). serve's watch
+            # ticks silence on this -- never on wall time, so a network outage (no
+            # heartbeat) cannot read as a stopped line.
+            self._ensure_run(plant_id, body)
+            self._append_event(run_id, {"run_id": run_id, "plant_id": plant_id,
+                                        "event_type": "heartbeat",
+                                        "ts": _timestamp(body.get("ts"))})
+            return
         status = str(body.get("status") or "running")
         started_at = _timestamp(body.get("started_at"))
         ended_at = _timestamp(body.get("ended_at")) if status in TERMINAL_STATUSES else None
@@ -60,6 +69,15 @@ class LiveProjection:
         run_id = self._ensure_run(plant_id, body)
         unit_id = body.get("unit_id")
         if not unit_id:
+            # A state tag, not a unit leaving: the watch keeps it as the station's state
+            # without counting it as production (serve/watch.py, ADR-059).
+            ts = _timestamp(body.get("ts"))
+            self._append_event(run_id, {
+                "run_id": run_id, "plant_id": plant_id, "station_id": station_id,
+                "event_type": "station_state", "ts": ts,
+                "station_state": str(body.get("station_state") or "unknown"),
+                "source": str(body.get("source") or "real"),
+            })
             return
         ts = _timestamp(body.get("ts"))
         source = str(body.get("source") or "real")

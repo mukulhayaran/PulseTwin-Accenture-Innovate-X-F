@@ -212,6 +212,7 @@ async def lifespan(app: FastAPI):
     app.state.live_simulation = LiveSimulationManager(
         STATE["con"], STATE["ops"], ARTIFACTS, STATE["plants"]
     )
+    app.state.live_simulation.start_mqtt_watch()
 
     yield
     app.state.live_simulation.shutdown()

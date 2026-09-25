@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from serve import db
-from serve.watch import PAINT_ENV, Firing, LineWatch, load_rules
+from serve.watch import PAINT_ENV, Firing, LineWatch, _epoch, load_rules
 
 
 SCENARIOS = (
@@ -86,6 +86,8 @@ class LiveSimulationManager:
             for plant_id in plants
         }
         self._watch_rules = {pid: load_rules(artifacts, pid) for pid in plants}
+        self._mqtt_stop = threading.Event()
+        self._mqtt_followed: dict[str, list] = {}  # run_id -> [LineWatch, last seq]
         # A process restart must never leave a run claiming to be live.
         db.execute(
             self.ops,
@@ -278,6 +280,68 @@ class LiveSimulationManager:
         for control in controls:
             control["stop"].set()
             control["running"].set()
+        self._mqtt_stop.set()
+
+    # ------------------------------------------------ ADR-059: watching an MQTT feed
+
+    def start_mqtt_watch(self, poll_s: float = 2.0) -> None:
+        """Run the watch over runs produced at the EDGE (`producer='mqtt'`). This process
+        holds no control for them -- ingestion/ projects their events into
+        simulation_events -- so they are followed by sequence number, not produced."""
+        if not any(self._watch_rules.values()):
+            return
+
+        def loop() -> None:
+            while not self._mqtt_stop.wait(poll_s):
+                try:
+                    self.follow_mqtt_once()
+                except Exception as exc:  # noqa: BLE001 - never kill the follower thread
+                    print(f"[watch] mqtt follower error: {exc}")
+
+        threading.Thread(target=loop, daemon=True, name="mqtt-watch").start()
+
+    def follow_mqtt_once(self) -> int:
+        """Feed every new projected event of each running MQTT run to its watch.
+        Returns the number of firings. A run first seen here starts at its CURRENT last
+        event: a restarted backend must not re-fire on history it already acted on."""
+        runs = db.query_all(
+            self.ops,
+            "SELECT run_id, plant_id, event_count FROM simulation_runs "
+            "WHERE producer='mqtt' AND status='running'",
+        )
+        fired = 0
+        live = set()
+        for run in runs:
+            rules = self._watch_rules.get(run["plant_id"])
+            if not rules:
+                continue
+            run_id = run["run_id"]
+            live.add(run_id)
+            if run_id not in self._mqtt_followed:
+                self._mqtt_followed[run_id] = [LineWatch(rules), int(run["event_count"] or 0)]
+                continue
+            entry = self._mqtt_followed[run_id]
+            while True:
+                events = self.events_after(run_id, entry[1], limit=500)
+                if not events:
+                    break
+                for event in events:
+                    entry[1] = max(entry[1], int(event["seq"]))
+                    if event.get("event_type") == "heartbeat":
+                        # Silence ticks on the EDGE's clock (ADR-059): no heartbeat --
+                        # a network outage -- means no tick, never a false stoppage.
+                        firings = entry[0].tick(_epoch(event["ts"]))
+                    elif (event.get("event_type") in ("station_update", "alert", "station_state")
+                          and event.get("station_id") is not None):
+                        firings = entry[0].observe(event)
+                    else:
+                        continue
+                    for firing in firings:
+                        self._on_firing(run_id, run["plant_id"], firing)
+                        fired += 1
+        for run_id in set(self._mqtt_followed) - live:
+            self._mqtt_followed.pop(run_id)
+        return fired
 
     def _control(self, run_id: str) -> dict[str, Any]:
         self.get(run_id)

@@ -100,6 +100,13 @@ class LineWatch:
             return []
         sid = int(event["station_id"])
         now = _epoch(event["ts"])
+        if event.get("event_type") == "station_state":
+            # A state tag (ADR-059): the station says what it IS, but it produced nothing,
+            # so its last-production time -- what silence measures -- does not move.
+            last = self._last_seen.get(sid, (now, None))[0]
+            self._last_seen[sid] = (last, event.get("station_state"))
+            silent = self._silence(now, event["ts"])
+            return [silent] if silent else []
         self._last_seen[sid] = (now, event.get("station_state"))
         fired: list[Firing] = []
         for firing in (self._starvation(sid, event, now),
@@ -161,6 +168,10 @@ class LineWatch:
         share = sum(1 for stalled, _ in key.window if stalled) / len(key.window)
         mean_cycle = _mean(c for _, c in key.window)
         takt = float(self.rules["takt_s"])
+        # Mean CYCLE, not pace (cycle + time held blocked). Pace was tried (ADR-059): on
+        # the twin, blocking cascades put a normal line's stations over takt routinely,
+        # and false alarms went from 3 to 59 a shift without catching plant B's partial
+        # congestion. The replay stream never shows it -- it carries no blocked states.
         condition = (share >= float(self.rules["starvation"]["stalled_share"])
                      and mean_cycle > takt)
         if not self._latch(key, condition, now):
@@ -171,6 +182,8 @@ class LineWatch:
             "station_name": meta.get("name"),
             "stalled_share": round(share, 3),
             "stalled_state": event.get("station_state"),
+            # A neighbour that is DOWN explains a BLOCKED/STARVED station (ADR-059).
+            "down_stations": [s for s in self._down_stations() if abs(s - sid) <= 1],
             "window_events": len(key.window),
             "mean_cycle_time_s": round(mean_cycle, 2),
             "takt_s": takt,
@@ -187,11 +200,14 @@ class LineWatch:
         key = self._key(STARVATION, LINE_KEY, "silence")
         if not self._latch(key, worst >= self.silence_s, now):
             return None
+        takt = float(self.rules["takt_s"])
+        down = [s for s in self._down_stations() if silent.get(s, 0.0) >= self.silence_s]
+        # A station that SAYS it is down is the cause (ADR-059). Otherwise:
         # ponytail: localisation heuristic. A blockage freezes everything upstream at
         # once, so the stalled point is the DOWNSTREAM end of the longest-silent run
         # (ties within one takt). Measured in docs/AGENT_EVAL.md, not assumed right.
-        takt = float(self.rules["takt_s"])
-        sid = max(s for s, gap in silent.items() if gap >= worst - takt)
+        sid = (max(down, key=lambda s: silent[s]) if down
+               else max(s for s, gap in silent.items() if gap >= worst - takt))
         meta = self.stations.get(sid, {})
         return Firing(STARVATION, sid, ts, {
             "station_id": sid,
@@ -202,10 +218,14 @@ class LineWatch:
             "silent_stations": sum(gap >= self.silence_s for gap in silent.values()),
             "stalled_share": 1.0,
             "stalled_state": self._last_seen[sid][1],
+            "down_stations": self._down_stations(),
             "takt_s": takt,
             "downstream_station": meta.get("next_station"),
             "buffer_capacity_after": meta.get("buffer_capacity_after"),
         })
+
+    def _down_stations(self) -> list[int]:
+        return sorted(s for s, (_, state) in self._last_seen.items() if state == "down")
 
     def _paint(self, sid: int, event: dict[str, Any], now: float) -> Firing | None:
         if sid not in self.paint_stations:

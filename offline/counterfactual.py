@@ -30,6 +30,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -77,7 +78,10 @@ def hypothesis(detector: str, evidence: dict[str, Any]) -> tuple[str, float, str
         seen = (f"silent {float(evidence['silent_s']) / 60:.0f} min, last state {state}"
                 if evidence.get("signal") == "silence"
                 else f"station reported {state}; stalled share {share:.2f}")
-        if evidence.get("stalled_state") == "down":
+        down = evidence.get("down_stations") or []
+        if evidence.get("stalled_state") == "down" or down:
+            if down and evidence.get("stalled_state") != "down":
+                seen += f"; S{', S'.join(map(str, down))} reported DOWN"
             return ("station_breakdown", min(1.0, share), seen)
         return ("buffer_congestion", min(MAX_CONGESTION, share),
                 f"{seen} (severity capped {MAX_CONGESTION})")
@@ -171,36 +175,70 @@ def _run_arm(forked: LiveTwinEngine, scenario: str, action: str, station_id: int
             "alerts": np.array(alerts, float), "trajectory": trajectory}
 
 
-def forecast(plant_id: str, detector: str, station_id: int, evidence: dict[str, Any],
-             budget_threshold: float, replicas: int = 8, horizon_s: float = 7200.0,
-             onset_s: float = 1800.0, seed: int = 42) -> dict[str, Any]:
-    started = time.time()
-    scenario, severity, basis = hypothesis(detector, evidence)
+def _prepare(plant_id: str, scenario: str, severity: float, station_id: int, seed: int,
+             onset_s: float, budget_threshold: float) -> LiveTwinEngine:
+    """The decision-point snapshot: warmed, the condition injected, given time to bite.
+    Deterministic in its arguments -- which is what lets each arm rebuild it in its own
+    process rather than pickling an engine."""
     cfg = with_horizon(load_plant_config(ROOT / "configs" / f"{plant_id}.yaml"), 3.0)
-    if station_id not in {s.id for s in cfg.stations}:
-        raise ValueError(f"station {station_id} is not in {plant_id}")
-
     twin = LiveTwinEngine(cfg, seed=seed, artifacts=ROOT / "artifacts",
                           budget_threshold=budget_threshold)
     twin.start()
     # Humidity is a zone condition; everything else is local to the firing station.
     twin.inject(Incident(scenario, severity,
                          station_id=None if scenario == "high_humidity" else station_id))
-    twin.advance(onset_s)  # let the condition establish before the decision point
+    twin.advance(onset_s)
+    return twin
+
+
+def _arm_worker(job: tuple) -> dict[str, np.ndarray]:
+    (plant_id, scenario, severity, station_id, seed, onset_s, budget_threshold,
+     action, replicas, horizon_s) = job
+    twin = _prepare(plant_id, scenario, severity, station_id, seed, onset_s, budget_threshold)
+    return _run_arm(twin, scenario, action, station_id, replicas, horizon_s)
+
+
+def forecast(plant_id: str, detector: str, station_id: int, evidence: dict[str, Any],
+             budget_threshold: float, replicas: int = 8, horizon_s: float = 7200.0,
+             onset_s: float = 1800.0, seed: int = 42,
+             workers: int | None = None) -> dict[str, Any]:
+    started = time.time()
+    scenario, severity, basis = hypothesis(detector, evidence)
+    down = evidence.get("down_stations") or []
+    if scenario == "station_breakdown" and down and station_id not in down:
+        # The firing is at a blocked/starved neighbour; the fault is the DOWN station.
+        station_id = min(down, key=lambda s: abs(s - station_id))
+    cfg = with_horizon(load_plant_config(ROOT / "configs" / f"{plant_id}.yaml"), 3.0)
+    if station_id not in {s.id for s in cfg.stations}:
+        raise ValueError(f"station {station_id} is not in {plant_id}")
 
     actions = [DO_NOTHING] + [a for a, m in MITIGATIONS.items() if scenario in m["scenarios"]]
+    modelled = [a for a in actions
+                if a == DO_NOTHING or MITIGATIONS[a]["scope"] != "risk"]
+    jobs = [(plant_id, scenario, severity, station_id, seed, onset_s, budget_threshold,
+             action, replicas, horizon_s) for action in modelled]
+    workers = max(1, min(len(jobs), workers or os.cpu_count() or 1))
+    if workers == 1:
+        results = [_arm_worker(job) for job in jobs]
+    else:
+        # One arm per process. Each rebuilds the identical warmed twin from the seed, and
+        # the intervals below are drawn in arm order afterwards, so the output is
+        # bit-identical to the serial path (tests/test_counterfactual.py pins it).
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_arm_worker, jobs))
+    by_action = dict(zip(modelled, results))
+
     hours = horizon_s / 3600.0
     boot = np.random.default_rng(seed)
     runs: dict[str, dict[str, np.ndarray]] = {}
     arms: list[dict[str, Any]] = []
     for action in actions:
-        if action != DO_NOTHING and MITIGATIONS[action]["scope"] == "risk":
+        if action not in by_action:
             arms.append({"action_type": action, "modelled": False,
                          "reason": "acts on scoring priority, not on a physical condition "
                                    "the twin simulates"})
             continue
-        run = runs[action] = _run_arm(twin, scenario, action, station_id, replicas,
-                                      horizon_s)
+        run = runs[action] = by_action[action]
         traj = run["trajectory"]
         arm: dict[str, Any] = {
             "action_type": action,

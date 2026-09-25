@@ -872,7 +872,7 @@ export interface ActionProposal {
   fired_at: string;
   created_at: string;
   status: ProposalStatus;
-  trigger_evidence: Record<string, number | string | null>;
+  trigger_evidence: Record<string, number | string | number[] | null>;
   triage_run_id: string | null;
   agent_status: TriageRun["status"] | null;
   agent_mode: "agent" | "deterministic" | null;

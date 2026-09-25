@@ -179,7 +179,8 @@ def _run(base: LiveTwinEngine, rules: dict[str, Any], fault: dict[str, Any] | No
         watch = alerters["watch"]
         for _ in range(int(seconds // CHUNK_S)):
             for e in twin.advance(CHUNK_S):
-                if e.get("event_type") != "station_update" or "station_id" not in e:
+                if (e.get("event_type") not in ("station_update", "station_state")
+                        or "station_id" not in e):
                     continue
                 t = float(e["sim_time_s"])
                 record("watch", [Alert(f.detector, f.station_id, t, f.evidence)

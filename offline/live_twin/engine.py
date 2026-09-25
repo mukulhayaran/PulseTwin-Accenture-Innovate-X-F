@@ -117,6 +117,11 @@ class LiveTwinEngine:
 
         self.pool = OperatorPool(cfg, self.rng_pool)
         self.sim = LineSimulator(cfg, self.pool, self.rng_des, instrument=True)
+        # Bound methods, not lambdas: copy.deepcopy rebinds a bound method to the COPIED
+        # engine, so a counterfactual fork scales its own repairs and emits its own events.
+        self.sim.repair_scale = self._repair_scale
+        self.sim.state_listener = self._on_state_change
+        self._state_events: list[dict] = []
         self.latents = build_latents(cfg, max_units, self.rng_latent)
         self.signals = LiveSignalGenerator(
             cfg, self.latents, self.pool.torque_bias_lookup(), self.rng_phys
@@ -263,13 +268,33 @@ class LiveTwinEngine:
 
     def _drain_visits(self) -> list[dict]:
         """Turn every visit the simulator has completed since the last call into events."""
-        emitted: list[dict] = []
+        emitted: list[dict] = self._state_events
+        self._state_events = []
         visits = self.sim.visits
         while self._consumed_visits < len(visits):
             visit = visits[self._consumed_visits]
             self._consumed_visits += 1
             emitted.extend(self._on_visit(visit))
         return emitted
+
+    def _repair_scale(self, station_id: int, now: float) -> float:
+        """A breakdown incident's severity lengthens its repairs. Until this hook existed
+        `IncidentState.breakdown_repair_scale` was defined and never called (ADR-059)."""
+        return self.incidents.breakdown_repair_scale(station_id, now)
+
+    def _on_state_change(self, station_id: int, old: str, new: str, now: float) -> None:
+        """What a PLC state tag publishes: the station went DOWN, or came back. A down
+        station completes no unit, so without this its own events never say it is down
+        and its neighbours' `blocked` reads as congestion (ADR-059)."""
+        self._state_events.append({
+            "event_type": "station_state",
+            "ts": self.timestamp(now),
+            "sim_time_s": now,
+            "station_id": station_id,
+            "station_state": new,
+            "previous_state": old,
+            "warming_up": self.warming_up,
+        })
 
     def _unit(self, unit_seq: int) -> UnitRecord:
         record = self.units.get(unit_seq)

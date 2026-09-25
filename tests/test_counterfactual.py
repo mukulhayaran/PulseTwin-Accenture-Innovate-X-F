@@ -39,11 +39,19 @@ def test_the_hypothesis_comes_from_the_firing_evidence(detector, evidence, scena
         assert severity == CF.MAX_CONGESTION  # a zero-capacity buffer deadlocks the DES
 
 
+BREAKDOWN = ("plant_a", "starvation", 12, {"stalled_share": 0.6, "stalled_state": "down"})
+
+
 @pytest.fixture(scope="module")
 def breakdown():
-    return CF.forecast("plant_a", "starvation", 12,
-                       {"stalled_share": 0.6, "stalled_state": "down"}, _threshold(),
-                       replicas=2, horizon_s=1200.0, onset_s=600.0)
+    return CF.forecast(*BREAKDOWN, _threshold(), replicas=2, horizon_s=1200.0,
+                       onset_s=600.0, workers=2)
+
+
+def test_parallel_arms_are_bit_identical_to_serial(breakdown):
+    serial = CF.forecast(*BREAKDOWN, _threshold(), replicas=2, horizon_s=1200.0,
+                         onset_s=600.0, workers=1)
+    assert serial["arms"] == breakdown["arms"] and serial["ranking"] == breakdown["ranking"]
 
 
 def test_every_catalogue_action_for_the_condition_gets_an_arm(breakdown):
@@ -84,3 +92,36 @@ def test_a_mitigation_never_knocks_a_repaired_station_down_again():
         twin.advance(300)
     CF._mitigate(twin, "station_breakdown", "increase_feed_buffer", 12)
     assert rt.state != "down"
+
+
+def test_a_breakdown_says_it_is_down_and_severity_lengthens_the_repair():
+    """ADR-059: the twin emits the PLC state change, and breakdown_repair_scale is live.
+    Two forks of one engine draw the same repair; only the severity differs."""
+    import copy
+
+    from offline.benchmarks.simrun import with_horizon
+    from offline.config_schema import load_plant_config
+    from offline.live_twin.engine import LiveTwinEngine
+    from offline.live_twin.incidents import Incident
+
+    cfg = with_horizon(load_plant_config(ROOT / "configs" / "plant_a.yaml"), 1.0)
+    base = LiveTwinEngine(cfg, seed=42, artifacts=ARTIFACTS, budget_threshold=_threshold(),
+                          warmup_units=90, calibration_days=2.0)
+    base.start()
+
+    def downtime(severity: float) -> float:
+        twin = copy.deepcopy(base)
+        twin.inject(Incident("station_breakdown", severity, station_id=12))
+        events = [e for e in twin.advance(4 * 3600) if e["event_type"] == "station_state"
+                  and e["station_id"] == 12]
+        assert events[0]["station_state"] == "down"
+        up = next(e for e in events if e["previous_state"] == "down")
+        return up["sim_time_s"] - events[0]["sim_time_s"]
+
+    assert downtime(1.0) / downtime(0.1) == pytest.approx((1 + 3 * 1.0) / (1 + 3 * 0.1))
+
+
+def test_a_blocked_neighbour_of_a_down_station_is_a_breakdown_there():
+    scenario, _, basis = CF.hypothesis("starvation", {
+        "stalled_share": 0.75, "stalled_state": "blocked", "down_stations": [15]})
+    assert scenario == "station_breakdown" and "S15 reported DOWN" in basis

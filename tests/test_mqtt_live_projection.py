@@ -91,3 +91,53 @@ def test_inspection_closes_alert_and_emits_outcome():
     assert con.execute("SELECT status,outcome FROM active_alerts").fetchone() == ("VALIDATED", 1)
     event_types = [r[0] for r in con.execute("SELECT event_type FROM simulation_events ORDER BY seq")]
     assert event_types == ["alert", "station_update", "inspection_outcome"]
+
+
+# ------------------------------------------------ ADR-059: what the watch needs from MQTT
+
+def test_heartbeat_and_a_unitless_state_tag_become_events():
+    con = _database()
+    projection = LiveProjection(con)
+    projection.lifecycle("plant_a", {"run_id": "MQTT-HB", "status": "running",
+                                     "started_at": 1_700_000_000})
+    projection.lifecycle("plant_a", {"run_id": "MQTT-HB", "status": "running",
+                                     "heartbeat": True, "ts": "2026-01-01T00:10:00"})
+    projection.station_state("plant_a", 12, {"run_id": "MQTT-HB",
+                                             "ts": "2026-01-01T00:11:00",
+                                             "station_state": "down"})
+    rows = con.execute("SELECT event_type, station_id, payload FROM simulation_events "
+                       "ORDER BY seq").fetchall()
+    assert [(r[0], r[1]) for r in rows] == [("heartbeat", None), ("station_state", 12)]
+    assert json.loads(rows[1][2])["station_state"] == "down"
+    status = con.execute("SELECT status FROM simulation_runs").fetchone()[0]
+    assert status == "running"  # a heartbeat never changes the run's lifecycle
+
+
+def test_the_subscriber_folds_a_visits_telemetry_into_its_state_message():
+    import itertools
+    from collections import OrderedDict
+    from types import SimpleNamespace
+
+    from ingestion.mqtt_subscriber import Ingestor
+    from ingestion.unified_namespace import parse_topic
+
+    seen: list[tuple] = []
+    ing = Ingestor.__new__(Ingestor)  # no broker, no Postgres
+    ing.live = SimpleNamespace(station_state=lambda p, s, body: seen.append((s, body)),
+                               inspection_stations=set())
+    ing.buffers, ing.reorder_heap, ing._seq = {}, [], itertools.count()
+    ing.watermark, ing.last_message_at = 0.0, 0.0
+    ing._pending_signals = OrderedDict()
+
+    tele = parse_topic("pulsetwin/plant_a/body/3/telemetry")
+    state = parse_topic("pulsetwin/plant_a/body/3/state")
+    ing._queue_telemetry(tele, {"ts": "2026-01-01T00:00:00", "unit_id": "U9",
+                                "torque_nm": 37.5, "humidity_pct": 48.0}, 0.0)
+    ing._on_state(state, {"ts": "2026-01-01T00:00:00", "unit_id": "U9",
+                          "station_state": "working", "ambient_humidity_pct": 45.0}, 0.0)
+    ing._on_state(state, {"ts": "2026-01-01T00:01:00", "station_state": "down"}, 0.0)
+
+    (s1, merged), (s2, tag) = seen
+    assert s1 == 3 and merged["torque_nm"] == 37.5 and merged["ambient_humidity_pct"] == 45.0
+    assert tag == {"ts": "2026-01-01T00:01:00", "station_state": "down"}  # no longer dropped
+    assert not ing._pending_signals  # consumed, not leaked

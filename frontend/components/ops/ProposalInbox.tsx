@@ -55,8 +55,10 @@ const STATUS_TEXT: Record<ProposalStatus, string> = {
 // Evidence keys that are identity, not measurement -- shown in the header instead.
 const HIDDEN_EVIDENCE = new Set(["station_id", "station_name"]);
 
-function formatEvidence(value: number | string | null): string {
+function formatEvidence(value: number | string | number[] | null): string {
   if (value == null) return "—";
+  // down_stations (ADR-059) is a list; React would otherwise render [4, 15] as "415".
+  if (Array.isArray(value)) return value.length ? value.map((s) => `S${s}`).join(", ") : "none";
   if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(2);
   return value;
 }

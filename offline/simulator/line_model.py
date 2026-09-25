@@ -205,6 +205,13 @@ class LineSimulator:
         self._seq = 0
         self.now = 0.0
 
+        # Hooks for the live twin (offline/live_twin/engine.py). Both default to None and
+        # neither consumes a random draw, so the batch path is bit-identical without them.
+        #   repair_scale(station_id, now) -> multiplier on a repair already drawn
+        #   state_listener(station_id, old_state, new_state, now) on entering/leaving DOWN
+        self.repair_scale = None
+        self.state_listener = None
+
         self.units: list[Unit] = []
         self.visits: list[tuple] = []
         self._next_unit_seq = 0
@@ -238,8 +245,11 @@ class LineSimulator:
 
         self._mark_active_period(rt, new_state, now)
 
+        old_state = rt.state
         rt.state = new_state
         rt.state_since = now
+        if self.state_listener is not None and DOWN in (old_state, new_state):
+            self.state_listener(rt.cfg.id, old_state, new_state, now)
 
     def _spread(self, target: np.ndarray, start: float, end: float, weight: float) -> None:
         """Add `weight * seconds` into every 15-minute bucket the interval touches.
@@ -495,6 +505,8 @@ class LineSimulator:
         rt.bump()  # cancel the pending work-done event
         self._set_state(rt, DOWN, now)
         repair_s = float(self.rng.gamma(shape=2.0, scale=rt.cfg.repair_time_s / 2.0))
+        if self.repair_scale is not None:
+            repair_s *= self.repair_scale(rt.cfg.id, now)
         self._push(now + repair_s, EV_REPAIR_DONE, rt.index, rt.epoch)
 
     def _on_repair_done(self, rt: StationRuntime, now: float) -> None:

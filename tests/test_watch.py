@@ -155,3 +155,21 @@ def test_a_stopped_line_fires_once_at_the_downstream_end_of_the_silence() -> Non
     for sid in (1, 2, 3, 4, 5):                          # the line restarts...
         watch.observe(ev(sid, t0 + 2 * watch.silence_s))
     assert watch.tick(t0 + 2 * watch.silence_s + 10) == []
+
+
+def test_silence_blames_the_station_that_says_it_is_down() -> None:
+    """ADR-059: a state tag outranks the downstream-end heuristic, and it does not reset
+    the station's silence -- reporting DOWN is not producing."""
+    watch = LineWatch(load_rules(ARTIFACTS, "plant_a"))
+    t0 = datetime(2026, 1, 5, 8, 0).timestamp()
+    iso = lambda t: datetime.fromtimestamp(t).isoformat()  # noqa: E731
+    for sid in (1, 2, 3, 4, 5):
+        watch.observe({"station_id": sid, "ts": iso(t0), "station_state": "working",
+                       "cycle_time_s": 60.0})
+    watch.observe({"event_type": "station_state", "station_id": 2, "ts": iso(t0 + 5),
+                   "station_state": "down"})
+    fired = watch.tick(t0 + watch.silence_s + 30)
+    assert [f.station_id for f in fired] == [2]
+    assert fired[0].evidence["down_stations"] == [2]
+    assert fired[0].evidence["stalled_state"] == "down"
+

@@ -44,7 +44,7 @@ per-station, per-variant baseline before the watch can use it
 | `vibration_mm_s` | condition-monitoring sensor | defect model (Mode C needs torque **and** vibration) |
 | `temperature_c`, `humidity_pct` | paint-booth zone sensors (BMS / HVAC controller) | paint watch, defect model (Mode A) |
 | `film_thickness_um` | paint-thickness gauge | defect model (Mode A co-trigger) |
-| `ambient_humidity_pct` | outside-air / plant BMS sensor | paint watch (zone excess over ambient). **Not in `SIG_COLS` today**, see §5 |
+| `ambient_humidity_pct` | outside-air / plant BMS sensor | paint watch (zone excess over ambient). Sent in the **state** message, merged with telemetry by the subscriber (§5) |
 
 ## 3. Manual stations, inspection, and master data
 
@@ -66,23 +66,38 @@ per-station, per-variant baseline before the watch can use it
 | Defect scorer (`serve/scorer.py`) | reflex | §2 signals up to the prediction cutoff station, §3 checklists | per unit |
 | Human decision (`/api/proposals`) | human | the three above | a human |
 
-## 5. Not wired yet: the list to close before a real feed goes live
+## 5. The real-feed path, and what is still open
 
-1. **The watch does not run on MQTT data.** `serve/live_simulation.py` creates a
-   `LineWatch` only for backend replay runs (`producer='backend'`). Messages from
-   `ingestion/` are projected into `simulation_events` by `ingestion/live_projection.py`,
-   and no detector sees them. A real feed needs a watch driver that calls `observe()` per
-   projected event.
-2. **Silence needs a wall clock on a real feed.** `LineWatch.tick(now)` (ADR-057) is what
-   fires when a line stops completely and sends nothing. The replay producer never needs
-   it. A real driver must call it on a timer, driven by the data watermark and not by
-   wall time while ingestion is paused, or a network outage reads as a line stoppage.
-3. **`ambient_humidity_pct` is not in the subscriber's `SIG_COLS`.** Without it the
-   paint-environment detector cannot compute zone excess over ambient, and never fires.
-4. **Weather-driven humidity is not detected by design** (`docs/AGENT_EVAL.md`). The rule
-   fires on zone humidity the ambient does not explain, but Mode A's defect physics keys
-   on absolute humidity. The plant must decide whether weather-driven humidity is an
-   alarm.
-5. **The counterfactual reproduces the detected condition on a model of the line, not the
+**Wired (ADR-059):**
+1. **The watch runs on MQTT data.** `LiveSimulationManager.follow_mqtt_once` (a thread
+   started by `serve/main.py`) tails every running `producer='mqtt'` run's
+   `simulation_events` by sequence number into its own `LineWatch`. Firings open proposals,
+   agent runs and counterfactuals through the same `_on_firing` as a backend run. A
+   restarted backend starts at each run's current end, so it never re-fires on history.
+2. **Silence ticks on the edge's clock.** The edge publishes a heartbeat on
+   `pulsetwin/{plant}/simulation` (`{"heartbeat": true, "ts": <data clock>}`, every
+   `HEARTBEAT_S`). Ingestion projects it as a `heartbeat` event, and the follower calls
+   `LineWatch.tick()` on it. A network outage stops heartbeats too, so it can never read
+   as a stopped line. **A real edge must send this heartbeat with its own clock.**
+3. **One event carries signals and state.** Telemetry and state arrive on different
+   topics. The subscriber now holds a visit's telemetry until that visit's state message
+   arrives and projects them together, so the watch sees torque, weld current and
+   humidity. `ambient_humidity_pct` travels in the state message. **A real edge must
+   publish a visit's telemetry before its state message**; one that arrives after is
+   still stored in `station_readings`, but the watch does not see it.
+4. **PLC state changes without a unit are projected** as `station_state` events. They
+   used to be dropped. "S12 went DOWN" is what separates a breakdown from a congestion
+   when the down station itself goes silent.
+
+**Still open, deliberately:**
+5. **Weather-driven humidity is not a watch alarm.** Measured on the replay stream, zone
+   humidity is above Mode A's 55% for 72% of a humid day's events at every paint
+   station, because the zone tracks ambient. An absolute-humidity alarm would simply be
+   on all day. The defect risk it matters for (humidity **and** a paint-buffer dwell over
+   480 s) is scored per unit by the defect model, which carries `s13..s18_humidity_pct`
+   and `paint_buffer_dwell_s` as features. So weather-driven risk surfaces as unit
+   alerts, and the watch's paint rule stays a detector of zone climate *faults*.
+6. **The counterfactual reproduces the detected condition on a model of the line, not the
    live line's state.** A real twin should start forks from the live snapshot (WIP per
-   buffer, station states), which is what ADR-058 asks a real twin to provide.
+   buffer, station states). This is operation 1 of ADR-058's contract, and only a real
+   twin can provide it.

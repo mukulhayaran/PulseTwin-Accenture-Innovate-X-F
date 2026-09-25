@@ -45,6 +45,7 @@ SIG_COLS = ("torque_nm", "vibration_mm_s", "temperature_c", "weld_current_a",
             "humidity_pct", "film_thickness_um")
 
 SEED = 42
+HEARTBEAT_S = 10.0  # wall seconds between edge heartbeats
 DROPOUT_RATE_PER_EVENT = 0.0004        # background chance any (station, signal) starts a dropout
 DROPOUT_DURATION_RANGE = (30.0, 120.0)
 LATE_ARRIVAL_PCT = 0.035
@@ -212,6 +213,7 @@ def run(plant_id: str, broker: str, port: int, speed: float, loop: bool,
     time.sleep(1.0)
 
     n_events = 0
+    last_heartbeat = time.time()
     while True:
         prev_ts = None
         with stream_path.open("r", encoding="utf-8") as fh:
@@ -230,6 +232,13 @@ def run(plant_id: str, broker: str, port: int, speed: float, loop: bool,
 
                 n_events += _publish_event(client, plant_id, run_id, zones, rec, faults, time.time(),
                                             inject_faults)
+                if time.time() - last_heartbeat >= HEARTBEAT_S:
+                    # The data clock, not wall time: serve ticks the watch's silence
+                    # detector on it (ADR-059). A real edge sends its own clock.
+                    client.publish(lifecycle_topic, json.dumps(
+                        {"run_id": run_id, "plant_id": plant_id, "status": "running",
+                         "heartbeat": True, "ts": rec["ts"]}), qos=0)
+                    last_heartbeat = time.time()
                 if n_events % 500 == 0:
                     print(f"[publisher] {n_events} messages published")
         if not loop:
