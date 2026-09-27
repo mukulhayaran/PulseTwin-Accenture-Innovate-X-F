@@ -1,6 +1,6 @@
 "use client";
 
-// The agents, on /manager and /ops -- deliberately NOT the copilot. The copilot is a
+// The agents, on /supervisor, /manager and /ops -- deliberately NOT the copilot. The copilot is a
 // conversation; an agent is a job. Each card here owns one agent: its own Run button, its
 // own in-flight run, its own verified result. Nothing is threaded between them, and each
 // run opens its own server-side thread with a non-"ask" intent, so none of them appears in
@@ -13,7 +13,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Bottleneck, ExperimentListItem, TriageIntent, TriageRun,
-  getBottleneck, getTriageAvailability, getTriageRun, listSimulationExperiments, startTriage,
+  getBottleneck, getRole, getSession, getTriageAvailability, getTriageRun,
+  listSimulationExperiments, startTriage,
 } from "@/lib/api";
 import LifecycleStrip, { runLifecycle } from "@/components/agents/LifecycleStrip";
 import ExperimentComparison from "@/components/agents/ExperimentComparison";
@@ -31,8 +32,6 @@ interface AgentDef {
   title: string;
   hint: string;
   needsStation?: boolean;
-  /** Started automatically by the live watch (ADR-051); proposes, never executes. */
-  watch?: boolean;
 }
 
 // `hint` restates genai/intents.py's guidance for each plan in one line -- what the run
@@ -41,21 +40,22 @@ const AGENTS: AgentDef[] = [
   // Specialists run ONE AFTER ANOTHER (deterministic call ids, one ledger) -- not in parallel.
   { intent: "incident", title: "Incident agent", hint: "Reliability, production and risk specialists in sequence, a simulation planner that runs a fresh experiment, then one verified synthesis." },
   { intent: "whatif", title: "What-if agent", hint: "A fresh paired simulation of more than one change at the live constraint; the precomputed grid only as a labelled fallback.", needsStation: true },
-  { intent: "shift_intel", title: "Shift-intelligence agent", hint: "Top sources of loss, plus experiments run, decisions taken and expected-vs-observed outcomes." },
   { intent: "handover", title: "Handover agent", hint: "What changed, what was applied or awaits approval, outcomes not yet mature, and what to watch." },
-  // ADR-051: normally started by the live watch the moment it fires; runnable here too.
-  // Each PROPOSES an action -- decided in the Proposals inbox, never executed by the agent.
-  { intent: "starvation", watch: true, title: "Starvation agent", hint: "Tells a station fault from starved feed, simulates buffer, repair and cycle options, and proposes only what the simulation shows helps." },
-  { intent: "paint_env", watch: true, title: "Paint environment agent", hint: "Reads the zone humidity excess, cites the paint SOP, simulates the HVAC fix's defect impact, and says what cannot be simulated." },
-  { intent: "tool_wear", watch: true, title: "Tool degradation agent", hint: "Checks the sensor first, then simulates maintenance now, at the planned stop, and a load shift. No remaining-life claim." },
+  // The three watch agents (starvation, paint_env, tool_wear) have no card: the live watch
+  // starts them when it fires (ADR-051), and their findings are decided in the Proposals
+  // inbox. Shift intelligence was removed -- it re-read the same shift summary as Handover.
 ];
 
 export default function AgentPanel({
   plant,
   onAction,
+  intents,
 }: {
   plant: string;
   onAction?: (msg: string) => void;
+  /** Which agents this view offers. Omitted = all of them (/ops). The API's own gate
+   *  (serve/routers/triage.py SUPERVISOR_INTENTS) decides what a role may actually run. */
+  intents?: TriageIntent[];
 }) {
   const [phases, setPhases] = useState<string[]>([]);
   const [bn, setBn] = useState<Bottleneck | null>(null);
@@ -78,36 +78,27 @@ export default function AgentPanel({
 
   // Structured, from the live constraint -- never parsed out of text (CLAUDE.md §1).
   const station = bn?.current_station ?? null;
+  const shown = intents ? AGENTS.filter((a) => intents.includes(a.intent)) : AGENTS;
 
   return (
     <Panel
       title="Agents"
       note="Each agent is a separate job over live line data. Run one, and its result appears on its own card once every number has been verified."
     >
-      {[
-        { label: "On demand", cols: "xl:grid-cols-2", agents: AGENTS.filter((a) => !a.watch) },
-        { label: "Watch agents · started automatically when the live watch fires, and each proposes an action for approval",
-          cols: "xl:grid-cols-3", agents: AGENTS.filter((a) => a.watch) },
-      ].map((group) => (
-        <div key={group.label} className="mb-4 last:mb-0">
-          <div className="mb-2 text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
-            {group.label}
-          </div>
-          <div className={cn("grid grid-cols-1 gap-px border border-line bg-line", group.cols)}>
-            {group.agents.map((a) => (
-              // key on plant: a plant switch clears every card -- runs are plant-scoped.
-              <AgentCard
-                key={`${plant}:${a.intent}`}
-                agent={a}
-                plant={plant}
-                station={station}
-                phases={phases}
-                onAction={onAction}
-              />
-            ))}
-          </div>
-        </div>
-      ))}
+      <div className={cn("grid grid-cols-1 gap-px border border-line bg-line",
+                         shown.length > 1 && "xl:grid-cols-2")}>
+        {shown.map((a) => (
+          // key on plant: a plant switch clears every card -- runs are plant-scoped.
+          <AgentCard
+            key={`${plant}:${a.intent}`}
+            agent={a}
+            plant={plant}
+            station={station}
+            phases={phases}
+            onAction={onAction}
+          />
+        ))}
+      </div>
     </Panel>
   );
 }
@@ -142,7 +133,8 @@ function AgentCard({
   // (a new experiment can appear mid-run) and once more when it finishes.
   const runId = run?.run_id;
   useEffect(() => {
-    if (!runId) return;
+    // The experiment list is manager-gated; a supervisor reads the finding, not the table.
+    if (!runId || getRole() === "supervisor") return;
     let cancelled = false;
     const read = () =>
       listSimulationExperiments(plant, { originRunId: runId })
@@ -155,7 +147,9 @@ function AgentCard({
       if (id) clearInterval(id);
     };
   }, [plant, runId, active]);
-  const blocked = agent.needsStation && station == null;
+  // /supervisor is public, and the API starts floor agents only for a signed-in caller.
+  const signedIn = getSession() != null;
+  const blocked = (agent.needsStation && station == null) || !signedIn;
   const label = agent.needsStation && station != null ? `${agent.title} · S${station}` : agent.title;
 
   const poll = useCallback(
@@ -204,6 +198,9 @@ function AgentCard({
         <div className="min-w-0">
           <h3 className="text-sm font-bold text-ink">{label}</h3>
           <p className="mt-1 text-2xs leading-relaxed text-ink-faint">{agent.hint}</p>
+          {!signedIn && (
+            <p className="mt-1 text-2xs font-bold text-ink-dim">Sign in to run this agent.</p>
+          )}
         </div>
         <Button
           variant={run ? "outline" : "primary"}

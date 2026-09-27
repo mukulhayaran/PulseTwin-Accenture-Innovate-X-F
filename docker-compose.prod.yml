@@ -86,8 +86,15 @@ services:
       FRONTEND_HEALTH_URL: http://frontend:3000
       PULSETWIN_REQUIRE_POSTGRES: "1"
       # ADR-063: roles come only from server-issued demo sessions; a bare role header can
-      # no longer claim one. Still NOT production auth -- the demo credentials are fixed.
+      # no longer claim one. Still NOT production auth.
       PULSETWIN_AUTH_MODE: session
+      # Login passwords. REQUIRE_POSTGRES=1 above makes the backend refuse the committed
+      # dev passwords, so this LOCAL stack passes them in explicitly; override any of them
+      # from the shell or a .env file. The cloud deploy (render.yaml) has no defaults.
+      PULSETWIN_PASSWORD_SUPERVISOR: ${PULSETWIN_PASSWORD_SUPERVISOR:-sup2026}
+      PULSETWIN_PASSWORD_MANAGER: ${PULSETWIN_PASSWORD_MANAGER:-mgr2026}
+      PULSETWIN_PASSWORD_LEADERSHIP: ${PULSETWIN_PASSWORD_LEADERSHIP:-lead2026}
+      PULSETWIN_PASSWORD_SYSTEM: ${PULSETWIN_PASSWORD_SYSTEM:-sys2026}
       # ADR-064: job heartbeats, logs and the provider capability cache. On a volume so a
       # redeploy does not forget the provider's request shape -- every fresh cache spent
       # an extra AI request per run rediscovering it.

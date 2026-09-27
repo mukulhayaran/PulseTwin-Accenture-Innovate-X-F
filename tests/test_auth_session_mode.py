@@ -77,7 +77,7 @@ def test_an_agent_run_gets_its_own_short_session_in_its_environment(monkeypatch,
     monkeypatch.setattr(triage.subprocess, "Popen", FakePopen)
     from serve import db
     ops = db.open_ops_db()
-    triage.start_triage_run(ops, plant_id="plant_a", question="q", intent="shift_intel",
+    triage.start_triage_run(ops, plant_id="plant_a", question="q", intent="handover",
                             role="manager", acting_role="manager", mode="deterministic",
                             api_base="http://x")
     token = seen["env"]["PULSETWIN_API_TOKEN"]

@@ -2544,3 +2544,55 @@ Only the stalled share has a simulated analogue, the station's starved + blocked
 
 **Result: 39.4 s → 7.1 s warm, 15.5 s cold, with identical numbers to the digit**
 (baseline 56.6188 UPH; changes +0.6808, +0.3579, −8.6629).
+
+### ADR-066 — Floor agents on /supervisor: incident and handover run as manager for a signed-in supervisor
+
+**Context.** Every agent lived on `/manager`, and the triage API was manager-only. A
+shift handover and the investigation of an alert are floor-supervisor jobs, and the
+supervisor view was already trying to show the auto-investigation's finding on an alert.
+It silently got 403, so no supervisor ever saw it.
+
+**Measured.** A deterministic run capped to `supervisor` (2026-09-27, Postgres stack):
+- **handover:** 4 of 7 tools were `forbidden` (shift summary, proposals, experiments,
+  outcomes), leaving 2 claims;
+- **incident:** it could not run its simulation experiment.
+
+Capping at the caller's role, the rule that stops a read-around, makes these two agents
+useless to the role that owns them.
+
+**Decision.** `serve/routers/triage.py::SUPERVISOR_INTENTS = {incident, handover}`.
+A supervisor may start and read runs of those intents only, and only with a server
+session (401 for the public view's anonymous visitor). The run acts as `manager`
+(`SUPERVISOR_RUN_ROLE`), the same pattern as the auto-investigation acting as `system`.
+The bounds that keep it from being a read-around:
+- the question is replaced by the intent's label;
+- no thread continuation;
+- `include_evidence` is forced off, so a supervisor gets the verified finding and tool
+  names, not raw manager-level results;
+- the audit row carries the elevated `acting_role`.
+
+The UI moves the two cards: `AgentPanel` takes an `intents` prop. `/supervisor` shows
+incident and handover, `/manager` the other five, and `/ops` all seven.
+
+**Consequence.** `/api/triage/runs` (list) and the thread endpoints stay manager-only, so
+the copilot is unchanged. `tests/test_triage_api.py` pins these rules:
+- anonymous → 401;
+- any other intent → 403;
+- the prose is dropped;
+- no thread continuation;
+- no evidence;
+- a non-floor run is unreadable.
+
+**Follow-up (same day): the agent set trimmed.**
+- **`shift_intel` removed end to end.** That covers the intent, its deterministic plan, the
+  `serve/` mirror and the UI type. It started from the same `get_shift_summary` as
+  `handover` and re-read the same proposals and outcomes, and the page header already
+  shows the shift summary.
+- **The three watch agents lost their manual Run cards.** The live watch starts them when
+  it fires (ADR-051), and their findings are decided in the Proposals inbox. The intents
+  are unchanged.
+- **The What-if agent is the only card left on `/manager`, and it is optional.** The slider
+  panel answers a single change instantly from the grid; the agent is for a fresh
+  multi-change comparison.
+- **Placement:** `/ops` shows incident, handover and what-if.
+

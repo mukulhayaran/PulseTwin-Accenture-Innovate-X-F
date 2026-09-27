@@ -40,8 +40,6 @@ from offline.benchmarks.simrun import perturb, run_line, throughput_uph
 from offline.config_schema import PlantConfig
 
 DEFAULT_RELATIVE = 0.10
-DEFAULT_SEEDS = 30
-PUBLICATION_SEEDS = 60
 BOOTSTRAP_RESAMPLES = 2000
 BOOTSTRAP_SEED = 42
 

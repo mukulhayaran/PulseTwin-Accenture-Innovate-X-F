@@ -22,6 +22,7 @@ import {
 } from "@/components/ui";
 import CopilotDock from "@/components/copilot/CopilotDock";
 import FindingView from "@/components/copilot/FindingView";
+import AgentPanel from "@/components/copilot/AgentPanel";
 
 // Station state -> surface treatment. Tint + border rather than a flat fill, so a
 // 42-station line reads as a map instead of a block of colour.
@@ -60,9 +61,22 @@ interface LiveStation {
   risk?: number;
 }
 
+const SUPERVISOR_SESSION_KEY = "pulsetwin.supervisor.session.v1";
+
+interface SupervisorSession {
+  plant: string;
+  mode: "replay" | "live_synthetic";
+  speed: number;
+  running: boolean;
+  clock: string;
+  savedAt: number;
+}
+
 export default function SupervisorPage() {
   const [plant, setPlant] = useState("plant_a");
-  const [mode, setMode] = useState<"replay" | "live_synthetic">("replay");
+  // Live synthetic is server-owned, so it continues while the user visits another panel.
+  // The chosen mode is restored below; recorded Replay is also resumed from its saved clock.
+  const [mode, setMode] = useState<"replay" | "live_synthetic">("live_synthetic");
   const [scenario, setScenario] = useState<SimulationScenario>("normal");
   const [seed, setSeed] = useState(42);
   const [severity, setSeverity] = useState(0.7);
@@ -111,6 +125,17 @@ export default function SupervisorPage() {
   const [running, setRunning] = useState(false);
   const resumeTs = useRef<string | null>(null);
   const liveSeq = useRef(0);
+  const sessionRef = useRef<SupervisorSession>({
+    plant, mode, speed, running, clock, savedAt: Date.now(),
+  });
+  sessionRef.current = { plant, mode, speed, running, clock, savedAt: Date.now() };
+  // Nothing may be SAVED until the restored state has actually rendered. Without this the
+  // first cleanup (React dev mounts effects twice; a fast route change does the same) wrote
+  // this render's DEFAULTS -- live_synthetic, not running -- over the saved replay, so
+  // every panel switch landed back on Live synthetic with the replay stopped.
+  const [restored, setRestored] = useState(false);
+  const restoredRef = useRef(false);
+  useEffect(() => { restoredRef.current = restored; }, [restored]);
   const [dropouts, setDropouts] = useState<
     { station_id: number; sensor: string; since: string; duration_s: number }[]
   >([]);
@@ -120,6 +145,55 @@ export default function SupervisorPage() {
   const [autoFinding, setAutoFinding] = useState<TriageRun | null>(null);
   const { show, ToastElement } = useAuditToast();
   const reduced = useReducedMotion();
+
+  // A route change unmounts this page. Keep enough browser-local state to reconnect to
+  // the server-owned run, or to resume the recorded replay without asking the operator
+  // to press Start again. The server remains the source of truth for live-synthetic runs.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(SUPERVISOR_SESSION_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw) as Partial<SupervisorSession>;
+        if (saved.plant) setPlant(saved.plant);
+        if (saved.mode === "replay" || saved.mode === "live_synthetic") setMode(saved.mode);
+        if (typeof saved.speed === "number" && saved.speed > 0) setSpeed(saved.speed);
+        if (saved.mode === "replay" && saved.running && saved.clock) {
+          // Recorded replay has no server-side run. Advance its seek point by the time
+          // spent on another route so it behaves as a continuing replay, then reconnect.
+          const parsed = Date.parse(saved.clock);
+          const elapsedMs = Math.max(0, Date.now() - Number(saved.savedAt || Date.now()));
+          const resumed = Number.isFinite(parsed)
+            ? new Date(parsed + elapsedMs * Number(saved.speed || 1)).toISOString()
+            : saved.clock;
+          resumeTs.current = resumed;
+          setClock(resumed);
+          setRunning(true);
+        }
+      }
+    } catch {
+      // A malformed or unavailable session store must never block the floor view.
+    }
+    setRestored(true);
+
+    const save = () => {
+      if (!restoredRef.current) return;
+      try {
+        sessionStorage.setItem(
+          SUPERVISOR_SESSION_KEY,
+          JSON.stringify({ ...sessionRef.current, savedAt: Date.now() }),
+        );
+      } catch {
+        // Private browsing/storage restrictions simply disable route persistence.
+      }
+    };
+    const id = window.setInterval(save, 1000);
+    window.addEventListener("pagehide", save);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("pagehide", save);
+      save();
+    };
+  }, []);
 
   // An unattended "incident" investigation may already have run for this alert before
   // anyone clicked anything (serve/live_simulation.py::_trigger_auto_investigation).
@@ -253,13 +327,16 @@ export default function SupervisorPage() {
 
   useEffect(() => {
     if (mode !== "live_synthetic") return;
+    let cancelled = false;
     getActiveSimulation(plant)
       .then((run) => {
+        if (cancelled) return;
         setActiveRun(run);
         setRunning(run?.status === "running");
         if (run?.simulation_time) setClock(run.simulation_time);
       })
-      .catch(() => setRunError("Could not read the active synthetic run."));
+      .catch(() => { if (!cancelled) setRunError("Could not read the active synthetic run."); });
+    return () => { cancelled = true; };
   }, [mode, plant]);
 
   useEffect(() => {
@@ -1266,6 +1343,9 @@ export default function SupervisorPage() {
             )}
           </AnimatePresence>
 
+          {/* Floor agents: the supervisor owns the incident and the handover. They run as
+              manager for a signed-in supervisor (serve/routers/triage.py SUPERVISOR_INTENTS). */}
+          <AgentPanel plant={plant} onAction={show} intents={["incident", "handover"]} />
         </div>
 
         {/* ------------------------------------------------------------ alert feed */}

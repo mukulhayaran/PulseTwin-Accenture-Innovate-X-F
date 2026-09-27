@@ -6,3 +6,7 @@ docs/
 __pycache__/
 *.pyc
 *.parquet
+tmp/
+output/
+reports/
+.venv/

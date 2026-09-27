@@ -130,7 +130,7 @@ def test_a_restricted_role_reports_rather_than_invents(ctx) -> None:
 # whole argument for this module is that the demo survives an outage with its guarantees
 # intact, not with a weaker version of them.
 
-PLANS = ["general", "handover", "shift_intel", "whatif", "incident",
+PLANS = ["general", "handover", "whatif", "incident",
          "starvation", "paint_env", "tool_wear"]
 
 

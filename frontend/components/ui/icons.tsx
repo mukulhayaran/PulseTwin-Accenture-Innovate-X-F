@@ -99,19 +99,6 @@ export const IconChevronDown = (p: IconProps) => (
   </Icon>
 );
 
-export const IconChevronRight = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="m9.5 6 6 6-6 6" />
-  </Icon>
-);
-
-export const IconClock = (p: IconProps) => (
-  <Icon {...p}>
-    <circle cx="12" cy="12" r="8.5" />
-    <path d="M12 7.5V12l3 1.8" />
-  </Icon>
-);
-
 export const IconAlert = (p: IconProps) => (
   <Icon {...p}>
     <path d="M12 3.8 21 19.5H3z" />
@@ -130,22 +117,6 @@ export const IconGauge = (p: IconProps) => (
   <Icon {...p}>
     <path d="M4 17a8 8 0 1 1 16 0" />
     <path d="m12 17 4-5" />
-  </Icon>
-);
-
-export const IconFactory = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M3 20V11l5.5 3.5V11L14 14.5V8l7 4v8z" />
-    <path d="M3 20h18" />
-  </Icon>
-);
-
-export const IconGrid = (p: IconProps) => (
-  <Icon {...p}>
-    <rect x="3.5" y="3.5" width="7" height="7" />
-    <rect x="13.5" y="3.5" width="7" height="7" />
-    <rect x="3.5" y="13.5" width="7" height="7" />
-    <rect x="13.5" y="13.5" width="7" height="7" />
   </Icon>
 );
 

@@ -29,7 +29,6 @@ from dataclasses import dataclass
 ASK = "ask"
 INCIDENT = "incident"
 HANDOVER = "handover"
-SHIFT_INTEL = "shift_intel"
 WHATIF = "whatif"
 # ADR-051: the three watch-triggered agents. Each PROPOSES an action; a human decides.
 STARVATION = "starvation"
@@ -134,26 +133,6 @@ INTENTS: dict[str, Intent] = {
             "underperformed -- the next shift must not repeat them. " + COMMON_GUIDANCE
         ),
         plan="handover",
-    ),
-    SHIFT_INTEL: Intent(
-        key=SHIFT_INTEL,
-        label="Generate shift intelligence",
-        instruction=(
-            "Summarise this shift's production, risks and constraint behaviour for the "
-            "shift manager."
-        ),
-        guidance=(
-            "SHIFT INTELLIGENCE IS A RANKING, not a list. Start from get_shift_summary, "
-            "then rank the top three sources of loss and qualify each one: how confident "
-            "the detector is, whether the underlying statistics are measured or "
-            "reconstructed, and whether the model itself is drifting (get_model_health). "
-            "A loss you cannot rank confidently is worth saying so about. Then cover the "
-            "operational memory: open proposals, list_simulation_experiments, approved and "
-            "rejected decisions (get_proposals), and expected versus observed outcomes "
-            "(get_action_outcomes), naming any recommendation that failed its expected "
-            "result. " + COMMON_GUIDANCE
-        ),
-        plan="shift_intel",
     ),
     WHATIF: Intent(
         key=WHATIF,
@@ -293,7 +272,7 @@ def plan(key: str | None) -> str:
 
 
 __all__ = [
-    "ASK", "INCIDENT", "HANDOVER", "SHIFT_INTEL", "WHATIF",
+    "ASK", "INCIDENT", "HANDOVER", "WHATIF",
     "STARVATION", "PAINT_ENV", "TOOL_WEAR",
     "Intent", "INTENTS", "KEYS", "LABELS", "COMMON_GUIDANCE", "ACTION_GUIDANCE",
     "get", "expand", "guidance", "plan",

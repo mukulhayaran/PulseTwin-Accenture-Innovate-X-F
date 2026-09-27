@@ -21,7 +21,7 @@ const METRIC: Record<string, { label: string; scale: number; unit: string }> = {
 };
 
 function num(v: number | null | undefined, scale: number, unit: string, digits = 1) {
-  if (v == null) return "—";
+  if (v == null) return "-";
   const x = v * scale;
   return `${x > 0 ? "+" : ""}${x.toFixed(digits)}${unit}`;
 }
@@ -36,7 +36,7 @@ export default function OutcomeCard({ outcome }: { outcome: ActionOutcome }) {
     <div className="border border-line bg-surface-2 p-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className="text-2xs font-bold uppercase tracking-[0.14em] text-ink-faint">
-          Outcome · {m.label}
+          Outcome - {m.label}
         </span>
         <Badge variant="ok">Measured</Badge>
         <span className="flex-1" />
@@ -53,7 +53,7 @@ export default function OutcomeCard({ outcome }: { outcome: ActionOutcome }) {
                 <span className="cursor-help text-ink-faint">not projected</span>
               </Tooltip>
             ) : (
-              <Tooltip content={`${outcome.expected_source ?? ""} · simulated (inferred) · 95% interval ` +
+              <Tooltip content={`${outcome.expected_source ?? ""} | simulated (inferred) | 95% interval ` +
                 `${num(outcome.expected_ci_high == null ? null : -outcome.expected_ci_high, m.scale, m.unit)} to ` +
                 `${num(outcome.expected_ci_low == null ? null : -outcome.expected_ci_low, m.scale, m.unit)}`}>
                 <span className="cursor-help">{num(expected, m.scale, m.unit)}</span>
@@ -63,14 +63,14 @@ export default function OutcomeCard({ outcome }: { outcome: ActionOutcome }) {
         </div>
         <div>
           <dt className="text-2xs text-ink-faint">Actual improvement</dt>
-          <dd className="text-ink">{outcome.status === "observing" ? "observing…" : num(actual, m.scale, m.unit)}</dd>
+          <dd className="text-ink">{outcome.status === "observing" ? "observing..." : num(actual, m.scale, m.unit)}</dd>
         </div>
         <div>
           <dt className="text-2xs text-ink-faint">Evaluation window</dt>
           <dd className="text-ink">
-            {windowMin != null ? `${windowMin} sim-min` : "—"}
+            {windowMin != null ? `${windowMin} sim-min` : "-"}
             <span className="block text-2xs text-ink-faint">
-              {outcome.n_events_before ?? 0} → {outcome.n_events_after ?? "…"} events
+              {outcome.n_events_before ?? 0} to {outcome.n_events_after ?? "..."} events
             </span>
           </dd>
         </div>
@@ -85,7 +85,7 @@ export default function OutcomeCard({ outcome }: { outcome: ActionOutcome }) {
         <div>
           <dt className="text-2xs text-ink-faint">Projection error</dt>
           <dd className="text-ink">
-            {outcome.prediction_error == null ? "—"
+            {outcome.prediction_error == null ? "-"
               : num(outcome.prediction_error, m.scale, m.unit, 2)}
             {outcome.prediction_error != null && (
               <span className="block text-2xs text-ink-faint">

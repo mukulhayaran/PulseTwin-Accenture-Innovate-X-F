@@ -109,10 +109,12 @@ Both hand the URL to `psycopg.connect` unchanged, so `?sslmode=require` is honou
 Re-running is safe: applied migrations are skipped, and the loader replaces the build tables.
 
 **c. Render (backend).** **New → Blueprint** → select this repo → Render reads
-`render.yaml`. Paste the three secrets it asks for: `DATABASE_URL` (the Neon direct
+`render.yaml`. Paste the secrets it asks for: `DATABASE_URL` (the Neon direct
 string), `PULSETWIN_CORS_ORIGINS` (the Vercel URL, e.g. `https://<app>.vercel.app`, no
-trailing slash), and `PULSETWIN_GENAI_API_KEY` (optional — without it the copilot runs its
-deterministic path). The blueprint already sets `PULSETWIN_REQUIRE_POSTGRES=1` and
+trailing slash), the four login passwords `PULSETWIN_PASSWORD_SUPERVISOR` / `_MANAGER` /
+`_LEADERSHIP` / `_SYSTEM` (**required** — a deployment refuses the repo's dev passwords, so
+a role left blank cannot sign in), and `PULSETWIN_GENAI_API_KEY` (optional — without it the
+copilot runs its deterministic path). The blueprint already sets `PULSETWIN_REQUIRE_POSTGRES=1` and
 `PULSETWIN_PG_POOL_MAX=5`; the health check is `/api/ready`.
 
 **d. Vercel (frontend).** **Add New → Project** → import this repo → set **Root Directory**

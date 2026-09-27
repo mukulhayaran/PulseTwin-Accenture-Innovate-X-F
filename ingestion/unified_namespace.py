@@ -63,11 +63,6 @@ def control_dropout_topic(plant_id: str) -> str:
     return f"{ROOT}/{plant_id}/control/dropout"
 
 
-def plant_wildcard(plant_id: str) -> str:
-    """Subscribe to everything for one plant."""
-    return f"{ROOT}/{plant_id}/#"
-
-
 @dataclass(frozen=True)
 class ParsedTopic:
     kind: str  # telemetry, state, checklist, inspection, entered, exited, simulation, dropout

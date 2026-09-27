@@ -719,7 +719,3 @@ def load_economics_config(path: str | Path = "economics.yaml") -> EconomicsConfi
     with p.open("r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh)
     return EconomicsConfig.model_validate(raw)
-
-
-def all_plant_configs() -> list[PlantConfig]:
-    return [load_plant_config(p) for p in sorted(CONFIG_DIR.glob("plant_*.yaml"))]

@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import numpy as np
 
-TREE_LEAF = -1
-
 
 def flatten_ensemble(clf) -> dict[str, np.ndarray]:
     """Flatten HistGradientBoostingClassifier predictors into contiguous arrays.

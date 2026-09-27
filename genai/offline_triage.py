@@ -486,111 +486,6 @@ def run_handover(
     )
 
 
-def run_shift_intel(
-    registry: dict[str, T.ToolSpec], api: PulseTwinAPI, *, plant_id: str, question: str,
-    station_id: int | None = None,
-) -> tuple[LoopResult, Finding]:
-    """Shift intelligence: rank the losses and qualify each one."""
-    records: list[ToolRecord] = []
-    claims: list[Claim] = []
-    unanswered: list[str] = []
-    notes: list[str] = []
-
-    sh_id, sh = _call(records, registry, api, "get_shift_summary", {"plant_id": plant_id})
-    st_id, st = _call(records, registry, api, "get_station_stats", {"plant_id": plant_id})
-    cfg_id, cfg = _call(records, registry, api, "get_station_config",
-                        {"plant_id": plant_id})
-    mh_id, mh = _call(records, registry, api, "get_model_health", {"plant_id": plant_id})
-
-    names = _station_names(_ok(cfg))
-    shift = _ok(sh)
-    if shift:
-        prod = shift.get("production") or {}
-        _count_claim(claims, "c1", "Units completed this shift",
-                     prod.get("units"), sh_id, "/data/production/units")
-        bneck = shift.get("bottleneck") or {}
-        agreement = bneck.get("detector_agreement")
-        if isinstance(agreement, (int, float)):
-            claims.append(Claim(
-                id="c2",
-                text=f"The bottleneck detector agreed with sustained ground truth "
-                     f"{agreement:.3f} of the time this shift",
-                value=float(agreement), unit="ratio", provenance="measured",
-                citation=Citation(sh_id, "/data/bottleneck/detector_agreement")))
-            notes.append(
-                "Detector agreement is measured against a deliberately different "
-                "sustained-truth window, so it is not expected to reach 1."
-            )
-    else:
-        _fail(unanswered, "get_shift_summary", sh)
-
-    rows = _ok(st)
-    if isinstance(rows, list) and rows:
-        measured = [i for i, r in enumerate(rows)
-                    if r.get("provenance", "measured") == "measured"]
-        skipped = [rows[i].get("station_id") for i in range(len(rows))
-                   if i not in measured]
-        if skipped:
-            unanswered.append(
-                "get_station_stats: stations "
-                + ", ".join(f"S{x}" for x in skipped)
-                + " report inferred statistics with no confidence interval, so they are "
-                  "not ranked (CLAUDE.md §3). They may well be losing more than the "
-                  "stations that are ranked."
-            )
-        ranked = sorted(measured, key=lambda i: rows[i].get("lost_uph") or 0.0,
-                        reverse=True)[:3]
-        for n, idx in enumerate(ranked, start=1):
-            row = rows[idx]
-            sid = row.get("station_id")
-            lost = row.get("lost_uph")
-            if isinstance(lost, (int, float)):
-                claims.append(Claim(
-                    id=f"c{2 + n}",
-                    text=f"Loss rank {n}: {_sname(names, sid)} loses "
-                         f"{lost:.1f} UPH",
-                    value=float(lost), unit="uph", provenance="measured",
-                    citation=Citation(st_id, f"/data/{idx}/lost_uph")))
-    else:
-        _fail(unanswered, "get_station_stats", st)
-
-    health = _ok(mh)
-    if health:
-        drift = (health.get("drift") or {}).get("psi_summary") or {}
-        _count_claim(claims, "c6", "Features whose distribution has shifted",
-                     drift.get("features_shifted"), mh_id,
-                     "/data/drift/psi_summary/features_shifted")
-        status = (health.get("drift") or {}).get("overall_status")
-        if status:
-            notes.append(f"Model drift status is reported as {status}.")
-    else:
-        _fail(unanswered, "get_model_health", mh)
-
-    watch_unused: list[str] = []
-    _operations_memory(records, registry, api, plant_id, claims, notes, watch_unused,
-                       unanswered, first_id=7)
-
-    summary = f"{BANNER} " + (" ".join(notes) if notes else
-                              "Shift losses were ranked directly from station statistics.")
-    recommendation = (
-        f"{BANNER} Work the ranked losses in order, but read the unanswered list first: "
-        f"stations whose statistics are reconstructed are excluded from the ranking "
-        f"entirely, so this is a ranking of what can be measured, not of what is worst."
-    )
-
-    loop = LoopResult(status="finished", content="", records=records, iterations=0)
-    return loop, Finding(
-        question=question, summary=summary, claims=claims,
-        recommendation=recommendation,
-        alternatives_considered=[
-            "Ranking inferred stations alongside measured ones (not done: a point claim "
-            "about an inferred row with no interval breaks the provenance contract)."
-        ],
-        confidence="medium" if len(claims) >= 4 else "low",
-        unanswered=unanswered,
-    )
-
-
 def run_whatif(
     registry: dict[str, T.ToolSpec], api: PulseTwinAPI, *, plant_id: str, question: str,
     station_id: int | None = None,
@@ -1154,8 +1049,29 @@ def run_starvation(
         _evidence_claim(claims, "c3", "The line's takt time", ev, "takt_s", "seconds",
                         fw_id, base)
         stall_ids = [c.id for c in claims if c.id in ("c1", "c2")]
-        notes.append(f"S{sid} is stalled ({ev.get('stalled_state')}) and cycling slower "
-                     f"than takt, so the station after it will draw its buffer dry.")
+        stalled_state = str(ev.get("stalled_state") or "unknown").lower()
+        if stalled_state == "blocked":
+            notes.append(
+                f"S{sid} is blocked and cycling slower than takt. It cannot release work "
+                "downstream, so the investigation should focus on downstream capacity or "
+                "flow rather than assuming missing upstream feed."
+            )
+        elif stalled_state == "starved":
+            notes.append(
+                f"S{sid} is starved and cycling slower than takt, which indicates that "
+                "upstream feed is not reaching the station consistently."
+            )
+        elif stalled_state == "down":
+            notes.append(
+                f"S{sid} is down and cannot sustain takt, which points to a local station "
+                "fault rather than an upstream buffer shortage."
+            )
+        else:
+            notes.append(
+                f"S{sid} is stalled ({stalled_state}) and cycling slower than takt; the "
+                "available evidence does not yet identify whether the cause is local, "
+                "upstream or downstream."
+            )
         # ADR-064: test the candidate remedies on a FRESH simulation of this condition
         # and propose only what the paired interval says helps.
         exp_id, data = _experiment(
@@ -1454,7 +1370,6 @@ def run_tool_wear(
 PLANS = {
     "general": run,
     "handover": run_handover,
-    "shift_intel": run_shift_intel,
     "whatif": run_whatif,
     "incident": run_incident,
     "starvation": run_starvation,

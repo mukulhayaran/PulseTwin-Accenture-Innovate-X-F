@@ -727,7 +727,7 @@ export interface TriageVerdict {
 // understanding at all, which is why every button still works with no provider
 // credential. Mirrors genai/intents.py.
 export type TriageIntent =
-  | "ask" | "incident" | "handover" | "shift_intel" | "whatif"
+  | "ask" | "incident" | "handover" | "whatif"
   // ADR-051: the three watch-triggered agents -- each PROPOSES an action a human decides.
   | "starvation" | "paint_env" | "tool_wear";
 

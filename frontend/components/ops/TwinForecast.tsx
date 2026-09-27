@@ -48,7 +48,7 @@ export function ForecastHeader({ cf, nothing }: { cf: Counterfactual | null; not
     <div className="mt-2 border-t border-line pt-2">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-2xs font-bold uppercase tracking-[0.115em] text-ink">
-          If nothing is done · next {hours} h
+          If nothing is done - next {hours} h
         </span>
         <InferredBadge />
       </div>
@@ -56,20 +56,20 @@ export function ForecastHeader({ cf, nothing }: { cf: Counterfactual | null; not
         <p className="text-numeric mt-1 text-xs text-ink">
           {nothing.throughput_uph.mean.toFixed(1)} UPH{" "}
           <span className="text-ink-faint">
-            [{nothing.throughput_uph.ci_low.toFixed(1)}–{nothing.throughput_uph.ci_high.toFixed(1)}]
+            [{nothing.throughput_uph.ci_low.toFixed(1)} to {nothing.throughput_uph.ci_high.toFixed(1)}]
           </span>
-          {" · "}
+          {" | "}
           {nothing.expected_defects.mean.toFixed(2)} expected defects{" "}
           <span className="text-ink-faint">
-            [{nothing.expected_defects.ci_low.toFixed(2)}–{nothing.expected_defects.ci_high.toFixed(2)}]
+            [{nothing.expected_defects.ci_low.toFixed(2)} to {nothing.expected_defects.ci_high.toFixed(2)}]
           </span>
         </p>
       )}
       {cf.hypothesis && (
         <p className="mt-0.5 text-2xs text-ink-faint">
           Twin reproduced {cf.hypothesis.scenario.replace(/_/g, " ")} at severity{" "}
-          {cf.hypothesis.severity.toFixed(2)} ({cf.hypothesis.basis}) · {cf.method?.replicas} paired replicas
-          per arm · 95% CI
+          {cf.hypothesis.severity.toFixed(2)} ({cf.hypothesis.basis}) | {cf.method?.replicas} paired replicas
+          per arm | 95% CI
         </p>
       )}
     </div>
@@ -90,7 +90,7 @@ function Verdict({ d }: { d: NonNullable<ForecastArm["vs_do_nothing"]> }) {
   return <Badge variant={variant}>{text}</Badge>;
 }
 
-/** One action's simulated effect: Δ throughput vs do-nothing as an interval on a zero line. */
+/** One action's simulated throughput effect versus doing nothing as an interval on a zero line. */
 export function ImpactStrip({ arm, scale }: { arm: ForecastArm | null | undefined; scale: number }) {
   if (!arm) return null;
   if (!arm.modelled) {
@@ -103,11 +103,11 @@ export function ImpactStrip({ arm, scale }: { arm: ForecastArm | null | undefine
   return (
     <div className="mt-1.5 border-t border-ai/20 pt-1.5">
       <div className="flex items-center gap-2">
-        <span className="w-32 shrink-0 text-2xs text-ink-dim">Δ UPH vs nothing</span>
+        <span className="w-32 shrink-0 text-2xs text-ink-dim">UPH change vs nothing</span>
         <Tooltip
           content={
             <span className="text-numeric">
-              {interval(t)} UPH · 95% CI of the paired difference · zero is doing nothing
+              {interval(t)} UPH | 95% CI of the paired difference | zero is doing nothing
             </span>
           }
         >
@@ -133,10 +133,10 @@ export function ImpactStrip({ arm, scale }: { arm: ForecastArm | null | undefine
       <div className="mt-1 flex flex-wrap items-center gap-2">
         <Verdict d={d} />
         <span className="text-numeric text-2xs text-ink-dim">
-          Δ expected defects {interval(d.expected_defects, 3)}
+          Expected-defect change {interval(d.expected_defects, 3)}
         </span>
         {arm.simulated_as && (
-          <span className="text-2xs text-ink-faint">· simulated as: {arm.simulated_as}</span>
+          <span className="text-2xs text-ink-faint">| simulated as: {arm.simulated_as}</span>
         )}
       </div>
     </div>

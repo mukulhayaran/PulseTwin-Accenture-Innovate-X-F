@@ -20,7 +20,6 @@ import {
   Select, Skeleton, SkeletonChart, SkeletonTable, Slider, Tooltip, type Column,
 } from "@/components/ui";
 import CopilotDock from "@/components/copilot/CopilotDock";
-import AgentPanel from "@/components/copilot/AgentPanel";
 import ProposalInbox from "@/components/ops/ProposalInbox";
 
 export default function ManagerPage() {
@@ -440,7 +439,6 @@ export default function ManagerPage() {
       </div>
       <div className="mt-4 space-y-4">
         <ProposalInbox plant={plant} onAction={show} />
-        <AgentPanel plant={plant} onAction={show} />
       </div>
       {ToastElement}
       <CopilotDock plant={plant}

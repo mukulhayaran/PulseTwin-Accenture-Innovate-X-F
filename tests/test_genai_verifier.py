@@ -439,6 +439,20 @@ def test_a_claimed_interval_that_is_not_the_result_interval_fails():
     assert ver.claim_verdicts[0].code == V.INTERVAL_MISMATCH
 
 
+def test_an_interval_bound_rounded_on_the_half_verifies():
+    # Measured live: ci_high -0.0465 printed as -0.047 is exactly half a unit away, but
+    # float subtraction lands a hair over 0.0005 and it was rejected as interval_mismatch.
+    exp = {"call_0009": {"ok": True, "data": {"seed_count": 5, "scenarios": [
+        {"vs_baseline": {"defect_rate": {"mean": -0.071, "ci_low": -0.095, "ci_high": -0.0465,
+                                         "provenance": "inferred"}}}]}}}
+    claim = _exp_claim(text="Defect rate change -0.071", value=-0.071, unit="ratio",
+                       ci_low=-0.095, ci_high=-0.047,
+                       citation=Citation(call_id="call_0009",
+                                         pointer="/data/scenarios/0/vs_baseline/defect_rate/mean"))
+    ver, _ = V.verify(_finding([claim]), exp)
+    assert ver.claim_verdicts[0].code == V.OK
+
+
 def test_an_experiment_claim_labelled_measured_is_a_provenance_violation():
     ver, _ = V.verify(_finding([_exp_claim(provenance="measured", ci_low=None, ci_high=None)]),
                       EXP)

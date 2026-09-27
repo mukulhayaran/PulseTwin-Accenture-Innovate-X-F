@@ -74,6 +74,31 @@ def test_wrong_password_mints_nothing(client):
     assert session_store.live_count() == 0
 
 
+def _login_status(client, username, password):
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    ).status_code
+
+
+def test_deployed_instance_refuses_the_public_repo_passwords(client, monkeypatch):
+    """A deployment with no PULSETWIN_PASSWORD_* set must not open with the committed
+    dev passwords -- nor with an empty one (compare_digest("", "") is True)."""
+    monkeypatch.setenv("PULSETWIN_REQUIRE_POSTGRES", "1")
+    monkeypatch.delenv("PULSETWIN_PASSWORD_SYSTEM", raising=False)
+    assert _login_status(client, "system", "sys2026") == 401
+    assert _login_status(client, "system", "") == 401
+    assert session_store.live_count() == 0
+
+
+def test_env_password_replaces_the_dev_one(client, monkeypatch):
+    monkeypatch.setenv("PULSETWIN_REQUIRE_POSTGRES", "1")
+    monkeypatch.setenv("PULSETWIN_PASSWORD_SYSTEM", "a-real-secret")
+    assert _login_status(client, "system", "sys2026") == 401
+    assert _login_status(client, "system", "a-real-secret") == 200
+    # the other roles have no env password, so they stay disabled
+    assert _login_status(client, "manager", "mgr2026") == 401
+
+
 def test_two_logins_are_two_distinct_sessions(client):
     a = sign_in(client, "manager", "mgr2026")
     b = sign_in(client, "manager", "mgr2026")

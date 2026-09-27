@@ -3,7 +3,7 @@
 // Ask Copilot: a natural, multi-turn conversation with the system (intent "ask"). A turn
 // reads live plant data through the read-only API and retrieves matching passages from
 // the engineering knowledge base (RAG). The agents are separate: one card each on
-// /manager and /ops (AgentPanel), and their runs never appear in this thread list.
+// /supervisor, /manager and /ops (AgentPanel), and their runs never appear in this thread list.
 //
 // Thread id lives in the URL HASH (`/copilot#t=<id>`), not a dynamic route and not
 // localStorage:

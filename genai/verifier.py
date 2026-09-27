@@ -172,6 +172,13 @@ def _parent_of(doc: Any, pointer: str) -> Any | None:
 
 
 # ------------------------------------------------------------------------- tolerance
+def _half_unit(d: int) -> float:
+    """Half a unit in the d-th decimal place, widened by a hair so a value sitting exactly
+    on the rounding boundary still matches: -0.0465 printed as -0.047 is 0.0005 away in
+    decimal but 0.00050000000000001 in float, and was rejected live as interval_mismatch."""
+    return 0.5 * 10.0 ** -d * (1 + 1e-9)
+
+
 def _decimals(text: str) -> int | None:
     if "." not in text:
         return 0
@@ -194,11 +201,11 @@ def derive_tolerance(claim: Claim) -> float:
             if abs(float(cleaned) - claim.value) < 1e-9:
                 d = _decimals(cleaned)
                 if d is not None:
-                    return 0.5 * (10.0 ** -d)
+                    return _half_unit(d)
         except ValueError:
             continue
     d = _decimals(repr(claim.value))
-    return 0.5 * (10.0 ** -(d if d is not None else 3))
+    return _half_unit(d if d is not None else 3)
 
 
 # ------------------------------------------------------------------- number extraction
@@ -231,7 +238,7 @@ def _printed_matches(token: str, value: float, pool: set[float]) -> float | None
     """
     cleaned = token.replace("$", "").replace(",", "").replace("%", "")
     d = _decimals(cleaned) or 0
-    tol = 0.5 * 10.0 ** -d if d else 1e-6
+    tol = _half_unit(d) if d else 1e-6
     for c in pool:
         if abs(value - c) <= tol:
             return c
@@ -527,7 +534,7 @@ def _verify_claim(claim: Claim, transcript: dict[str, Any]) -> ClaimVerdict:
             got = float(getattr(claim, side))
             want = float(parent[side])
             d = _decimals(repr(got))
-            side_tol = max(tol, 0.5 * 10.0 ** -(d if d is not None else 3))
+            side_tol = max(tol, _half_unit(d if d is not None else 3))
             if abs(got - want) > side_tol:
                 return ClaimVerdict(claim.id, INTERVAL_MISMATCH,
                                     f"{side} {got} vs result {want} (tol {side_tol})",

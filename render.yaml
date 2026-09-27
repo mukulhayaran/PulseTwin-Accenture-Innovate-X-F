@@ -29,6 +29,16 @@ services:
         value: "5"
       - key: PULSETWIN_CORS_ORIGINS
         sync: false          # the Vercel URL, e.g. https://pulsetwin.vercel.app
+      # Login passwords, one per role. REQUIRED: on a deployment the committed dev
+      # passwords are refused, so a role left blank here simply cannot sign in.
+      - key: PULSETWIN_PASSWORD_SUPERVISOR
+        sync: false
+      - key: PULSETWIN_PASSWORD_MANAGER
+        sync: false
+      - key: PULSETWIN_PASSWORD_LEADERSHIP
+        sync: false
+      - key: PULSETWIN_PASSWORD_SYSTEM
+        sync: false
       - key: PULSETWIN_GENAI_API_KEY
         sync: false          # OpenRouter key for the copilot; optional -- without it the
                              # copilot answers on its deterministic, no-LLM path

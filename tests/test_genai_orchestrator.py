@@ -144,7 +144,7 @@ def test_incident_routes_to_all_three_specialists() -> None:
 
 
 @pytest.mark.parametrize("intent", [intents.ASK, intents.HANDOVER,
-                                    intents.SHIFT_INTEL, intents.WHATIF])
+                                    intents.WHATIF])
 def test_every_other_intent_selects_nothing(intent) -> None:
     assert O.select_specialists(intent, "anything") == []
 

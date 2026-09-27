@@ -44,14 +44,22 @@ INTENT_LABELS = {
     "ask": "Ask",
     "incident": "Investigate this incident",
     "handover": "Generate shift handover",
-    "shift_intel": "Generate shift intelligence",
     "whatif": "Run a what-if",
     "starvation": "Prevent line starvation",
     "paint_env": "Mitigate paint environment risk",
     "tool_wear": "Assess tool degradation",
 }
 INTENT_KEYS = frozenset(INTENT_LABELS)
-INTENT_PATTERN = "^(ask|incident|handover|shift_intel|whatif|starvation|paint_env|tool_wear)$"
+
+# The two named agents a SIGNED-IN supervisor may start from the floor view, and the only
+# runs a supervisor may read back. Both are fixed jobs (no operator prose reaches the
+# model, no follow-up turn) whose output has passed the verifier, so the run acts as
+# `manager` -- capped at the supervisor's own role it cannot read the shift summary,
+# proposals or experiments, and a handover built without them is two claims long.
+# Measured 2026-09-27. The auto-investigation already acts as `system` for the same view.
+SUPERVISOR_INTENTS = frozenset({"incident", "handover"})
+SUPERVISOR_RUN_ROLE = "manager"
+INTENT_PATTERN = "^(ask|incident|handover|whatif|starvation|paint_env|tool_wear)$"
 
 # The phase trail the UI renders. Mirrors genai/tools.py::PHASE_ORDER, for the same
 # import-wall reason. The first entry is written by THIS module before the worker exists.
@@ -296,9 +304,11 @@ def start_triage_run(
 
 @router.post("/api/triage/runs")
 def start_run(req: TriageRequest, request: Request,
-              role: str = Depends(require_role("manager"))) -> dict[str, Any]:
+              role: str = Depends(require_role("supervisor"))) -> dict[str, Any]:
     if os.environ.get("PULSETWIN_JOBS_ENABLED", "1") == "0":
         raise HTTPException(503, "GenAI triage is disabled in this deployment")
+    if role == "supervisor":
+        _check_supervisor_scope(request, req.intent)
     config_path = ROOT / "configs" / f"{req.plant_id}.yaml"
     if not config_path.exists():
         raise HTTPException(404, f"unknown plant '{req.plant_id}'")
@@ -317,6 +327,11 @@ def start_run(req: TriageRequest, request: Request,
         raise HTTPException(422, "station_id is required for intent 'whatif'")
 
     acting = _cap_role(req.acting_role, role)
+    if role == "supervisor":
+        if req.thread_id:
+            raise HTTPException(403, "a supervisor run cannot continue a thread")
+        question = INTENT_LABELS[req.intent]  # fixed job: operator prose never reaches the model
+        acting = SUPERVISOR_RUN_ROLE
     mode = req.mode
     if mode == "auto":
         mode = "agent" if _credential_present() else "deterministic"
@@ -346,6 +361,17 @@ def start_run(req: TriageRequest, request: Request,
     return result
 
 
+def _check_supervisor_scope(request: Request, intent: str | None) -> None:
+    """A supervisor reaches only SUPERVISOR_INTENTS, and only with a session: /supervisor is
+    public, and an anonymous visitor must not be able to spend model calls acting as
+    manager, nor read findings built from manager-level data."""
+    if getattr(request.state, "session_role", None) is None:
+        raise HTTPException(401, "sign in as a supervisor to run or read floor agents")
+    if intent not in SUPERVISOR_INTENTS:
+        raise HTTPException(403, f"role 'supervisor' cannot access intent '{intent}' "
+                                 f"(allowed: {sorted(SUPERVISOR_INTENTS)})")
+
+
 @router.get("/api/triage/runs")
 def list_runs(request: Request, plant_id: str = "plant_a", limit: int = 10,
               role: str = Depends(require_role("manager"))) -> dict[str, Any]:
@@ -373,11 +399,16 @@ def list_runs(request: Request, plant_id: str = "plant_a", limit: int = 10,
 
 @router.get("/api/triage/runs/{run_id}")
 def get_run(run_id: str, request: Request, include_evidence: bool = False,
-            role: str = Depends(require_role("manager"))) -> dict[str, Any]:
+            role: str = Depends(require_role("supervisor"))) -> dict[str, Any]:
     ops = request.app.state.ops
     row = db.query_one(ops, "SELECT * FROM triage_runs WHERE run_id = ?", (run_id,))
     if row is None:
         return {"run_id": run_id, "status": "unknown"}
+    if role == "supervisor":
+        _check_supervisor_scope(request, row.get("intent"))
+        # The finding is verified; the raw tool results behind it were read as manager
+        # or system, so they stay behind the manager gate.
+        include_evidence = False
 
     out = dict(row)
     # Only the POST-REDACTION finding is ever served. `finding_raw` stays in the database

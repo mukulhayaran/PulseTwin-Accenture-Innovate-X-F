@@ -16,7 +16,7 @@ else is trusted on its own word, exactly as before — deliberately, per the fin
 anti-pattern guidance ("do not implement full OAuth/SSO — a role header is sufficient for
 the demo").
 
-*The session (ADR-048).* `POST /api/auth/login` checks a fixed demo credential per role
+*The session (ADR-048).* `POST /api/auth/login` checks one credential per role
 (`serve/routers/auth_demo.py`, constant-time compare) and mints an opaque 256-bit token
 held in `serve/session_store.py` with an 8-hour TTL. `GET /api/auth/session` validates
 one; `POST /api/auth/logout` revokes it. When a request carries `X-PulseTwin-Token`, the
@@ -25,6 +25,12 @@ or below the session's is honoured (the deliberate privilege drop `/ops`'s "View
 selector performs), anything above it is ignored, and an unknown or expired token is a
 `401` rather than a quiet fall-back to the header. `get_user` takes the session's user, so
 a token-holder cannot relabel who acted in the audit trail.
+
+*Where the passwords live.* Each comes from `PULSETWIN_PASSWORD_<ROLE>`. The repo's
+committed passwords are a local-dev fallback only: when `PULSETWIN_REQUIRE_POSTGRES=1`
+(every deployment, ADR-052) an account with no env password cannot sign in at all, so the
+public repo never opens a deployed instance. Pinned by
+`tests/test_auth_session.py::test_deployed_instance_refuses_the_public_repo_passwords`.
 
 **What this does and does not close.** The UI's own path through the app is now a role the
 *server* issued and can revoke, which is what makes "a manager cannot open the leadership
@@ -96,7 +102,7 @@ signed-in role on the wrong view gets `AccessRestricted`, not a redirect.
 | Minimum role | Endpoints |
 |---|---|
 | **none — open** | `/api/health`, `/api/config/plants`, `/api/config/stations`, `/api/stream`, `/api/predict/defect`, `/api/units`, `/api/units/{id}`, `/api/trace/containment/{id}`, `/api/bottleneck/current`, `/api/bottleneck/history`, `/api/stations/stats`, `/api/metrics`, `/api/whatif/stations`, `/api/triage/availability` |
-| `supervisor` (any valid role) | `/api/alerts/escalation-policy`, `/api/system/sensor-dropouts`, `/api/alerts/triage`, `/api/system/data-quality`, `/api/trace/evidence-graph/{id}`; and, via `get_role` rather than `require_role`, `POST /api/feedback` and `POST /api/alerts/{id}/acknowledge` — these accept any role but *record which one acted* |
+| `supervisor` (any valid role) | `/api/alerts/escalation-policy`, `/api/system/sensor-dropouts`, `/api/alerts/triage`, `/api/system/data-quality`, `/api/trace/evidence-graph/{id}`; and, via `get_role` rather than `require_role`, `POST /api/feedback` and `POST /api/alerts/{id}/acknowledge` — these accept any role but *record which one acted*. **Signed-in only (ADR-066):** `POST /api/triage/runs` and `GET /api/triage/runs/{id}` for the `incident` and `handover` intents alone — no free-text question, no thread, no raw tool evidence |
 | `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag`, `/api/shift/summary`, `POST /api/triage/runs`, `GET /api/triage/runs`, `GET /api/triage/runs/{id}`, `GET /api/triage/threads`, `GET /api/triage/threads/{id}`, `GET /api/watch/firings`, `GET /api/proposals`, `POST /api/proposals/{id}/approve`, `POST /api/proposals/{id}/reject` (ADR-051) |
 | `leadership` | `/api/economics/roi`, `/api/economics/instrumentation-plan`, `/api/model/health`, `/api/model/registry`, `/api/audit/log`, `/api/audit/actions` |
 
@@ -168,6 +174,15 @@ the role that triggered it. Without it an agent is a read-around for the RBAC ga
 `manager` could start a run acting as `leadership` and read economics they cannot read
 directly. Capping turns a restricted run into a feature — the agent reports what it could
 not read in `unanswered` instead of estimating it.
+
+**The one named exception (ADR-066).** A signed-in supervisor's `incident` or `handover` run
+acts as `manager`, not at the supervisor's own role: capped, it could not read the shift
+summary, proposals or experiments, and a measured handover came back two claims long. It
+is bounded so it is not a read-around: two fixed intents, the question replaced by the
+intent's label (no operator prose reaches the model), no thread continuation, and a
+supervisor reading the run gets the verified finding without the raw tool results. An
+anonymous visitor to the public `/supervisor` view is refused with 401. The audit row
+records `acting_role: manager` against the supervisor who started it.
 
 **Agent actions are audited and distinguishable.** Every tool call carries
 `X-PulseTwin-Actor: genai_triage/<run_id>` alongside `X-PulseTwin-Role`. The one non-GET

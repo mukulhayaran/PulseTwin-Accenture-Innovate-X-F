@@ -113,17 +113,6 @@ class ThreadContext:
     carried_values: list[float] = field(default_factory=list)
 
 
-def create_thread(
-    con: Any, *, thread_id: str, plant_id: str, title: str, opened_by: str
-) -> None:
-    db.execute(
-        con,
-        """INSERT INTO triage_threads (thread_id, plant_id, title, opened_by, turn_count)
-           VALUES (?, ?, ?, ?, 0)""",
-        (thread_id, plant_id, title, opened_by),
-    )
-
-
 def load_thread_context(
     con: Any, thread_id: str, *, before_turn: int,
     max_turns: int = config.MAX_THREAD_TURNS,

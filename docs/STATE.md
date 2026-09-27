@@ -3,6 +3,55 @@
 > **READ THIS FIRST, EVERY SESSION.** Then `docs/SPEC.md` for the build target.
 > Update the ledger and the "next action" line at the end of every phase.
 
+## End-to-end validation + agent timings — 2026-09-27
+
+Running Postgres stack, plant A, manager session, all 8 intents through `/api/triage/runs`.
+
+| Intent | Deterministic | Live agent (Nemotron via OpenRouter) |
+|---|---|---|
+| ask | 2.4 s, verified 8/8 | 53 s, verified 6/6 |
+| handover | 1.1 s, 9/9 | 207 s, verified 12/12 |
+| shift_intel | 1.1 s, 7/7 | 215 s, redacted 13/15 |
+| whatif | 14.6 s, 8/8 | 101 s, verified 10/10 |
+| starvation | 9.4 s, 10/10 | 158 s, **rejected** 5/8 |
+| paint_env | 6.2 s, 8/8 | 219 s, redacted 6/7 |
+| tool_wear | 11.5 s, 15/15 | 285 s, **rejected** 8/11 |
+| incident | 11.8 s, 9/9 | 373 s, **rejected** 9/12 (4 sub-agents, 16 tools) |
+
+Every live rejection is a model error the gate caught: a wrong pointer, a claim on a
+bool/str/list, a dropped minus sign, and an inferred value with no interval. There was
+also one false rejection. `-0.0465` printed as `-0.047` failed `interval_mismatch`
+because the float gap was fractionally over half a unit. That is fixed in
+`verifier._half_unit` and pinned by a test.
+
+Browser sweep: 7 routes × 4 sessions, zero console errors, zero 4xx/5xx.
+
+Dead code removed:
+- `genai/store.create_thread`
+- `ingestion/unified_namespace.plant_wildcard`
+- `config_schema.all_plant_configs`
+- `export_model.TREE_LEAF`
+- `DEFAULT_SEEDS`/`PUBLICATION_SEEDS`
+- 4 unused icons
+- `ROLE_HOME`/`safeNext`, which had no `?next=` flow
+
+**Trimmed (ADR-066 follow-up):**
+- `shift_intel` removed, as a duplicate of handover.
+- The watch agents are watch-triggered only, with no Run cards.
+- `/manager` keeps only the optional What-if agent.
+- 232 GenAI tests and 179 triage/intent tests pass.
+
+**Resolved (ADR-066):** `/supervisor` called `GET /api/triage/runs/{id}` for an alert's
+auto-investigation, but that endpoint required `manager`, so a supervisor never saw it.
+Incident and handover now live on `/supervisor`. A signed-in supervisor can run and read
+them, and each run acts as manager. `/manager` keeps the other five agents.
+
+Verified in a browser against the Postgres DB:
+- anonymous: locked, with a sign-in hint;
+- signed-in supervisor: handover and incident both 9/9 verified;
+- `/manager`: shows exactly the five remaining agents;
+- zero console errors throughout.
+
 ## Final application audit — 2026-09-26 (ADR-063)
 
 Full run-it audit of the Postgres stack. The report is `docs/FINAL_APPLICATION_AUDIT.md`,

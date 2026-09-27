@@ -44,17 +44,17 @@ export const ACTION_LABEL: Record<ActionType, string> = {
   resequence_paint_queue: "Resequence paint queue",
 };
 
-/** "S12 · +4 feed slots" -- the params in floor language, never raw JSON. */
+/** "S12 | +4 feed slots" -- the params in floor language, never raw JSON. */
 export function describeParams(params: ProposedAction["params"]): string {
   const p = params;
   const parts: string[] = [];
-  if (p.from_station != null && p.to_station != null) parts.push(`S${p.from_station} → S${p.to_station}`);
+  if (p.from_station != null && p.to_station != null) parts.push(`S${p.from_station} -> S${p.to_station}`);
   else if (p.station_id != null) parts.push(`S${p.station_id}`);
   if (p.buffer_delta != null) parts.push(`${Number(p.buffer_delta) > 0 ? "+" : ""}${p.buffer_delta} feed slots`);
   if (p.cycle_delta_pct != null) parts.push(`${p.cycle_delta_pct}% cycle time`);
   if (p.target_humidity_pct != null) parts.push(`target ${p.target_humidity_pct}% RH`);
   if (p.signal != null) parts.push(String(p.signal));
-  return parts.join(" · ");
+  return parts.join(" | ");
 }
 
 export function ActionRow({
