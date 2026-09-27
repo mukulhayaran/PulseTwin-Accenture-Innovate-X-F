@@ -65,3 +65,15 @@ rollout:
   strategy: RollingUpdate
   max_surge: 1
   max_unavailable: 0
+
+# ADR-064: dynamic simulation experiments. The reviewable source for
+# serve/experiment_catalog.py::LIMITS -- serve/ cannot parse YAML (the import wall), so
+# tests/test_configs.py pins the two together. Change one, change both.
+simulation_experiments:
+  max_scenarios: 5              # including the paired baseline
+  max_seeds: 12
+  max_horizon_s: 14400          # 4 simulated hours
+  max_concurrent: 2
+  wallclock_timeout_s: 420
+  max_experiments_per_run: 3    # per originating agent run
+  max_seeds_per_run: 48         # scenario-seeds, summed over a run's experiments

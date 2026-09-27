@@ -6,7 +6,7 @@ future at prediction time.
 
 THE LEAKAGE TRAP THIS MODULE IS BUILT AROUND (docs/AUDIT.md H10). `lot_trailing_defect_rate`
 is a legitimate feature -- a supervisor really can know how the last hundred units of this
-lot inspected. But inspection happens at the END of the line, 25-40 minutes after the
+lot inspected. But inspection happens at the END of the line, ~9-11 minutes (measured: median 11.2) after the
 prediction point. Selecting "the last 100 units of this lot" BY INDEX silently ingests
 labels that do not exist yet. The leak is invisible in the output and inflates PR-AUC.
 
@@ -63,7 +63,7 @@ def _station_signal_features(
     for st in cfg.stations:
         if st.id > cutoff or st.sensor_tier == "manual":
             continue
-        rows = tel[tel["station_id"] == st.id].sort_values("entry_ts")
+        rows = tel[tel["station_id"] == st.id].sort_values("entry_ts", kind="stable")
         if rows.empty:
             continue
         idx = rows["unit_seq"].to_numpy()
@@ -191,9 +191,9 @@ def _lot_trailing_defect_rate(
       2. a unit reads the value as of ITS prediction time, matched by merge_asof on
          inspection_ts -- so inspections that had not happened yet are invisible
 
-    Selecting by unit index instead would pull in labels from 25-40 minutes in the future.
+    Selecting by unit index instead would pull in labels from ~9-11 minutes in the future.
     """
-    hist = inspections.sort_values("inspection_ts")[
+    hist = inspections.sort_values("inspection_ts", kind="stable")[
         ["lot_id", "inspection_ts", "defect_detected"]
     ].copy()
     hist["lot_rate"] = (
@@ -206,11 +206,11 @@ def _lot_trailing_defect_rate(
     query.columns = ["unit_seq", "prediction_ts"]
     query = query.merge(
         inspections[["unit_seq", "lot_id"]], on="unit_seq", how="left"
-    ).sort_values("prediction_ts")
+    ).sort_values("prediction_ts", kind="stable")
 
     merged = pd.merge_asof(
         query,
-        hist.sort_values("inspection_ts"),
+        hist.sort_values("inspection_ts", kind="stable"),
         left_on="prediction_ts",
         right_on="inspection_ts",
         by="lot_id",
@@ -252,7 +252,7 @@ def build_features(
     for v in cfg.variant_ids:
         X[f"variant_{v}"] = (variant == v).astype(int)
 
-    first_rows = telemetry.sort_values("entry_ts").groupby("unit_seq").first().reindex(X.index)
+    first_rows = telemetry.sort_values("entry_ts", kind="stable").groupby("unit_seq").first().reindex(X.index)
     for sh in cfg.shifts:
         X[f"shift_{sh.id}"] = (first_rows["shift_id"] == sh.id).astype(int)
 

@@ -71,7 +71,7 @@ export default function IngestionLagChart({ lag }: Props) {
               </linearGradient>
             </defs>
             <CartesianGrid {...gridProps} />
-            <XAxis dataKey="t" {...axisProps} interval={Math.max(1, Math.floor(series.length / 5))} />
+            <XAxis dataKey="t" {...axisProps} interval="preserveStartEnd" minTickGap={56} />
             <YAxis {...axisProps} width={56} tickFormatter={fmtDuration} />
             <RTooltip
               cursor={{ stroke: theme.lineStrong, strokeDasharray: "3 3" }}

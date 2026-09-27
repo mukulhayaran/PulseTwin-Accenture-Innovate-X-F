@@ -79,7 +79,7 @@ export function VehicleHero() {
             />
 
             <svg className={styles.connections} viewBox="0 0 1000 1000" fill="none" aria-hidden="true">
-              <path className={styles.frame} d="M105 535 V490 H155 M850 490 H900 V535 M900 825 V870 H850 M155 870 H105 V825" />
+              <path className={styles.frame} pathLength={1} d="M105 535 V490 H155 M850 490 H900 V535 M900 825 V870 H850 M155 870 H105 V825" />
               {DETAILS.map((item, index) => (
                 <path
                   key={item.id}
@@ -115,6 +115,7 @@ export function VehicleHero() {
         </motion.div>
 
         <div className={styles.shade} aria-hidden="true" />
+        <div className={styles.scan} aria-hidden="true" />
       </div>
 
       <div className={styles.detail} id={detailId} aria-live="polite" aria-atomic="true">

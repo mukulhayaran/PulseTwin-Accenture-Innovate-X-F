@@ -23,6 +23,7 @@ Four details here are load-bearing and easy to get wrong:
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -101,6 +102,48 @@ class LoopResult:
         return {r.call_id: r.result for r in self.records}
 
 
+CLOSING_INSTRUCTION = (
+    "Your time budget is nearly spent. Do not call any more tools. Write your final "
+    "finding now, in the required output shape, from the evidence already gathered above; "
+    "put anything you could not establish in `unanswered`.")
+
+class ProviderDeadline(TimeoutError):
+    """A provider call that did not COMPLETE in time. The SDK's timeout is per read and
+    OpenRouter keeps a slow request alive with whitespace, so it never fires: measured
+    2026-09-26, two workers sat 14+ minutes in one call with the 300 s cap unchecked."""
+
+
+def _create_within(client: Any, kwargs: dict[str, Any], deadline_s: float) -> Any:
+    """`chat.completions.create` with a TOTAL deadline. The abandoned call finishes (or
+    not) on a daemon thread; the process exits when the run does, so nothing leaks."""
+    box: dict[str, Any] = {}
+
+    def call() -> None:
+        try:
+            box["resp"] = client.chat.completions.create(**kwargs)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+            box["exc"] = exc
+
+    worker = threading.Thread(target=call, daemon=True)
+    worker.start()
+    worker.join(deadline_s)
+    if worker.is_alive():
+        raise ProviderDeadline(f"no complete response within {deadline_s:.0f}s")
+    if "exc" in box:
+        raise box["exc"]
+    return box["resp"]
+
+
+# Sent once when a model answers having called NO tool at all. Measured live (OpenRouter
+# Nemotron, 2026-09-26): a shift_intel run returned valid JSON on turn 0 with 12 claims
+# citing `call_0001` -- a call that never happened -- and invented every figure. The gate
+# rejected all 12, so the run delivered nothing. One re-ask is cheaper than that.
+EVIDENCE_FIRST_INSTRUCTION = (
+    "You answered without calling any tool, so none of your figures has evidence behind "
+    "it and every claim would be rejected. Call the tools you need first, then answer; "
+    "cite only call_ids that appear in tool results above.")
+
+
 def truncate(value: Any, budget: int = config.MAX_TOOL_RESULT_BYTES) -> Any:
     """Shrink a tool result to fit, without ever producing invalid JSON.
 
@@ -127,22 +170,6 @@ def truncate(value: Any, budget: int = config.MAX_TOOL_RESULT_BYTES) -> Any:
 
     text = json.dumps(value, default=str)
     return {"_truncated_value": text[: budget - 64] + "...", "_original_bytes": len(text)}
-
-
-def _is_json_object(text: str | None) -> bool:
-    """True if `text` is, on its own, a parseable JSON object.
-
-    Deliberately strict and deliberately dumb: this is NOT a finding validator (loop.py
-    is verifier-agnostic by design, and `genai/finding.py` owns that question). It only
-    answers "did the model's output channel work at all", which is what separates a model
-    that chose to answer without tools from one whose output was broken by a parameter.
-    """
-    if not text or not text.strip():
-        return False
-    try:
-        return isinstance(json.loads(text.strip()), dict)
-    except (TypeError, ValueError):
-        return False
 
 
 def build_messages(
@@ -215,6 +242,9 @@ def run_loop(
     calls_made = 0
     rate_limit_retries = 0
     tool_call_retries = 0
+    transient_retries = 0
+    nudged = False
+    evidence_nudged = False
 
     def emit(kind: str, iteration: int, phase: str, pending: str = "") -> None:
         if on_progress:
@@ -227,6 +257,19 @@ def run_loop(
             result.status, result.error = "failed", "wallclock_cap"
             return result
 
+        # The closing turn. A slow reasoning model (~12 s a turn) used to reach the
+        # wall-clock cap mid-investigation and end with NOTHING: a live shift_intel run
+        # made 24 good tool calls and returned no finding. With evidence in hand and the
+        # budget nearly spent, one request goes out WITHOUT tools, so the model can only
+        # answer; the answer still meets the same verifier as any other.
+        closing = bool(result.records) and (
+            iteration == max_iterations - 1
+            or now() - started > wallclock_cap_s - min(config.FINALIZE_RESERVE_S,
+                                                       wallclock_cap_s / 4))
+        if closing and not nudged:
+            messages.append({"role": "user", "content": CLOSING_INSTRUCTION})
+            nudged = True
+
         # After the first round trip the model has evidence in hand, so the honest label
         # for "waiting on the provider" changes from starting to composing.
         emit("model_request", iteration + 1,
@@ -237,18 +280,27 @@ def run_loop(
         # PROCESS pays at most len(LADDER)-1 extra requests -- not once per iteration.
         while True:
             try:
-                resp = client.chat.completions.create(
-                    **capabilities.request_kwargs(
-                        caps,
-                        model=config.MODEL_ID,
-                        messages=messages,
-                        tools=wire_tools,
-                        temperature=config.TEMPERATURE,
-                        response_format=prompts.RESPONSE_FORMAT,
-                    )
+                kwargs = capabilities.request_kwargs(
+                    caps,
+                    model=config.MODEL_ID,
+                    messages=messages,
+                    tools=wire_tools,
+                    temperature=config.TEMPERATURE,
+                    response_format=prompts.RESPONSE_FORMAT,
                 )
+                if closing:
+                    # Omitted, not emptied: some OpenAI-compatible endpoints reject
+                    # `tools: []` as malformed.
+                    kwargs.pop("tools", None)
+                    kwargs.pop("tool_choice", None)
+                # Bounded by the RUN's remaining budget: a reasoning model can need more
+                # than the SDK's 90 s read timeout for one large call, but no single call
+                # may outlive the cap the whole run is held to.
+                resp = _create_within(client, kwargs,
+                                      max(1.0, wallclock_cap_s - (now() - started)))
             except BaseException as exc:  # noqa: BLE001 - re-raised unless provider-shaped
-                code = classify_error(exc) if classify_error else None
+                code = ("provider_timeout" if isinstance(exc, ProviderDeadline)
+                        else classify_error(exc) if classify_error else None)
                 if code is None:
                     # A bug in OUR code must never be recorded as a provider failure.
                     raise
@@ -269,6 +321,17 @@ def run_loop(
                         result.status, result.error = "failed", "rate_limited_wallclock"
                         return result
                     result.degradations.append(f"rate_limited->wait_{wait:.0f}s")
+                    time.sleep(wait)
+                    continue
+                if (code in config.TRANSIENT_ERRORS
+                        and transient_retries < config.MAX_TRANSIENT_RETRIES):
+                    # The network, not the request: the same call again, not a rung.
+                    transient_retries += 1
+                    wait = config.TRANSIENT_BACKOFF_S * transient_retries
+                    if wait >= wallclock_cap_s - (now() - started):
+                        result.status, result.error = "failed", code
+                        return result
+                    result.degradations.append(f"{code}->retry_{transient_retries}")
                     time.sleep(wait)
                     continue
                 if (code == "model_tool_call_invalid"
@@ -312,10 +375,14 @@ def run_loop(
             # nothing: an endpoint that answered a 400 has already named the rung it
             # wants, and second-guessing that from the shape of its next reply would
             # spend a round trip to reach a rung it had told us about.
+            # Measured 2026-09-26, three runs: at a rung sending `response_format` this
+            # provider also answers with VALID JSON and no tool call -- invented figures,
+            # citing call_ids that never existed. So on such a rung the JSON half no longer
+            # excuses it; on a no-format rung a toolless answer gets the evidence re-ask.
             _m = resp.choices[0].message
             if (iteration == 0 and not result.degradations
                     and not (getattr(_m, "tool_calls", None) or [])
-                    and not _is_json_object(getattr(_m, "content", None))):
+                    and max_tool_calls > 0 and not closing):
                 nxt = capabilities.suppresses_tool_calls(caps)
                 if nxt is not None:
                     caps = nxt
@@ -341,6 +408,11 @@ def run_loop(
         calls = getattr(choice.message, "tool_calls", None) or []
 
         if choice.finish_reason != "tool_calls" or not calls:
+            if (not result.records and not evidence_nudged and max_tool_calls > 0
+                    and iteration < max_iterations - 1):
+                messages.append({"role": "user", "content": EVIDENCE_FIRST_INSTRUCTION})
+                evidence_nudged = True
+                continue
             result.status = "finished"
             result.content = choice.message.content or ""
             emit("loop_end", iteration + 1, T.PHASE_COMPOSE)

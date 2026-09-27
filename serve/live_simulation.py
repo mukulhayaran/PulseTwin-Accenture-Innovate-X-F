@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from serve import db
+from serve import db, outcomes
 from serve.watch import PAINT_ENV, Firing, LineWatch, _epoch, load_rules
 
 
@@ -54,6 +54,15 @@ MITIGATIONS: dict[str, dict[str, Any]] = {
     "rebalance_cycle": {"scenarios": ("buffer_congestion",), "factor": 0.5,
                         "scope": "station"},
 }
+
+
+
+def _write(con: Any, batch: list | None, sql: str, params: tuple) -> None:
+    """Queue into `batch` when the caller is batching an event's writes, else execute."""
+    if batch is None:
+        db.execute(con, sql, params)
+    else:
+        batch.append((sql, params))
 
 
 def _utc_now() -> str:
@@ -165,6 +174,7 @@ class LiveSimulationManager:
                       if self._watch_rules.get(plant_id) else None),
             "mitigations": [],          # approved actions, read by _transform
             "applied": {},              # proposal_id -> (detector, station) awaiting recovery
+            "outcomes": [],             # ADR-064: (outcome_id, window end) being observed
         }
         control["running"].set()
         with self._lock:
@@ -365,8 +375,10 @@ class LiveSimulationManager:
                 for raw_index, line in enumerate(stream):
                     if raw_index < start_offset:
                         continue
-                    control = self._control(run_id)
-                    if control["stop"].is_set() or seq >= max_events:
+                    # The in-memory control, not _control(): that re-reads the run from the
+                    # database, once per event, for a dict whose identity never changes.
+                    control = self._controls.get(run_id)
+                    if control is None or control["stop"].is_set() or seq >= max_events:
                         break
                     while not control["running"].wait(timeout=0.25):
                         if control["stop"].is_set():
@@ -393,15 +405,16 @@ class LiveSimulationManager:
                     active_units.add(event["unit_id"])
                     event["alerts_used"] = len(alerts)
                     event["alerts_budget"] = int(self.plants[plant_id]["alert_budget"])
-                    self._append_event(run_id, event)
-                    self._update_current_state(run_id, plant_id, event)
-                    self._watch(run_id, plant_id, event, control)
-                    db.execute(
-                        self.ops,
+                    # One transaction per event (was four commits; ~7.5 events/s cap).
+                    batch: list = []
+                    self._append_event(run_id, event, batch, control)
+                    self._update_current_state(run_id, plant_id, event, batch)
+                    batch.append((
                         """UPDATE simulation_runs SET simulation_time=?, event_count=?,
                                alerts_count=?, units_in_progress=? WHERE run_id=?""",
-                        (event["ts"], seq, len(alerts), len(active_units), run_id),
-                    )
+                        (event["ts"], seq, len(alerts), len(active_units), run_id)))
+                    db.execute_batch(self.ops, batch)
+                    self._watch(run_id, plant_id, event, control)
                     if event.get("alert"):
                         self._open_alert(run_id, plant_id, event)
                         if is_new_alert:
@@ -423,6 +436,12 @@ class LiveSimulationManager:
                 "UPDATE simulation_runs SET status='failed', ended_at=?, error=? WHERE run_id=?",
                 (_utc_now(), str(exc)[:500], run_id),
             )
+        # ADR-064: a window the run never reached has nothing to evaluate.
+        try:
+            outcomes.cancel_open(self.ops, run_id,
+                                 "the simulation run ended before the observation window matured")
+        except Exception as exc:  # noqa: BLE001 - never mask the run's own terminal state
+            print(f"[outcome] could not close windows for {run_id}: {exc}")
 
     def _transform(
         self, record: dict[str, Any], run_id: str, plant_id: str, seed: int,
@@ -492,6 +511,7 @@ class LiveSimulationManager:
 
     def _watch(self, run_id: str, plant_id: str, event: dict[str, Any],
                control: dict[str, Any]) -> None:
+        self._close_matured_outcomes(run_id, plant_id, event, control)
         watch: LineWatch | None = control.get("watch")
         if watch is None:
             return
@@ -576,6 +596,7 @@ class LiveSimulationManager:
                 mode="agent" if _credential_present() else "deterministic",
                 api_base=os.environ.get("PULSETWIN_API_BASE", "http://127.0.0.1:7860"),
                 station_id=firing.station_id,
+                allow_fallback=True,   # ADR-064: a watch investigation must not just die
             )
             db.execute(self.ops,
                        "UPDATE action_proposals SET triage_run_id=? WHERE proposal_id=?",
@@ -607,16 +628,66 @@ class LiveSimulationManager:
             control["watch"].mark_applied(detector, int(station_id))
         return True
 
+    # ------------------------------------------------ ADR-064: outcome monitoring
+    def _tool_baselines(self, plant_id: str) -> dict[str, float]:
+        rules = self._watch_rules.get(plant_id) or {}
+        return (rules.get("tool_wear") or {}).get("baselines") or {}
+
+    def open_outcome(self, run_id: str, proposal: dict[str, Any], action_type: str) -> str | None:
+        """Start the post-action monitoring window for an action just applied to this
+        run. None when this process owns no live run (nothing to observe)."""
+        with self._lock:
+            control = self._controls.get(run_id)
+        if control is None:
+            return None
+        run = self.get(run_id)
+        applied_ts = run.get("simulation_time") or control.get("first_event_ts")
+        if not applied_ts:
+            return None
+        applied_ts = str(applied_ts).replace(" ", "T")[:26]
+        outcome_id = outcomes.open_outcome(
+            self.ops, proposal, action_type, run_id=run_id, applied_ts=applied_ts,
+            applied_seq=int(control["event_seq"]),
+            baselines=self._tool_baselines(proposal["plant_id"]))
+        ends = outcomes._ts(applied_ts) + outcomes.timedelta(
+            seconds=outcomes.POLICY["window_s"])
+        with self._lock:
+            control["outcomes"].append((outcome_id, ends))
+        _audit(self.ops, "outcome_monitoring_started", outcome_id,
+               {"proposal_id": proposal["proposal_id"], "action_type": action_type})
+        return outcome_id
+
+    def _close_matured_outcomes(self, run_id: str, plant_id: str, event: dict[str, Any],
+                                control: dict[str, Any]) -> None:
+        pending = control.get("outcomes")
+        if not pending:
+            return
+        now = outcomes._ts(event["ts"])
+        for outcome_id, ends in list(pending):
+            if now < ends:
+                continue
+            pending.remove((outcome_id, ends))
+            row = db.query_one(self.ops, "SELECT * FROM action_outcomes WHERE outcome_id=?",
+                               (outcome_id,))
+            if row is None or row["status"] != "observing":
+                continue
+            verdict = outcomes.evaluate(self.ops, row, int(control["event_seq"]),
+                                        self._tool_baselines(plant_id))
+            _audit(self.ops, "outcome_evaluated", outcome_id, verdict)
+            print(f"[outcome] {run_id} {outcome_id} {verdict['status']}: {verdict['reason']}")
+
     def _raise_risk(self, event: dict[str, Any], severity: float) -> None:
+        if event.get("calibrated_risk") is None:
+            return  # ADR-063: not yet scored -- a scenario cannot raise a risk that is absent
         threshold = float(self.plants[event["plant_id"]]["budget_threshold"])
         event["calibrated_risk"] = round(min(0.99, float(event.get("calibrated_risk") or 0) + 0.5 * severity), 4)
         if event["calibrated_risk"] >= threshold:
             event["alert"] = 1
             event["event_type"] = "alert"
 
-    def _store_event(self, run_id: str, seq: int, event: dict[str, Any]) -> None:
-        db.execute(
-            self.ops,
+    def _store_event(self, run_id: str, seq: int, event: dict[str, Any],
+                     batch: list | None = None) -> None:
+        _write(self.ops, batch,
             """INSERT INTO simulation_events
                    (run_id, seq, ts, event_type, unit_id, station_id, payload)
                VALUES (?,?,?,?,?,?,?)""",
@@ -625,18 +696,19 @@ class LiveSimulationManager:
              json.dumps(event, separators=(",", ":"))),
         )
 
-    def _append_event(self, run_id: str, event: dict[str, Any]) -> int:
+    def _append_event(self, run_id: str, event: dict[str, Any], batch: list | None = None,
+                      control: dict[str, Any] | None = None) -> int:
         """Allocate a monotonic sequence shared by producer and incident injection."""
-        control = self._control(run_id)
+        control = control or self._control(run_id)
         with self._lock:
             control["event_seq"] += 1
             seq = int(control["event_seq"])
-            self._store_event(run_id, seq, event)
+            self._store_event(run_id, seq, event, batch)
         return seq
 
-    def _update_current_state(self, run_id: str, plant_id: str, event: dict[str, Any]) -> None:
-        db.execute(
-            self.ops,
+    def _update_current_state(self, run_id: str, plant_id: str, event: dict[str, Any],
+                              batch: list | None = None) -> None:
+        _write(self.ops, batch,
             """INSERT INTO unit_current_state
                    (run_id,plant_id,unit_id,current_station,status,risk,variant,lot_id,updated_at)
                VALUES (?,?,?,?,?,?,?,?,?)
@@ -648,8 +720,7 @@ class LiveSimulationManager:
              event["station_state"], event.get("calibrated_risk"), event.get("variant"),
              event.get("lot_id"), event["ts"]),
         )
-        db.execute(
-            self.ops,
+        _write(self.ops, batch,
             """INSERT INTO station_current_state
                    (run_id,plant_id,station_id,state,unit_id,cycle_time_s,risk,updated_at)
                VALUES (?,?,?,?,?,?,?,?)
@@ -666,12 +737,13 @@ class LiveSimulationManager:
         db.execute(
             self.ops,
             """INSERT INTO active_alerts
-                   (alert_id,run_id,plant_id,unit_id,station_id,risk,status,opened_at)
-               VALUES (?,?,?,?,?,?,?,?)
+                   (alert_id,run_id,plant_id,unit_id,station_id,risk,status,opened_at,
+                    opened_wall_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
                ON CONFLICT(alert_id) DO UPDATE SET station_id=excluded.station_id,
                    risk=excluded.risk""",
             (alert_id, run_id, plant_id, event["unit_id"], event["station_id"],
-             event["calibrated_risk"], "OPEN", event["ts"]),
+             event["calibrated_risk"], "OPEN", event["ts"], _utc_now()),
         )
 
     def _trigger_auto_investigation(

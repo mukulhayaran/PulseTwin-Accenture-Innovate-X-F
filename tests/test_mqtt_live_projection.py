@@ -44,6 +44,7 @@ def _database() -> PgLikeSqlite:
             alert_id TEXT PRIMARY KEY, run_id TEXT, plant_id TEXT, unit_id TEXT,
             station_id INTEGER, risk REAL, status TEXT, opened_at TEXT,
             acknowledged_at TEXT, actioned_at TEXT, validated_at TEXT, closed_at TEXT,
+            opened_wall_at TEXT,
             outcome INTEGER, outcome_at TEXT);
         CREATE TABLE containment_decisions (
             id INTEGER PRIMARY KEY, run_id TEXT, target_unit_id TEXT, selected_action TEXT,

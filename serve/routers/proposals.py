@@ -34,11 +34,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from serve import db
+from serve import db, outcomes
 from serve.live_simulation import MITIGATIONS
 from serve.middleware.audit import log_action
 from serve.middleware.auth import require_role
-from serve.routers.triage import ROOT, WORKER_STALE_S, _jobs_dir
+from serve.routers.triage import ROOT, WORKER_STALE_S, _jobs_dir, _worker_is_dead
 
 router = APIRouter()
 
@@ -48,6 +48,8 @@ AGENT_ACTIVE = ("queued", "running")
 AGENT_SERVED = ("verified", "verified_with_redactions")
 SIMULATING = "SIMULATING"
 FORECAST_ACTIVE = ("queued", "running")
+MAX_FORECAST_JOBS = 2
+_FORECAST_JOBS: list[subprocess.Popen] = []
 
 
 def _loads(value: Any) -> Any:
@@ -99,9 +101,19 @@ def start_counterfactual(proposal_id: str, plant_id: str, detector: str, station
     jobs = _jobs_dir()
     jobs.mkdir(parents=True, exist_ok=True)
     out = _forecast_path(proposal_id)
+    # Each job is a CPU-bound physical-twin Monte Carlo (~160 MB). Uncapped, a scenario
+    # that fires repeatedly stacked 32 of them and starved the whole host. Refuse past
+    # the cap with a visible reason -- the UI already says "decide on the evidence alone".
+    # ponytail: per-process cap; a shared queue if serve ever runs >1 worker.
+    _FORECAST_JOBS[:] = [p for p in _FORECAST_JOBS if p.poll() is None]
+    if len(_FORECAST_JOBS) >= MAX_FORECAST_JOBS:
+        out.write_text(json.dumps({"version": 1, "status": "failed", "error":
+                                   f"twin busy: {len(_FORECAST_JOBS)} forecasts already running"}),
+                       encoding="utf-8")
+        return
     out.write_text(json.dumps({"version": 1, "status": "queued"}), encoding="utf-8")
     log = open(jobs / f"{proposal_id}.forecast.log", "w", encoding="utf-8")  # noqa: SIM115
-    subprocess.Popen(
+    _FORECAST_JOBS.append(subprocess.Popen(
         [sys.executable, "-m", "offline.counterfactual", "--plant", plant_id,
          "--detector", detector, "--station", str(station_id),
          "--evidence", json.dumps(evidence), "--budget-threshold", str(budget_threshold),
@@ -109,7 +121,7 @@ def start_counterfactual(proposal_id: str, plant_id: str, detector: str, station
         cwd=str(ROOT),
         env={**os.environ, "OMP_NUM_THREADS": "1", "PYTHONPATH": str(ROOT)},
         stdout=log, stderr=subprocess.STDOUT,
-    )
+    ))
 
 
 def _counterfactual(proposal_id: str) -> dict[str, Any] | None:
@@ -127,7 +139,78 @@ def _counterfactual(proposal_id: str) -> dict[str, Any] | None:
     return data
 
 
-def _view(row: dict[str, Any], run: dict[str, Any] | None) -> dict[str, Any]:
+LIFECYCLE = ("investigating", "forming_hypotheses", "simulating", "comparing", "verifying",
+             "awaiting_approval", "applied", "monitoring", "outcome_evaluated")
+
+
+def lifecycle(status: str, experiments: list[dict[str, Any]], outcome: dict[str, Any] | None,
+              finding: dict[str, Any] | None) -> dict[str, Any]:
+    """The shared lifecycle stage, DERIVED from recorded state -- never guessed.
+
+    A stage the recorded state cannot establish is not marked reached: hypotheses count
+    only when the verified finding carries them, simulation only when an experiment or
+    forecast row exists."""
+    active_exp = any(e["status"] in ("queued", "running") for e in experiments)
+    if outcome and outcome["status"] in outcomes.TERMINAL:
+        phase = "outcome_evaluated"
+    elif outcome:
+        phase = "monitoring"
+    elif status in ("APPLIED", "APPROVED"):
+        phase = "applied"
+    elif status == DECIDABLE:
+        phase = "awaiting_approval"
+    elif status == SIMULATING or active_exp:
+        phase = "simulating"
+    elif status == "INVESTIGATING":
+        phase = "comparing" if experiments else "investigating"
+    else:
+        phase = None
+    terminal = {"REJECTED": "rejected", "NO_ACTION": "no_action", "NO_AGENT": "no_agent",
+                "AGENT_FAILED": "agent_failed", "EFFECTIVE": None}.get(status)
+    if status == "EFFECTIVE" and not outcome:
+        phase = "applied"
+    if terminal and phase is None:
+        # Ended without a decision: keep what was recorded, but no stage is current.
+        phase_reached = "simulating" if experiments else "investigating"
+    else:
+        phase_reached = phase
+    if terminal:
+        phase = None
+    reached = []
+    if phase_reached:
+        for stage in LIFECYCLE[: LIFECYCLE.index(phase_reached) + 1]:
+            if stage == "forming_hypotheses" and not (finding or {}).get("hypotheses"):
+                continue
+            if stage in ("simulating", "comparing") and not experiments and phase_reached != stage:
+                continue
+            reached.append(stage)
+    return {"phase": phase, "reached": reached, "terminal": terminal, "stages": list(LIFECYCLE)}
+
+
+def _extras(ops: Any, row: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """The proposal's linked experiments and its outcome window (ADR-064)."""
+    experiments = db.query_all(
+        ops, "SELECT experiment_id, status, created_at, summary FROM simulation_experiments "
+             "WHERE origin_proposal_id=? OR (origin_run_id IS NOT NULL AND origin_run_id=?) "
+             "ORDER BY created_at DESC LIMIT 5",
+        (row["proposal_id"], row.get("triage_run_id") or ""))
+    exps = [{"experiment_id": e["experiment_id"], "status": e["status"],
+             "created_at": e["created_at"],
+             "verdict": (_loads(e["summary"]) or {}).get("verdict"),
+             "best_label": (_loads(e["summary"]) or {}).get("best_label")}
+            for e in experiments]
+    outcome = db.query_one(ops, "SELECT * FROM action_outcomes WHERE proposal_id=? "
+                                "ORDER BY created_at DESC LIMIT 1", (row["proposal_id"],))
+    if outcome:
+        # Only the JSON columns: `_loads` maps any non-JSON text to None, which blanked
+        # every status and id of a real outcome in this view (caught live, ADR-064).
+        outcome = {k: (_loads(v) if k in ("thresholds", "observed", "versions") else v)
+                   for k, v in outcome.items()}
+    return exps, outcome
+
+
+def _view(row: dict[str, Any], run: dict[str, Any] | None,
+          ops: Any | None = None) -> dict[str, Any]:
     """A proposal as the UI sees it: stored decision + the agent's served finding.
 
     `status` is DERIVED while no human has decided: the agent's own state tells you
@@ -176,7 +259,17 @@ def _view(row: dict[str, Any], run: dict[str, Any] | None) -> dict[str, Any]:
         "decision_note": row.get("decision_note"),
         "applied_at": row.get("applied_at"),
         "effective_at": row.get("effective_at"),
+        **_lifecycle_fields(ops, row, status, finding),
     }
+
+
+def _lifecycle_fields(ops: Any | None, row: dict[str, Any], status: str,
+                      finding: dict[str, Any] | None) -> dict[str, Any]:
+    if ops is None:
+        return {}
+    exps, outcome = _extras(ops, row)
+    return {"experiments": exps, "outcome": outcome,
+            "lifecycle": lifecycle(status, exps, outcome, finding)}
 
 
 def _load(ops: Any, proposal_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -184,11 +277,19 @@ def _load(ops: Any, proposal_id: str) -> tuple[dict[str, Any], dict[str, Any] | 
                        (proposal_id,))
     if row is None:
         raise HTTPException(404, f"unknown proposal '{proposal_id}'")
-    run = None
-    if row.get("triage_run_id"):
-        run = db.query_one(ops, "SELECT status, mode, finding FROM triage_runs "
-                                "WHERE run_id = ?", (row["triage_run_id"],))
-    return row, run
+    return row, _agent_run(ops, row.get("triage_run_id"))
+
+
+def _agent_run(ops: Any, run_id: str | None) -> dict[str, Any] | None:
+    """The proposal's agent run. A dead worker never records its end, so it is reported
+    failed here as in /api/triage/runs -- else the proposal read INVESTIGATING forever."""
+    if not run_id:
+        return None
+    run = db.query_one(ops, "SELECT run_id, created_at, status, mode, finding "
+                            "FROM triage_runs WHERE run_id = ?", (run_id,))
+    if run and run["status"] in AGENT_ACTIVE and _worker_is_dead(run_id, run["created_at"]):
+        run = {**run, "status": "failed"}
+    return run
 
 
 @router.get("/api/proposals")
@@ -203,12 +304,23 @@ def list_proposals(request: Request, plant_id: str = "plant_a", limit: int = 20,
     )
     out = []
     for row in rows:
-        run = None
-        if row.get("triage_run_id"):
-            run = db.query_one(ops, "SELECT status, mode, finding FROM triage_runs "
-                                    "WHERE run_id = ?", (row["triage_run_id"],))
-        out.append(_view(row, run))
-    return {"plant_id": plant_id, "proposals": out, "count": len(out)}
+        out.append(_view(row, _agent_run(ops, row.get("triage_run_id")), ops))
+    by_status: dict[str, int] = {}
+    for p in out:
+        by_status[p["status"]] = by_status.get(p["status"], 0) + 1
+    outcome_status: dict[str, int] = {}
+    for p in out:
+        if p.get("outcome"):
+            k = p["outcome"]["status"]
+            outcome_status[k] = outcome_status.get(k, 0) + 1
+    # Counts over the RETURNED proposals, so a handover can cite them rather than count.
+    return {"plant_id": plant_id, "proposals": out, "count": len(out),
+            "by_status": {k: by_status.get(k, 0) for k in (
+                "PROPOSED", "APPLIED", "APPROVED", "EFFECTIVE", "REJECTED",
+                "INVESTIGATING", "SIMULATING", "NO_ACTION", "AGENT_FAILED", "NO_AGENT")},
+            "outcomes_by_status": {k: outcome_status.get(k, 0) for k in (
+                "observing", "successful", "partially_successful", "no_material_effect",
+                "harmful", "inconclusive", "cancelled")}}
 
 
 class ApproveRequest(BaseModel):
@@ -251,8 +363,18 @@ def approve(proposal_id: str, req: ApproveRequest, request: Request,
                {"action_type": action["action_type"], "params": action.get("params"),
                 "applied_to_twin": applied, "detector": row["detector"],
                 "station_id": row["station_id"]})
+    # ADR-064: structured memory of the decision, then -- only if the action really
+    # reached the simulated twin -- a deterministic monitoring window on its effect.
+    model = (request.app.state.model_info or {}).get(row["plant_id"]) or {}
+    outcomes.record_decision(ops, row, decision="approved", role=role, note=req.note,
+                             action=action, model_version=model.get("model_id"))
+    outcome_id = (request.app.state.live_simulation.open_outcome(
+        row["sim_run_id"], row, action["action_type"]) if applied else None)
+    if outcome_id is None:
+        outcomes._update_record(ops, proposal_id, success_status="not_applied",
+                                confidence="low")
     return {"proposal_id": proposal_id, "status": status, "applied_to_twin": applied,
-            "action": action}
+            "action": action, "outcome_id": outcome_id}
 
 
 @router.post("/api/proposals/{proposal_id}/reject")
@@ -275,4 +397,8 @@ def reject(proposal_id: str, req: RejectRequest, request: Request,
     log_action(request, ops, role, "proposal_rejected", "action_proposal", proposal_id,
                {"was": view["status"], "detector": row["detector"],
                 "station_id": row["station_id"]})
+    # Kept for audit and for later reasoning; `not_applied`, never a failed intervention.
+    model = (request.app.state.model_info or {}).get(row["plant_id"]) or {}
+    outcomes.record_decision(ops, row, decision="rejected", role=role, note=req.note,
+                             action=None, model_version=model.get("model_id"))
     return {"proposal_id": proposal_id, "status": "REJECTED"}

@@ -63,7 +63,13 @@ def run(config_path: str, data_root: Path = DATA_ROOT, hyperparams: dict | None 
     units_per_shift = int(te.sum()) / max(1, n_shifts)
 
     escape_rate = float(ins["escaped"].sum() / max(1, ins["true_defect"].sum()))
-    thr = build_thresholds(y_te, p_te, econ, units_per_shift, escape_rate, n_shifts)
+    # ADR-061: the budget threshold is CHOSEN on validation scores and MEASURED on test.
+    # It used to be chosen on p_te itself -- the published precision/recall at budget were
+    # measured at a threshold picked on the data they were reported on.
+    va = split == "validate"
+    n_shifts_va = fs.meta.loc[va, "day"].nunique() * econ.production["shifts_per_day"]
+    thr = build_thresholds(y_te, p_te, econ, units_per_shift, escape_rate, n_shifts,
+                           p_select=model.predict(fs.X[va]), n_shifts_select=n_shifts_va)
 
     # ---------------------------------------------------------------- ORACLE CEILING
     # Score the SIMULATOR'S OWN latent propensity against the same labels. No model can

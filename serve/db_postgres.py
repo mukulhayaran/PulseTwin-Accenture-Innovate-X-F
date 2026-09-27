@@ -136,6 +136,19 @@ def execute(handle: PostgresHandle, sql: str, params: tuple = ()) -> None:
         con.commit()
 
 
+def execute_batch(handle: PostgresHandle, statements: list[tuple[str, tuple]]) -> None:
+    """One connection, one transaction, one commit (see serve.db.execute_batch)."""
+    with handle._pool.connection() as con:
+        try:
+            with con.cursor() as cur:
+                for sql, params in statements:
+                    cur.execute(_to_pg_params(sql), params)
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+
+
 def ping(database_url: str, timeout_s: float = 2.0) -> tuple[bool, float | None]:
     """Used by /api/system/health. Returns (ok, latency_ms)."""
     import time

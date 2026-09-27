@@ -17,6 +17,9 @@ import { cn } from "@/lib/cn";
 import { Badge, Button, Panel } from "@/components/ui";
 import { ActionRow, ACTION_LABEL, describeParams } from "@/components/copilot/FindingView";
 import { ForecastHeader, ImpactStrip, impactScale } from "@/components/ops/TwinForecast";
+import LifecycleStrip from "@/components/agents/LifecycleStrip";
+import ExperimentComparison from "@/components/agents/ExperimentComparison";
+import OutcomeCard from "@/components/agents/OutcomeCard";
 
 const POLL_MS = 4000;
 
@@ -149,8 +152,13 @@ export default function ProposalInbox({
                 </div>
                 <div className="text-numeric mt-0.5 text-2xs text-ink-faint">
                   fired {p.fired_at.replace("T", " ").slice(0, 19)} · {p.proposal_id}
-                  {p.agent_mode ? ` · ${p.agent_mode} agent` : ""}
+                  {p.agent_mode ? ` · ${p.agent_mode === "agent" ? "AI agent" : "deterministic fallback"}` : ""}
                 </div>
+                {p.lifecycle && (
+                  <div className="mt-2">
+                    <LifecycleStrip lifecycle={p.lifecycle} />
+                  </div>
+                )}
 
                 <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 border-t border-line pt-2 sm:grid-cols-3">
                   {evidence.map(([k, v]) => (
@@ -166,6 +174,26 @@ export default function ProposalInbox({
                 )}
 
                 <ForecastHeader cf={p.counterfactual} nothing={p.do_nothing_forecast} />
+
+                {(p.experiments?.length ?? 0) > 0 && (
+                  <details className="mt-2 border-t border-line pt-2">
+                    <summary className="cursor-pointer text-2xs text-ink-dim">
+                      <span className="font-bold text-ink">Agent simulation experiment</span>{" "}
+                      {p.experiments![0].experiment_id} · {p.experiments![0].status}
+                      {p.experiments![0].verdict ? ` · ${p.experiments![0].verdict.replace(/_/g, " ")}` : ""}
+                      {p.experiments![0].best_label ? ` · best: ${p.experiments![0].best_label}` : ""}
+                    </summary>
+                    <div className="mt-2">
+                      <ExperimentComparison experimentId={p.experiments![0].experiment_id} />
+                    </div>
+                  </details>
+                )}
+
+                {p.outcome && (
+                  <div className="mt-2">
+                    <OutcomeCard outcome={p.outcome} />
+                  </div>
+                )}
 
                 {p.selected_action ? (
                   <p className="mt-2 text-2xs text-ink-dim">

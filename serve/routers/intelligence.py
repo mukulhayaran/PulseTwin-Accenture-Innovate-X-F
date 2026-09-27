@@ -522,10 +522,20 @@ def data_quality(
     _plant(request, plant_id)
     con = request.app.state.main_con
 
+    # One grouped query. It used to pull every reading for the plant into Python and then
+    # run a COUNT(DISTINCT) per station: 2.6-3.6 s per call on SQLite and 3.7 s on the
+    # Postgres stack, measured. Validity is the same VALID_RANGES test, as a CASE.
+    valid_case = " ".join(
+        f"WHEN signal = '{sig}' THEN CASE WHEN value BETWEEN {lo} AND {hi} THEN 1 ELSE 0 END"
+        for sig, (lo, hi) in VALID_RANGES.items())
     rows = db.query_all(
         con,
-        """SELECT station_id, signal, value, provenance
-             FROM station_readings WHERE plant_id = ?""",
+        f"""SELECT station_id, COUNT(*) AS n, COUNT(DISTINCT signal) AS n_signals,
+                   COUNT(DISTINCT unit_id) AS units_seen,
+                   SUM(CASE WHEN value IS NULL THEN 0 {valid_case} ELSE 1 END) AS valid,
+                   SUM(CASE WHEN provenance = 'inferred' THEN 1 ELSE 0 END) AS inferred
+              FROM station_readings WHERE plant_id = ?
+             GROUP BY station_id""",
         (plant_id,),
     )
     stations = {
@@ -541,41 +551,22 @@ def data_quality(
     for d in _active_dropouts(request.app.state.ops, plant_id):
         dark.setdefault(d["station_id"], []).append(d["sensor_type"])
 
-    per_station: dict[int, dict[str, Any]] = {}
-    for r in rows:
-        st = per_station.setdefault(
-            r["station_id"],
-            {"n": 0, "valid": 0, "measured": 0, "inferred": 0, "signals": set()},
-        )
-        st["n"] += 1
-        st["signals"].add(r["signal"])
-        lo, hi = VALID_RANGES.get(r["signal"], (float("-inf"), float("inf")))
-        value = r["value"]
-        if isinstance(value, (int, float)) and value == value and lo <= value <= hi:
-            st["valid"] += 1
-        if r["provenance"] == "inferred":
-            st["inferred"] += 1
-        else:
-            st["measured"] += 1
+    per_station = {int(r["station_id"]): r for r in rows}
 
     weight_sum = DQ_WEIGHTS["completeness"] + DQ_WEIGHTS["validity"]
     out = []
     for station_id, st in sorted(per_station.items()):
-        n = st["n"]
-        n_signals = len(st["signals"])
+        n = int(st["n"])
+        n_signals = int(st["n_signals"])
+        inferred = int(st["inferred"] or 0)
+        measured = n - inferred
         # Completeness: of the readings this station COULD have emitted for the units
         # that actually passed through it, how many are present. Units are counted from
         # the readings themselves rather than from genealogy so a station that never
         # reported at all is absent rather than silently scored 1.0.
-        units_seen = db.query_one(
-            con,
-            "SELECT COUNT(DISTINCT unit_id) AS n FROM station_readings "
-            "WHERE plant_id = ? AND station_id = ?",
-            (plant_id, station_id),
-        )
-        expected = max(1, int((units_seen or {}).get("n") or 0) * max(1, n_signals))
+        expected = max(1, int(st["units_seen"] or 0) * max(1, n_signals))
         completeness = min(1.0, n / expected)
-        validity = st["valid"] / n if n else 0.0
+        validity = int(st["valid"] or 0) / n if n else 0.0
         overall = (
             DQ_WEIGHTS["completeness"] * completeness + DQ_WEIGHTS["validity"] * validity
         ) / weight_sum
@@ -590,9 +581,9 @@ def data_quality(
             "timeliness": None,
             "validity": _round(validity),
             "overall": _round(overall),
-            "measured": st["measured"],
-            "inferred": st["inferred"],
-            "provenance": "inferred" if st["inferred"] > st["measured"] else "measured",
+            "measured": measured,
+            "inferred": inferred,
+            "provenance": "inferred" if inferred > measured else "measured",
             "sensors_dark": sorted(dark.get(station_id, [])),
         })
 
@@ -729,9 +720,16 @@ def shift_summary(
             "shift_events": len(shifts),
             "opened_at_station": windows[0]["bottleneck_station"] if windows else None,
             "closed_at_station": windows[-1]["bottleneck_station"] if windows else None,
+            # A shift with no bottleneck move is ONE station held all shift: agreement
+            # there is n=1, not an accuracy (it read 100% on plant B's steady shift).
             "detector_agreement": (
                 _round(sum(1 for w in correct if w["correct"]) / len(correct), 3)
-                if correct else None
+                if correct and shifts else None
+            ),
+            "detector_agreement_note": (
+                None if not correct or shifts else
+                "No bottleneck move this shift -- one steady station, so agreement is not "
+                "an accuracy measurement; see the whole-run detection accuracy."
             ),
             "moves": [
                 {"at": w["window_start"], "to_station": w["bottleneck_station"],

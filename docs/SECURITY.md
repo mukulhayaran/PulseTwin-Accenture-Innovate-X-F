@@ -36,6 +36,15 @@ that on purpose. The store is also process-local, which is right for the demo's
 store or the stateless JWT below, not a larger dict. Full authentication is still the
 upgrade path, not the current state.
 
+*Session mode closes the header seam (ADR-063).* `PULSETWIN_AUTH_MODE=session` is set in
+`docker-compose.prod.yml` and `render.yaml`. In it, a bare `X-PulseTwin-Role` above
+`supervisor` is a `401` ("requires signing in"). Only a server-issued session grants a
+role, and a header can only lower it. No credential at all is the public floor view
+(supervisor). A spawned GenAI run gets its own session, whose TTL is the worker stale
+limit, through the `PULSETWIN_API_TOKEN` environment variable, never argv. `dev` mode
+keeps the old trust-the-header behaviour for local work and logs a warning at startup.
+Pinned by `tests/test_auth_session_mode.py`.
+
 **Production upgrade path:** replace the header with a JWT issued by the plant's OIDC
 provider (Azure AD, Okta), validated with `python-jose` (already on the import
 allowlist, ADR-033, specifically for this). The swap is small and isolated:
@@ -88,7 +97,7 @@ signed-in role on the wrong view gets `AccessRestricted`, not a redirect.
 |---|---|
 | **none — open** | `/api/health`, `/api/config/plants`, `/api/config/stations`, `/api/stream`, `/api/predict/defect`, `/api/units`, `/api/units/{id}`, `/api/trace/containment/{id}`, `/api/bottleneck/current`, `/api/bottleneck/history`, `/api/stations/stats`, `/api/metrics`, `/api/whatif/stations`, `/api/triage/availability` |
 | `supervisor` (any valid role) | `/api/alerts/escalation-policy`, `/api/system/sensor-dropouts`, `/api/alerts/triage`, `/api/system/data-quality`, `/api/trace/evidence-graph/{id}`; and, via `get_role` rather than `require_role`, `POST /api/feedback` and `POST /api/alerts/{id}/acknowledge` — these accept any role but *record which one acted* |
-| `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag`, `/api/shift/summary`, `POST /api/triage/runs`, `GET /api/triage/runs`, `GET /api/triage/runs/{id}`, `GET /api/triage/threads`, `GET /api/triage/threads/{id}`, `GET /api/triage/intents`, `GET /api/watch/firings`, `GET /api/proposals`, `POST /api/proposals/{id}/approve`, `POST /api/proposals/{id}/reject` (ADR-051) |
+| `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag`, `/api/shift/summary`, `POST /api/triage/runs`, `GET /api/triage/runs`, `GET /api/triage/runs/{id}`, `GET /api/triage/threads`, `GET /api/triage/threads/{id}`, `GET /api/watch/firings`, `GET /api/proposals`, `POST /api/proposals/{id}/approve`, `POST /api/proposals/{id}/reject` (ADR-051) |
 | `leadership` | `/api/economics/roi`, `/api/economics/instrumentation-plan`, `/api/model/health`, `/api/model/registry`, `/api/audit/log`, `/api/audit/actions` |
 
 `system` outranks every row above but gates no endpoint of its own: the retrain, promote

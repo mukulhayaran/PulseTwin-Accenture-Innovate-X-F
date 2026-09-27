@@ -126,7 +126,10 @@ export function Kpi({
     <div
       className={cn(
         "panel-surface relative min-w-0 overflow-hidden px-5 py-4",
-        "transition-colors duration-200 hover:border-line-strong",
+        // A near-invisible top-down wash; the hover is a hairline change, never a
+        // lifted card (ADR-047: cards carry no shadow).
+        "accent-draw bg-[linear-gradient(180deg,#ffffff,#f9fbfe)]",
+        "transition-[border-color,box-shadow,transform] duration-200 hover:border-primary/25 motion-safe:hover:-translate-y-0.5",
         className
       )}
     >
@@ -153,7 +156,7 @@ export function Kpi({
       <div className="mt-2 flex items-end justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-baseline gap-1.5">
-            <span className={cn("text-numeric truncate text-2xl font-bold", TONES[tone])}>
+            <span className={cn("text-numeric value-in truncate text-lg font-bold sm:text-2xl", TONES[tone])}>
               {value}
             </span>
             {unit && <span className="shrink-0 text-xs text-ink-faint">{unit}</span>}

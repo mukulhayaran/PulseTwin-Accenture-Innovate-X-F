@@ -171,6 +171,10 @@ class ModeA(StrictModel):
     humidity_threshold_pct: float = Field(ge=0, le=100)
     paint_batch_weak_fraction: float = Field(ge=0, le=1)
     paint_batch_change_interval_units: int = Field(gt=0)
+    # Mode A intensity multiplier for a STRONG (non-weak) paint batch. 0.06 keeps the
+    # latent batch a real confounder; 1.0 makes batch quality irrelevant. Experiment knob
+    # (offline/experiments/p75_prototype.py) -- the default is the shipped physics.
+    strong_batch_factor: float = Field(default=0.06, ge=0, le=1)
 
     @model_validator(mode="after")
     def check_threshold_above_nominal(self) -> "ModeA":
@@ -225,6 +229,10 @@ class DefectPhysics(StrictModel):
     mode_scale: float = Field(gt=0)
     w_lot: float = Field(ge=0)
     w_noise: float = Field(ge=0)
+    # Per-mode hazard ceiling and intensity exponent (causal_engine.compute_defects).
+    # Defaults are the shipped physics; raising them makes defects more deterministic.
+    hazard_cap: float = Field(default=0.85, gt=0, lt=1)
+    intensity_sharpening: float = Field(default=3.0, gt=0)
 
     base_defect_rate: float = Field(gt=0, lt=1)
     lot_quality_change_interval_units: int = Field(gt=0)

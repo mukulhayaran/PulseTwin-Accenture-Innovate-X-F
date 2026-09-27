@@ -47,6 +47,10 @@ ROLES = ("supervisor", "manager", "leadership", "system")
 
 DEV = "dev"
 JWT = "jwt"
+# ADR-063: the demo posture for anything reachable by other people. Server-issued demo
+# sessions (POST /api/auth/login) grant roles; the X-PulseTwin-Role header can only DROP
+# privilege; no session = the anonymous supervisor floor view. No identity provider needed.
+SESSION = "session"
 
 # How long a fetched JWKS is reused before refetching. Providers rotate signing keys; a
 # short cache keeps a rotation from causing more than one window of 401s, while still
@@ -57,9 +61,14 @@ _JWKS_CACHE: dict[str, tuple[float, dict]] = {}
 
 
 def auth_mode() -> str:
-    """The active posture. Anything other than 'jwt' is dev -- there is no silent third."""
+    """The active posture: 'jwt', 'session' (ADR-063), or 'dev' for anything else."""
     mode = os.environ.get("PULSETWIN_AUTH_MODE", DEV).strip().lower()
-    return JWT if mode == JWT else DEV
+    return mode if mode in (JWT, SESSION) else DEV
+
+
+def header_grants_role() -> bool:
+    """True only in dev: the one posture where a bare role header is a credential."""
+    return auth_mode() == DEV
 
 
 def is_production_auth() -> bool:
@@ -143,10 +152,18 @@ def validate_config() -> list[str]:
     signature is a configuration error, not a warning -- it would accept any token.
     """
     warnings: list[str] = []
+    if auth_mode() == SESSION:
+        warnings.append(
+            "PULSETWIN_AUTH_MODE=session: roles come only from server-issued demo sessions; "
+            "the X-PulseTwin-Role header can drop privilege but never raise it. The demo "
+            "credentials are fixed and documented -- this is not production authentication."
+        )
+        return warnings
     if not is_production_auth():
         warnings.append(
             "PULSETWIN_AUTH_MODE=dev: the X-PulseTwin-Role header is trusted as sent. "
-            "Set PULSETWIN_AUTH_MODE=jwt for any deployment reachable by anyone else."
+            "Set PULSETWIN_AUTH_MODE=session (demo) or jwt for any deployment reachable "
+            "by anyone else."
         )
         return warnings
 

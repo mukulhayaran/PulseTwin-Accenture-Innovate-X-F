@@ -137,6 +137,12 @@ cannot beat persistence has no business shipping.
 
 ## Known failure modes
 
+- **Plant A's alerts cannot be ranked: every one reads 41%.** All 178 test alerts share
+  calibrated risk 0.406, one leaf path through all 32 trees. The fix is in presentation,
+  not retraining. The supervisor alert card no longer prints the score. It shows a risk
+  band (the score is in its tooltip, with this caveat), the minutes to inspection, and the
+  S30 inspection result once the vehicle has left inspection. The result replaces the
+  removed Useful / False-alarm buttons, which wrote a feedback row nothing read.
 - **Latent paint-batch quality is unobservable.** Mode A can only ever be partially
   predicted; roughly 30% of the at-risk population is gated by a variable the model cannot
   see. This is deliberate and is the main reason the oracle sits at 0.48.
@@ -144,7 +150,8 @@ cannot beat persistence has no business shipping.
   About 7% of defects are attributed to it and are genuinely unpredictable.
 - **Low-humidity weeks contain few Mode A examples**, so the model is less reliable in
   dry periods. Drift monitoring should segment by ambient humidity.
-- **Plant B underperforms plant A** (recall 6% vs 28%).
+- **Plant B underperforms plant A** (recall 3.4% vs 27.6% at budget; plant B's threshold,
+  now chosen on validation per ADR-062, alerts only 1.2/shift on test).
   Its Mode B fires on 13.6% of visits rather than 4.5%, so the budget threshold lands
   differently. Reported as measured, not tuned to match.
 - **The alarm budget forces misses by construction.** Six alerts per shift is fewer
@@ -321,6 +328,37 @@ exactly 0.4061 in every block after the first alert.
 Threshold 0.4061 was selected for a budget of **6 alerts/shift** and delivers **8.5** on
 held-out data, a 42% overshoot. Rolling recalibration against a trailing score distribution
 is **NOT IMPLEMENTED**; the threshold is static.
+
+**Correction (ADR-061).** That threshold was not selected on other data and then carried
+to held-out data. `offline/ml/train.py` takes it FROM the test scores (top-k over
+`p_te`). The overshoot is a tie: 178 test units share the k-th score, so all of them alert.
+The published precision (0.354) and recall (0.276) at budget are therefore measured at a
+threshold chosen on the test split. Chosen on validation with a tie-aware rule, the
+champion's top plateau (162 validation units) exceeds the 126-alert budget, and it alerts
+on nothing.
+
+## XGBoost challenger (ADR-061, ADR-062) — evaluated, not promoted
+
+Reports: `docs/XGB_CHALLENGER_plant_a.md`, `docs/XGB_CHALLENGER_plant_b.md`. There is a
+deterministic 30-trial search, calibrated and thresholded on validation only, and scored
+once per run on the untouched test days. Its operating policy is a trailing-window alert
+budget (ADR-062).
+
+| Plant A test (days 22–28) | HGB champion | XGBoost, trailing policy (gated) | XGBoost, static threshold |
+|---|---:|---:|---:|
+| Precision at budget | 0.354 | **0.377** | 0.368 |
+| Recall at budget | **0.276** | 0.254 | 0.298 |
+| PR-AUC (share of oracle 0.481) | 0.256 (53%) | **0.278 (58%)** | 0.278 |
+| Brier | 0.0206 | 0.0207 | 0.0207 |
+| Alerts/shift | 8.48 | **7.33** | 8.81 |
+| Unique scores in the alert cohort | **1** | **154** | 185 |
+
+**Not promoted on plant A.** It fails recall: holding the alert rate near budget costs
+recall the champion only has because it runs 41% over budget. The challenger does fix the
+single-score collapse, so every alert can be ranked. **Not promoted on plant B:** it is
+worse than the champion on precision, recall and PR-AUC. Plant A's test set has been
+looked at three times (a rule amendment after run 1, then a new threshold policy in run
+3), and every run is disclosed in its report.
 
 ## Segment results
 

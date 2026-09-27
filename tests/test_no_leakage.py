@@ -10,7 +10,7 @@ chosen instant, rebuild the features, and assert that units whose prediction tim
 that instant are bit-identical. A feature that reads the future cannot survive it.
 
 This is what protects `lot_trailing_defect_rate` (docs/AUDIT.md H10). Inspection happens
-25-40 minutes after the prediction point, so selecting "the last 100 units of this lot" by
+~9-11 minutes (measured) after the prediction point, so selecting "the last 100 units of this lot" by
 index silently ingests labels that do not exist yet -- invisibly, and while inflating
 PR-AUC enough to trip the spec's own "simulator is too clean" rule.
 """

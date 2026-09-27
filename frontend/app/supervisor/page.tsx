@@ -6,7 +6,7 @@ import {
   AlertStatus, Containment, ContainmentAction, ContainmentDecisionHistory, SimulationMetrics, SimulationRun, SimulationScenario, StationCfg, StreamEvent, TriageRun, UnitDetail, Zone,
   acknowledgeAlert, closeAlert, getAlertStatus, getContainment, getContainmentDecisions, getEscalationPolicy, getRole, getSensorDropouts,
   getActiveSimulation, getSimulation, getSimulationMetrics, getStations, getTriageRun, getUnit, liveSimulationStreamUrl, pauseSimulation,
-  injectSimulationIncident, postFeedback, recordContainmentDecision, resumeSimulation, startSimulation,
+  injectSimulationIncident, recordContainmentDecision, resumeSimulation, startSimulation,
   stopSimulation, streamUrl,
 } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -15,7 +15,6 @@ import SignInGate from "@/components/shared/SignInGate";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import SensorDropoutAlert from "@/components/supervisor/SensorDropoutAlert";
 import EscalationChain from "@/components/supervisor/EscalationChain";
-import AlertTriageTable from "@/components/supervisor/AlertTriageTable";
 import { useAuditToast } from "@/components/shared/AuditToast";
 import {
   AppShell, Badge, Button, DataTable, Panel, SegmentedControl, Select, Skeleton, Stat, Tooltip,
@@ -83,7 +82,14 @@ export default function SupervisorPage() {
   const [connected, setConnected] = useState(false);
   const [selected, setSelected] = useState<UnitDetail | null>(null);
   const [containment, setContainment] = useState<Containment | null>(null);
-  const [voted, setVoted] = useState<Record<string, string>>({});
+  // The alert's real answer: S30 inspection (1 = defect, 0 = clean). Replaces the old
+  // Useful / False-alarm buttons, which wrote a feedback row nothing ever read.
+  const [outcomes, setOutcomes] = useState<Record<string, number>>({});
+  const outcomeAsked = useRef(new Set<string>());
+  // unit -> when it leaves final inspection. Filled from EVERY event in a flush batch: at
+  // speed several vehicles cross inspection in one frame, and `live` keeps only the last.
+  const inspectionExit = useRef(new Map<string, string>());
+  const finalInspectionRef = useRef(-1);
   const [decisionDraft, setDecisionDraft] = useState<{
     unit: Containment["at_risk_units"][number];
     action: ContainmentAction;
@@ -200,12 +206,15 @@ export default function SupervisorPage() {
     setLive((prev) => {
       const next = { ...prev };
       for (const e of batch) {
+        if (e.station_id === finalInspectionRef.current && e.exit_ts) {
+          inspectionExit.current.set(e.unit_id, e.exit_ts);
+        }
         next[e.station_id] = {
           state: e.station_state,
           exit_ts: e.exit_ts,
           unit_id: e.unit_id,
           cycle_time_s: e.cycle_time_s,
-          risk: e.calibrated_risk,
+          risk: e.calibrated_risk ?? undefined,  // null until scored (ADR-063)
         };
       }
       return next;
@@ -216,9 +225,17 @@ export default function SupervisorPage() {
     resumeTs.current = last.ts;
     if (last.alerts_budget) setBudget({ used: last.alerts_used ?? 0, max: last.alerts_budget });
 
-    const newAlerts = batch.filter((e) => e.alert);
+    // Only a scored unit can alert (ADR-063): its risk exists from the prediction cutoff on.
+    const newAlerts = batch.filter((e) => e.alert && e.calibrated_risk != null);
     if (newAlerts.length) {
-      setAlerts((prev) => [...newAlerts.reverse(), ...prev].slice(0, 40));
+      // One card per VEHICLE. A scored unit carries alert=1 on every event from its
+      // prediction to inspection (~10 stations), and appending each one listed the same
+      // vehicle ten times -- thirty, before ADR-063 stopped pre-cutoff alerts.
+      setAlerts((prev) => {
+        const seen = new Set(prev.map((a) => a.unit_id));
+        const fresh = newAlerts.filter((a) => !seen.has(a.unit_id) && seen.add(a.unit_id));
+        return [...fresh.reverse(), ...prev].slice(0, 40);
+      });
     }
     setLastKnownAt(new Date().toISOString());
   }, []);
@@ -230,7 +247,7 @@ export default function SupervisorPage() {
 
   useEffect(() => {
     getStations(plant).then((r) => { setStations(r.stations); setZones(r.zones); });
-    setLive({}); setAlerts([]); setSelected(null); setContainment(null); setSelectedAlertStatus(null);
+    setLive({}); setAlerts([]); setOutcomes({}); outcomeAsked.current.clear(); inspectionExit.current.clear(); setSelected(null); setContainment(null); setSelectedAlertStatus(null);
     setDecisionDraft(null); setDecisionMessage(""); setDecisionError(null);
   }, [plant]);
 
@@ -291,6 +308,9 @@ export default function SupervisorPage() {
       es.addEventListener("inspection_outcome", (ev) => {
         const parsed = JSON.parse((ev as MessageEvent).data) as StreamEvent;
         if (parsed.seq) liveSeq.current = Math.max(liveSeq.current, parsed.seq);
+        if (parsed.actual_defect != null) {
+          setOutcomes((o) => ({ ...o, [parsed.unit_id]: parsed.actual_defect as number }));
+        }
         setContainment((current) => current ? {
           ...current,
           at_risk_units: current.at_risk_units.map((unit) => {
@@ -340,6 +360,9 @@ export default function SupervisorPage() {
     liveSeq.current = 0;
     setLive({});
     setAlerts([]);
+    setOutcomes({});
+    outcomeAsked.current.clear();
+    inspectionExit.current.clear();
     setSelected(null);
     setSelectedAlertStatus(null);
     setContainment(null);
@@ -478,11 +501,24 @@ export default function SupervisorPage() {
     return () => window.removeEventListener("hashchange", consume);
   }, [granted]);
 
-  const vote = async (unitId: string, verdict: string) => {
-    setVoted((v) => ({ ...v, [unitId]: verdict }));
-    await postFeedback(plant, unitId, verdict);
-    show("Action logged");
-  };
+  // Replay carries no outcome event, so ask for an alerted vehicle's result once the
+  // replay clock has passed its exit from the final inspection station -- never before.
+  const finalInspection = useMemo(
+    () => Math.max(-1, ...stations.filter((st) => st.is_inspection).map((st) => st.station_id)),
+    [stations],
+  );
+  useEffect(() => { finalInspectionRef.current = finalInspection; }, [finalInspection]);
+  useEffect(() => {
+    if (!clock) return;
+    for (const { unit_id: unit } of alerts) {
+      const exit = inspectionExit.current.get(unit);
+      if (!exit || clock < exit || outcomeAsked.current.has(unit)) continue;
+      outcomeAsked.current.add(unit);
+      getUnit(unit, plant)
+        .then((d) => d.actual_defect != null && setOutcomes((o) => ({ ...o, [unit]: d.actual_defect as number })))
+        .catch(() => outcomeAsked.current.delete(unit));
+    }
+  }, [clock, alerts, plant]);
 
   const budgetTone =
     budget.used >= budget.max ? "danger" : budget.used >= budget.max - 1 ? "warn" : "ok";
@@ -491,6 +527,7 @@ export default function SupervisorPage() {
   const simDate = useMemo(() => (clock ? clock.slice(0, 10) : ""), [clock]);
 
   const beginDecision = (unit: Containment["at_risk_units"][number]) => {
+    if (unit.action === "INSPECTED") return;  // outcome known; the row offers no Decide
     setDecisionDraft({ unit, action: unit.manual_action ?? unit.action });
     setDecisionMessage("");
     setDecisionOwner("supervisor");
@@ -557,11 +594,16 @@ export default function SupervisorPage() {
       </span>,
     },
     {
-      key: "risk", header: "Risk", align: "right",
+      // Evidence, not risk: the at-risk set shares one score (MODEL_CARD), so a risk column
+      // read 41% on every row. The number of shared factors is what ranks this table.
+      key: "evidence", header: "Evidence", align: "right",
       cell: (u) => (
-        <span className={cn("text-numeric font-bold", u.risk > 0.5 ? "text-danger-fg" : "text-warn-fg")}>
-          {(u.risk * 100).toFixed(0)}%
-        </span>
+        <Tooltip content={`${u.shared_factors.length} shared factors with the flagged vehicle. Model score ${(u.risk * 100).toFixed(0)}% -- shared across the at-risk set, so it does not rank it.`}>
+          <span className="text-numeric cursor-help font-bold text-ink">
+            {u.shared_factors.length}
+            <span className="font-normal text-ink-faint"> links</span>
+          </span>
+        </Tooltip>
       ),
     },
     {
@@ -577,11 +619,16 @@ export default function SupervisorPage() {
     },
     {
       key: "action", header: "Suggested", align: "right",
-      cell: (u) => (
-        <Badge variant={u.action === "HOLD" ? "danger" : u.action === "INSPECT" ? "warn" : "neutral"}>
-          {u.action}
-        </Badge>
-      ),
+      cell: (u) =>
+        u.action === "INSPECTED" ? (
+          u.inspection_outcome === 1
+            ? <Badge variant="danger">Defect at inspection</Badge>
+            : <Badge variant="neutral">Inspected · clean</Badge>
+        ) : (
+          <Badge variant={u.action === "HOLD" ? "danger" : u.action === "INSPECT" ? "warn" : "neutral"}>
+            {u.action}
+          </Badge>
+        ),
     },
     {
       key: "decision", header: "Human decision", align: "right",
@@ -597,9 +644,11 @@ export default function SupervisorPage() {
               </span>
             </div>
           )}
-          <Button variant="outline" size="xs" onClick={() => beginDecision(u)}>
-            {u.manual_action ? "Update" : "Decide"}
-          </Button>
+          {u.action !== "INSPECTED" && (
+            <Button variant="outline" size="xs" onClick={() => beginDecision(u)}>
+              {u.manual_action ? "Update" : "Decide"}
+            </Button>
+          )}
         </div>
       ),
     },
@@ -927,13 +976,14 @@ export default function SupervisorPage() {
                                   // colour + transform only: this repaints at up to
                                   // 1,400 events/sec and must never trigger layout.
                                   "transition-[background-color,border-color,color,transform] duration-300 ease-soft",
-                                  "hover:-translate-y-px hover:brightness-125",
+                                  "group hover:-translate-y-px hover:border-ink-faint hover:brightness-[0.97] focus-visible:border-primary",
+                                  l?.unit_id ? "cursor-pointer" : "cursor-default",
                                   STATE_STYLE[state] ?? STATE_STYLE.idle,
                                   dropout && "ring-2 ring-warn ring-offset-1 ring-offset-canvas"
                                 )}
                               >
                                 {manual && (
-                                  <span aria-hidden className="hatch-inferred absolute inset-0 opacity-70" />
+                                  <span aria-hidden className="hatch-inferred hatch-drift absolute inset-0 opacity-70" />
                                 )}
                                 <span className="relative flex items-start justify-between">
                                   <span className="text-numeric text-xs font-bold">S{s.station_id}</span>
@@ -1216,10 +1266,6 @@ export default function SupervisorPage() {
             )}
           </AnimatePresence>
 
-          {/* ------------------------------------------------------- alert triage */}
-          {/* Selecting a row drives the same unit panel the line map does, so the
-              ranking and the detail view are never looking at different units. */}
-          <AlertTriageTable plant={plant} onSelect={openUnit} refreshKey={retryNonce} atTs={clock} />
         </div>
 
         {/* ------------------------------------------------------------ alert feed */}
@@ -1237,7 +1283,7 @@ export default function SupervisorPage() {
         >
           {alerts.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-12 text-center">
-              <span className="flex size-8 items-center justify-center rounded-full border border-ok/30 bg-ok/10 text-ok-fg">
+              <span className="breathe flex size-8 items-center justify-center rounded-full border border-ok/30 bg-ok/10 text-ok-fg">
                 ✓
               </span>
               <p className="text-xs text-ink-dim">No alerts yet</p>
@@ -1262,13 +1308,17 @@ export default function SupervisorPage() {
                     // card turned a busy feed into one undifferentiated red block.
                     className={cn(
                       "border border-l-2 border-line bg-canvas p-2.5",
-                      riskBand(a.calibrated_risk).tone === "danger" ? "border-l-danger" : "border-l-warn"
+                      riskBand(a.calibrated_risk ?? 0).tone === "danger" ? "border-l-danger" : "border-l-warn"
                     )}
                   >
                     <div className="flex items-baseline justify-between gap-2">
-                      <Badge variant={riskBand(a.calibrated_risk).tone}>
-                        {riskBand(a.calibrated_risk).label}
-                      </Badge>
+                      <Tooltip content={`Model score ${((a.calibrated_risk ?? 0) * 100).toFixed(0)}%. Flagged units on this plant largely share one score -- the model finds the at-risk set but cannot rank within it (docs/MODEL_CARD.md), so the score is not repeated on every card.`}>
+                        <span className="cursor-help">
+                          <Badge variant={riskBand(a.calibrated_risk ?? 0).tone}>
+                            {riskBand(a.calibrated_risk ?? 0).label}
+                          </Badge>
+                        </span>
+                      </Tooltip>
                       <span className="text-numeric text-2xs text-ink-faint">{a.ts.slice(11, 19)}</span>
                     </div>
                     <div className="text-numeric mt-0.5 truncate text-xs text-ink">
@@ -1278,29 +1328,20 @@ export default function SupervisorPage() {
                       </span>
                     </div>
                     <div className="text-numeric text-2xs text-ink-faint">
-                      at S{a.station_id} · cycle {a.cycle_time_s.toFixed(0)}s ·{" "}
-                      {(a.calibrated_risk * 100).toFixed(0)}%
+                      flagged at S{a.station_id}
+                      {a.lead_time_min != null && ` · inspection ${a.lead_time_min.toFixed(0)} min later`}
                     </div>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       <Button variant="outline" size="xs" onClick={() => openUnit(a.unit_id)}>
                         Show units ↗
                       </Button>
-                      <Button
-                        variant={voted[a.unit_id] === "useful" ? "ok" : "ghost"}
-                        size="xs"
-                        aria-label="Mark alert useful"
-                        onClick={() => vote(a.unit_id, "useful")}
-                      >
-                        Useful
-                      </Button>
-                      <Button
-                        variant={voted[a.unit_id] === "false_alarm" ? "danger" : "ghost"}
-                        size="xs"
-                        aria-label="Mark alert a false alarm"
-                        onClick={() => vote(a.unit_id, "false_alarm")}
-                      >
-                        False alarm
-                      </Button>
+                      {outcomes[a.unit_id] === 1 ? (
+                        <Badge variant="danger">Defect confirmed at inspection</Badge>
+                      ) : outcomes[a.unit_id] === 0 ? (
+                        <Badge variant="neutral">No defect · false alarm</Badge>
+                      ) : (
+                        <span className="self-center text-2xs text-ink-faint">Awaiting inspection</span>
+                      )}
                     </div>
                   </motion.article>
                 ))}

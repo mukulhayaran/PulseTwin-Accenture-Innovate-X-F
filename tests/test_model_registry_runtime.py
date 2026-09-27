@@ -21,7 +21,6 @@ if not (ROOT / "artifacts" / "pulsetwin.db").exists():
     pytest.skip("artifacts not built", allow_module_level=True)
 
 from serve import db as servedb  # noqa: E402
-from serve import main as servemain  # noqa: E402
 from serve.main import app  # noqa: E402
 
 

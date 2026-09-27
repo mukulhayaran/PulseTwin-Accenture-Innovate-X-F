@@ -335,3 +335,26 @@ def test_a_run_whose_worker_went_silent_reports_failed(client, tmp_path, monkeyp
 
     hb.unlink()  # no heartbeat at all: fall back to the row's age -- still fresh here
     assert client.get(f"/api/triage/runs/{run_id}", headers=h).json()["status"] == "queued"
+
+
+def test_a_dead_worker_does_not_lock_its_thread(monkeypatch, tmp_path):
+    """A worker killed outright (container recreated, OOM) never records its end. Its run
+    must stop counting as "in flight", or the conversation refuses every later turn."""
+    from serve import db as sdb
+    from serve.routers import triage as TR
+
+    class NoSpawn:
+        def __init__(self, *a, **kw):
+            pass
+
+    monkeypatch.setenv("PULSETWIN_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(TR.subprocess, "Popen", NoSpawn)
+    ops = sdb.open_ops_db()
+    kw = dict(plant_id="plant_a", question="q", intent="ask", role="manager",
+              acting_role="manager", mode="deterministic", api_base="http://x")
+    first = TR.start_triage_run(ops, **kw)
+    with pytest.raises(ValueError, match="in flight"):         # alive: still one at a time
+        TR.start_triage_run(ops, thread_id=first["thread_id"], **kw)
+    monkeypatch.setattr(TR, "WORKER_STALE_S", -1.0)             # now its heartbeat is stale
+    second = TR.start_triage_run(ops, thread_id=first["thread_id"], **kw)
+    assert second["turn_index"] == 1

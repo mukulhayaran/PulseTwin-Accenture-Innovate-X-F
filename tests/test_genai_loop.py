@@ -8,6 +8,7 @@ what the verifier's guarantees actually rest on.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -114,7 +115,10 @@ def _run(client, api, registry, **kw):
 
 # --------------------------------------------------------------------------- basics
 def test_finishes_and_returns_content(registry, api) -> None:
-    out = _run(StubClient([_final('{"summary":"s"}')]), api, registry)
+    # A toolless answer is re-asked: once as a rung degradation when the run starts on a
+    # response_format rung (a fresh capability cache), once more as the evidence-first
+    # nudge. Enough identical answers for either starting rung.
+    out = _run(StubClient([_final('{"summary":"s"}')] * 3), api, registry)
     assert out.status == "finished"
     assert out.content == '{"summary":"s"}'
     assert out.records == []
@@ -239,8 +243,43 @@ def test_provider_error_is_classified_not_raised(registry, api) -> None:
         def create(self, **kwargs):
             raise Boom("provider exploded")
 
-    out = _run(Failing([]), api, registry, classify_error=lambda e: "provider_timeout")
-    assert out.status == "failed" and out.error == "provider_timeout"
+    out = _run(Failing([]), api, registry, classify_error=lambda e: "provider_error")
+    assert out.status == "failed" and out.error == "provider_error"
+
+
+def test_a_dropped_connection_is_retried_not_fatal(registry, api, monkeypatch) -> None:
+    """One dropped response used to throw away a whole run (provider_unreachable after six
+    good tool calls). The same request is retried; a 4xx is not."""
+    monkeypatch.setattr(config, "TRANSIENT_BACKOFF_S", 0.0)
+
+    class Flaky(StubClient):
+        drops = 1
+
+        def create(self, **kwargs):
+            if self.drops:
+                self.drops -= 1
+                raise ConnectionError("server disconnected")
+            return super().create(**kwargs)
+
+    out = _run(Flaky([_final("{}")]), api, registry,
+               classify_error=lambda e: "provider_unreachable")
+    assert out.error != "provider_unreachable"
+    assert out.degradations == ["provider_unreachable->retry_1"]
+
+
+def test_a_persistent_outage_still_fails_after_bounded_retries(registry, api,
+                                                               monkeypatch) -> None:
+    monkeypatch.setattr(config, "TRANSIENT_BACKOFF_S", 0.0)
+    calls = []
+
+    class Down(StubClient):
+        def create(self, **kwargs):
+            calls.append(1)
+            raise ConnectionError("no route")
+
+    out = _run(Down([]), api, registry, classify_error=lambda e: "provider_unreachable")
+    assert out.status == "failed" and out.error == "provider_unreachable"
+    assert len(calls) == 1 + config.MAX_TRANSIENT_RETRIES
 
 
 def test_non_provider_exception_propagates(registry, api) -> None:
@@ -332,3 +371,56 @@ def test_a_records_agent_field_defaults_to_empty(registry, api) -> None:
     ])
     out = _run(client, api, registry)
     assert out.records[0].agent == ""
+
+
+
+def test_the_closing_turn_answers_without_tools_instead_of_timing_out(registry, api) -> None:
+    """A live shift_intel run made 24 tool calls and ended with nothing at the wall-clock
+    cap. On the last iteration (or near the cap) with evidence in hand, the request goes
+    out with NO tools, so the model can only answer."""
+    seen: list[dict] = []
+
+    class Recording(StubClient):
+        def create(self, **kwargs):
+            seen.append(kwargs)
+            return super().create(**kwargs)
+
+    client = Recording([_tool_turn(("get_bottleneck_current", {"plant_id": "plant_a"})),
+                        _final("{}")])
+    out = _run(client, api, registry, max_iterations=2)
+    assert "tools" in seen[0] and "tools" not in seen[1] and "tool_choice" not in seen[1]
+    assert any("Do not call any more tools" in str(m) for m in seen[1]["messages"])
+    assert out.error != "iteration_cap"
+
+
+def test_no_closing_turn_before_any_evidence(registry, api) -> None:
+    seen: list[dict] = []
+
+    class Recording(StubClient):
+        def create(self, **kwargs):
+            seen.append(kwargs)
+            return super().create(**kwargs)
+
+    _run(Recording([_final("{}")]), api, registry, max_iterations=1)
+    assert "tools" in seen[0]      # nothing gathered yet: the first turn keeps its tools
+
+
+def test_a_provider_call_that_never_completes_is_bounded(registry, api, monkeypatch) -> None:
+    """The SDK timeout is per READ; OpenRouter trickles whitespace on a slow request, so it
+    never fired and two live workers sat 14+ minutes in one call. The loop now enforces a
+    TOTAL deadline per call, which is a transient `provider_timeout`: retried, then failed."""
+    import threading
+    release = threading.Event()
+
+    class Hanging(StubClient):
+        def create(self, **kwargs):
+            release.wait(5)
+            return _final("{}").__class__([])
+
+    monkeypatch.setattr(L.config, "TRANSIENT_BACKOFF_S", 0.01)
+    t0 = time.monotonic()
+    # the deadline is the RUN's remaining budget, so a 1.5 s cap ends it in seconds
+    out = _run(Hanging([]), api, registry, classify_error=lambda e: None, wallclock_cap_s=1.5)
+    release.set()
+    assert out.status == "failed" and out.error in ("provider_timeout", "wallclock_cap")
+    assert time.monotonic() - t0 < 5

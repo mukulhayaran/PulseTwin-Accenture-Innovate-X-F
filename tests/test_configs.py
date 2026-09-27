@@ -402,3 +402,37 @@ def test_triage_severity_thresholds_are_ordered(alert_policies) -> None:
 def test_low_confidence_can_never_downgrade_a_critical(alert_policies) -> None:
     """A sensor problem is a reason to look harder, not less."""
     assert alert_policies["triage"]["low_confidence"]["never_downgrades"] == "critical"
+
+
+def test_serve_mirrors_of_alert_policies_match_the_yaml() -> None:
+    """serve/ cannot parse YAML (the import wall), so these are hand-kept copies of
+    configs/alert_policies.yaml -- CLAUDE.md names this the pair most likely to drift."""
+    import yaml
+
+    from serve.routers import alerts_mgmt as A, intelligence as I
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    pol = yaml.safe_load((root / "configs" / "alert_policies.yaml").read_text(encoding="utf-8"))
+    esc = pol["escalation"]
+    assert A.ESCALATION_LEVELS == [
+        {k: lvl[k] for k in ("level", "name", "response_window_min")} for lvl in esc["levels"]]
+    assert A.CONTAINMENT_AT_RISK_THRESHOLD == esc["containment_escalation"]["at_risk_threshold"]
+    assert A.CONTAINMENT_SKIP_TO_LEVEL == esc["containment_escalation"]["skip_to_level"]
+    assert I.CONTAINMENT_ESCALATION_PEERS == esc["containment_escalation"]["at_risk_threshold"]
+    sev = pol["triage"]["severity_x_threshold"]
+    assert (I.SEVERITY_CRITICAL, I.SEVERITY_INVESTIGATE, I.SEVERITY_MONITOR) == (
+        sev["critical"], sev["investigate"], sev["monitor"])
+
+
+def test_experiment_limits_mirror_the_deployment_yaml() -> None:
+    """ADR-064: serve/experiment_catalog.py::LIMITS is the hand-kept copy of
+    configs/deployment.yaml `simulation_experiments:`."""
+    from pathlib import Path
+
+    import yaml
+
+    from serve.experiment_catalog import LIMITS
+    root = Path(__file__).resolve().parents[1]
+    cfg = yaml.safe_load((root / "configs" / "deployment.yaml").read_text(encoding="utf-8"))
+    assert {k: float(v) for k, v in cfg["simulation_experiments"].items()} == \
+        {k: float(v) for k, v in LIMITS.items()}

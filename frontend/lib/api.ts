@@ -33,7 +33,10 @@ export interface StreamEvent {
   /** The station's state BEFORE it took this unit (build_artifact writes prior_state). */
   station_state: string;
   sensor_tier: "full" | "manual";
-  calibrated_risk: number;
+  /** Null until the unit has left the prediction-cutoff station (ADR-063). */
+  calibrated_risk: number | null;
+  prediction_ts?: string | null;
+  lead_time_min?: number | null;
   alert: number;
   provenance: Record<string, string>;
   alerts_used?: number;
@@ -74,7 +77,10 @@ export interface ContainmentUnit {
   risk: number;
   shared_factors: string[];
   explanation: string;
-  action: ContainmentAction;
+  /** INSPECTED: already through final inspection as of the view's clock -- see the outcome. */
+  action: ContainmentAction | "INSPECTED";
+  /** 1 defect / 0 clean, only once the vehicle has left final inspection. */
+  inspection_outcome?: number | null;
   manual_action: ContainmentAction | null;
   decision_recorded_at: string | null;
   decision_status?: string | null;
@@ -291,11 +297,6 @@ export function setRole(role: Role): void {
   viewRole = roleAtLeast(role, ceiling) ? ceiling : role;
 }
 
-/** Drop the page-pinned persona and fall back to the session's own role. */
-export function clearViewRole(): void {
-  viewRole = null;
-}
-
 // serve/routers/auth_demo.py -- checked server-side (not a client-JS credential check
 // anyone could read out of the bundle) and now issuing a session token the API validates
 // on every request that carries it.
@@ -403,7 +404,6 @@ async function get<T>(path: string): Promise<T> {
 
 export const getStations = (plant: string) =>
   get<{ stations: StationCfg[]; zones: Zone[] }>(`/api/config/stations?plant_id=${plant}`);
-export const getPlants = () => get<any[]>("/api/config/plants");
 export const getHealth = () => get<any>("/api/health");
 function temporalQuery(plant: string, atTs?: string | null, runId?: string | null): string {
   const q = new URLSearchParams({ plant_id: plant });
@@ -452,16 +452,6 @@ export const getStationStats = (plant: string) => get<any[]>(`/api/stations/stat
 export const getRoi = (plant: string, scenario = "base") =>
   get<any>(`/api/economics/roi?plant_id=${plant}&scenario=${scenario}`);
 
-export async function postFeedback(plant: string, unitId: string, verdict: string) {
-  const base = await apiBase();
-  const r = await fetch(`${base}/api/feedback`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ plant_id: plant, unit_id: unitId, verdict }),
-  });
-  if (!r.ok) throw new Error(`/api/feedback -> ${r.status}`);
-}
-
 export async function streamUrl(
   plant: string,
   speed: number,
@@ -471,7 +461,9 @@ export async function streamUrl(
   // from_ts seeks via the stream_index table (minute granularity), so resuming after a
   // pause continues the shift rather than restarting it. Omitted entirely when absent --
   // an empty from_ts would seek to offset 0 and silently replay from the beginning.
-  const seek = fromTs ? `&from_ts=${encodeURIComponent(fromTs)}` : "";
+  // A fresh start (no resume point) skips the shift's quiet opening and begins just
+  // before its first alert, so the alert feed is not empty for ~5 minutes at 10x.
+  const seek = fromTs ? `&from_ts=${encodeURIComponent(fromTs)}` : "&start=first_alert";
   return `${base}/api/stream?plant_id=${plant}&speed=${speed}${seek}`;
 }
 
@@ -684,6 +676,21 @@ export interface TriageFinding {
   knowledge_citations?: TriageKnowledgeCitation[];
   // ADR-051: served only when every claim they cite verified.
   proposed_actions?: ProposedAction[];
+  // ADR-064: why the investigation stopped, and the bounded hypotheses it tested.
+  decision?: FindingDecision | "";
+  hypotheses?: FindingHypothesis[];
+}
+
+export type FindingDecision =
+  | "recommend" | "insufficient_evidence" | "unsupported_intervention"
+  | "simulator_unavailable" | "no_improvement" | "too_uncertain" | "engineering_review";
+
+export interface FindingHypothesis {
+  id: string;
+  statement: string;
+  status: "supported" | "rejected" | "untested";
+  claim_ids: string[];
+  experiment_id?: string | null;
 }
 
 export type ActionType =
@@ -863,6 +870,131 @@ export type ProposalStatus =
   | "INVESTIGATING" | "SIMULATING" | "PROPOSED" | "NO_ACTION" | "AGENT_FAILED" | "NO_AGENT"
   | "APPROVED" | "APPLIED" | "EFFECTIVE" | "REJECTED";
 
+// ------------------------------------------------------- ADR-064: experiments + outcomes
+/** An interval over simulated seeds. Always provenance "inferred": never measured. */
+export interface SimInterval {
+  mean: number; ci_low: number; ci_high: number; p10: number; p90: number; n: number;
+  provenance: "inferred";
+}
+
+export type SimMetric =
+  | "throughput_uph" | "wip_mean" | "blocked_pct" | "starved_pct" | "down_pct"
+  | "downtime_s" | "expected_defects" | "alerts";
+
+export interface ExperimentScenario {
+  scenario_id: string;
+  label: string;
+  intervention_type: string | null;
+  params: Record<string, number | string>;
+  is_baseline: boolean;
+  supported: boolean;
+  reason: string | null;
+  simulated_as: string | null;
+  seeds_ok: number;
+  seeds_failed: number;
+  metrics: Partial<Record<SimMetric, SimInterval>>;
+  vs_baseline: (Partial<Record<SimMetric, SimInterval>> & { paired_seeds?: number }) | null;
+  bottleneck_station: number | null;
+  bottleneck_share: number | null;
+  expected_value_usd_per_hour: (SimInterval & { source: string }) | null;
+  intervention_cost_usd: number | null;
+  intervention_cost_reason: string | null;
+}
+
+export interface SimulationExperiment {
+  experiment_id: string;
+  status: "queued" | "running" | "done" | "failed" | "cancelled" | "timeout";
+  error: string | null;
+  plant_id: string;
+  station_id: number;
+  objective: string;
+  profile: string | null;
+  origin_run_id: string | null;
+  origin_proposal_id: string | null;
+  created_at: string;
+  runtime_s: number | null;
+  simulator_version: string | null;
+  method: "fresh_simulation";
+  method_detail: string;
+  horizon_s: number;
+  seeds: number[];
+  seed_count: number;
+  incident: Record<string, unknown> | null;
+  progress: { results_done: number; results_failed: number; results_total: number };
+  verdict: "improved" | "too_uncertain" | "no_improvement" | "no_scenarios" | null;
+  best_label: string | null;
+  scenarios: ExperimentScenario[];
+  assumptions: string[];
+}
+
+export interface ExperimentListItem {
+  experiment_id: string; created_at: string; station_id: number; objective: string;
+  status: SimulationExperiment["status"]; profile: string | null; seed_count: number;
+  origin_run_id: string | null; origin_proposal_id: string | null;
+  verdict: SimulationExperiment["verdict"]; best_label: string | null;
+  runtime_s: number | null;
+}
+
+export const getSimulationExperiment = (id: string) =>
+  get<SimulationExperiment>(`/api/simulation-experiments/${encodeURIComponent(id)}`);
+
+export const listSimulationExperiments = (
+  plant: string, opts: { originRunId?: string; originProposalId?: string; limit?: number } = {},
+) => {
+  const q = new URLSearchParams({ plant_id: plant, limit: String(opts.limit ?? 10) });
+  if (opts.originRunId) q.set("origin_run_id", opts.originRunId);
+  if (opts.originProposalId) q.set("origin_proposal_id", opts.originProposalId);
+  return get<{ experiments: ExperimentListItem[]; count: number }>(
+    `/api/simulation-experiments?${q.toString()}`);
+};
+
+export type OutcomeStatus =
+  | "pending" | "observing" | "successful" | "partially_successful"
+  | "no_material_effect" | "harmful" | "inconclusive" | "cancelled";
+
+export interface ActionOutcome {
+  outcome_id: string;
+  proposal_id: string;
+  experiment_id: string | null;
+  station_id: number;
+  intervention_type: string;
+  status: OutcomeStatus;
+  metric: string;
+  direction: string;
+  applied_at: string | null;
+  window_s: number | null;
+  window_ends_at: string | null;
+  baseline_value: number | null;
+  expected_change: number | null;
+  expected_ci_low: number | null;
+  expected_ci_high: number | null;
+  expected_source: string | null;
+  actual_value: number | null;
+  actual_change: number | null;
+  prediction_error: number | null;
+  n_events_before: number | null;
+  n_events_after: number | null;
+  reason: string | null;
+  evaluated_at: string | null;
+}
+
+export type LifecycleStage =
+  | "investigating" | "forming_hypotheses" | "simulating" | "comparing" | "verifying"
+  | "awaiting_approval" | "applied" | "monitoring" | "outcome_evaluated";
+
+export interface Lifecycle {
+  phase: LifecycleStage | null;
+  reached: LifecycleStage[];
+  terminal: string | null;
+  stages: LifecycleStage[];
+}
+
+export const getActionOutcomes = (plant: string, limit = 20) =>
+  get<{ outcomes: ActionOutcome[]; count: number;
+        accuracy: { outcomes: number; evaluated: number; success_rate: number | null;
+                    with_projection: number; mean_abs_projection_error: number | null } }>(
+    `/api/learning/outcomes?plant_id=${plant}&limit=${limit}`);
+
 export interface ActionProposal {
   proposal_id: string;
   sim_run_id: string;
@@ -886,6 +1018,12 @@ export interface ActionProposal {
   decision_note: string | null;
   applied_at: string | null;
   effective_at: string | null;
+  // ADR-064
+  experiments?: { experiment_id: string; status: SimulationExperiment["status"];
+                  created_at: string; verdict: SimulationExperiment["verdict"];
+                  best_label: string | null }[];
+  outcome?: ActionOutcome | null;
+  lifecycle?: Lifecycle;
 }
 
 // ADR-055: the paired Monte Carlo fork of the physical twin behind every proposal.
@@ -1040,30 +1178,6 @@ export interface DataQuality {
   weights: Record<string, number>;
 }
 
-export interface EvidenceNode {
-  id: string;
-  kind: "station" | "signal" | "line_factor" | "window" | "fingerprint"
-      | "risk" | "unit_group" | "inspection";
-  label: string;
-  [key: string]: unknown;
-}
-
-export interface EvidenceEdge {
-  from: string; to: string; relation: string;
-  evidence_source: string; window: string | null;
-  provenance: "measured" | "inferred";
-  confidence: number | null; model: string | null;
-}
-
-export interface EvidenceGraph {
-  plant_id: string; unit_id: string;
-  nodes: EvidenceNode[]; edges: EvidenceEdge[];
-  causality: "association";
-  causality_statement: string;
-  containment_window_min: number;
-  method: string;
-}
-
 export const getAlertTriage = (plant: string, limit = 50, atTs?: string) =>
   get<AlertTriage>(
     `/api/alerts/triage?plant_id=${plant}&limit=${limit}` +
@@ -1076,8 +1190,4 @@ export const getShiftSummary = (plant: string) =>
 export const getDataQuality = (plant: string) =>
   get<DataQuality>(`/api/system/data-quality?plant_id=${plant}`);
 
-export const getEvidenceGraph = (unitId: string, plant: string) =>
-  get<EvidenceGraph>(
-    `/api/trace/evidence-graph/${encodeURIComponent(unitId)}?plant_id=${plant}`
-  );
 

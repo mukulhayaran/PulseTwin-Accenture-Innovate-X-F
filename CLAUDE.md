@@ -33,7 +33,13 @@ standing gotchas that have each cost a debugging session.
 1. **Do not tune the model to raise PR-AUC.** 0.256 is 53% of a *measured* oracle ceiling
    of 0.481. The brief's 0.75–0.88 band is arithmetically unreachable given its own
    requirement of unobservable causes (`docs/AUDIT.md` §B34). The oracle framing is the
-   stronger claim.
+   stronger claim. Tuning happens ONLY as a gated challenger
+   (`offline/ml/xgb_challenger.py`, ADR-061): tuned on train/validate, scored once on test,
+   promoted only if every gate passes. It was NOT promoted on either plant (plant A fails
+   recall under its trailing-window alert policy, ADR-062; plant B is worse outright).
+   Plant A's test set has been looked at three times, every run is disclosed, and each
+   further run is one more look, so do not re-run it to shop for a pass. Budget
+   thresholds are chosen on VALIDATION (`train.py`, ADR-062), never on test.
 2. **Negative results stay published.** Soft sensors reconstruct ambient-driven signals
    (R² ≈ 0.99) and not tool-wear-driven ones (R² ≈ 0). Three of four retrofit candidates
    score zero uplift. Both are findings, not gaps — see ADR-030, ADR-031.
@@ -151,19 +157,22 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 | Artifact build | `offline/build_artifact.py` (16 tables) | ADR-027, ADR-032 |
 | Runtime API | `serve/main.py` (+ 9 routers) — 37 endpoints | `docs/ARCHITECTURE.md` |
 | Numpy scorer | `serve/scorer.py` — decision-path, NOT SHAP | ADR-015 |
+| XGBoost challenger | `offline/ml/xgb_challenger.py` → `serve/xgb_scorer.py` (numpy walk of Booster JSON) · `serve/model_loader.py` picks the champion from `artifacts/model_selection_<plant>.json` · `serve/rolling_threshold.py` trailing-window alert budget · `offline/champion.py` applies a promotion to baked artifacts + live twin | **ADR-061, ADR-062**, `docs/XGB_CHALLENGER.md` |
 | MQTT ingestion | `ingestion/` — separate deployable | `docs/PRODUCTION_ARCHITECTURE.md` |
 | Model monitoring (read-only) | `mlops/{drift_detector,fallback}.py` — run offline; retraining removed (ADR-053) | `docs/MLOPS_LIFECYCLE.md` |
 | **GenAI triage** | `genai/` — separate deployable, never imported by `serve/` | **ADR-037** |
 | Multi-agent orchestration | `genai/orchestrator.py` — `incident` only, 3 specialists + synthesizer | **ADR-045** |
 | Knowledge retrieval | `offline/build_knowledge_index.py` + `serve/knowledge_index.py` — lexical TF-IDF, no embeddings | **ADR-046** |
 | Proactive watch + proposals | `serve/watch.py` (detectors) · `serve/routers/proposals.py` (human approve/reject) · `offline/build_watch_rules.py` (YAML → `artifacts/watch_rules_<plant>.json`) | **ADR-051** |
+| Dynamic simulation experiments | `serve/experiment_catalog.py` (the ONLY allowed interventions + limits) · `serve/routers/experiments.py` (API, budgets, reaping) · `offline/sim_experiment.py` (detached worker: paired seeds on isolated twin copies) | **ADR-064** |
+| Outcome learning | `serve/outcomes.py` (deterministic monitoring + classification, thresholds in `configs/alert_policies.yaml outcome_evaluation:`) · `serve/routers/learning.py` (outcomes, structured similar-incident search) | **ADR-064** |
 | Frontend | `frontend/app/{overview,supervisor,manager,leadership,ops,copilot}` + `components/ui/` | §7 below, **ADR-047** |
 
 **`genai/` file roles** (all provider-independent except `client.py`):
 `config.py` model ID + caps · `client.py` the ONLY `openai` import · `api_client.py`
 stdlib HTTP to PulseTwin's own API · `tools.py` the closed registry = the data-egress
-allowlist · `loop.py` the agent loop · `orchestrator.py` Coordinator → Specialists →
-Synthesizer for `incident` (ADR-045) · `verifier.py` **the deterministic gate**, now also
+allowlist · `loop.py` the agent loop · `orchestrator.py` Coordinator → Specialists → Simulation planner →
+Synthesizer for `incident` (ADR-045, ADR-064) · `verifier.py` **the deterministic gate**, now also
 checking `KnowledgeCitation` substrings (ADR-046) · `offline_triage.py` no-LLM path that
 passes the same gate · `store.py` ops-DB writes · `triage.py` CLI entry.
 
@@ -199,6 +208,7 @@ it in both. `configs/alert_policies.yaml`'s escalation levels and
 make generate            # simulate both plants
 make train               # train models (per-plant)
 make build-artifact      # bake SQLite + model_<plant>.npz + stream JSONL
+python -m offline.ml.xgb_challenger --config configs/plant_a.yaml [--smoke]  # ADR-061 gated challenger
 make build-knowledge-index  # bake the engineering-knowledge TF-IDF index (ADR-046)
 python -m offline.build_watch_rules  # bake configs/*.yaml `watch:` + stream baselines (ADR-051)
 make test                # pytest tests/ -v   (611 tests — it runs real models; ~18 min
@@ -377,6 +387,15 @@ Read this before debugging anything. Every line below was paid for once.
   with `netstat -ano | grep 7860`; if the PID is invisible, use a different port.
 - **`make` is not installed.** Use the raw commands in §5.
 
+### Determinism and CPU (ADR-065)
+- **Any sort whose ORDER is used must be `kind="stable"`.** numpy's default argsort orders
+  ties differently across versions and CPUs; that alone made the simulator stop
+  reproducing its own shipped data.
+- **Never `statistics.stdev`/`mean` in a per-event path.** It is exact-rational and was the
+  largest cost of a twin replica. `feature_contract.py` uses `math.fsum`.
+- **The warmed twin is cached** (`offline/live_twin/warm_cache.py`, keyed by input hashes).
+  Copy a twin with `pickle.loads(blob)`, not `copy.deepcopy`, which is 6× slower.
+
 ### SQLite (`serve/db.py`)
 - **Two connections to one SQLite file INSIDE one process deadlock each other** exactly as
   two processes do. `db.execute` commits *after* the statement, so a statement that raises
@@ -449,6 +468,13 @@ Read this before debugging anything. Every line below was paid for once.
   7-12. Four or five conversations exhaust the account and every later run fails
   `rate_limited`. Check it with `curl -H "Authorization: Bearer $PULSETWIN_GENAI_API_KEY"
   https://openrouter.ai/api/v1/key` — the answer is in `free_model_daily_requests`.
+- **The SDK's 90 s timeout is per READ, not per call.** OpenRouter keeps a queued or
+  slow request alive with whitespace, so a worker sat 14+ minutes in one call and the run's
+  300 s cap (checked only between calls) never fired. `loop._create_within` now bounds
+  each call by the run's remaining budget (ADR-063 §13).
+- **A toolless VALID-JSON first answer is also the suppression signature.** At a rung
+  sending `response_format`, Nemotron answered with well-formed JSON, no tool call, and
+  12 claims citing a `call_0001` that never existed. It now degrades like broken JSON did.
 - **Nemotron is a reasoning model**: a trivial prompt spent 11,555 reasoning tokens
   against 341 of visible output. Budget latency accordingly (a 6-tool run is ~70s), and
   do not read a large `completion_tokens` as a large answer.
@@ -462,7 +488,7 @@ Read this before debugging anything. Every line below was paid for once.
   with the numpy scorer, and not a rendering fault. Do NOT retrain to spread the scores —
   that is tuning toward a nicer number, which §1 forbids. If it needs addressing, change
   the presentation (band + CI) and record it in `docs/MODEL_CARD.md`.
-- **Bottleneck accuracy must never read 100%** (ADR-029), and **`/api/stations/stats`
-  currently ships `provenance: "inferred"` rows with no `ci_low`/`ci_high`**, which
-  violates contract #1 — `genai/offline_triage.py` declines to make point claims about
-  them rather than papering over it.
+- **Bottleneck accuracy must never read 100%** (ADR-029). `/api/stations/stats`'s
+  inferred rows carry `<field>_ci_low`/`_ci_high` (ADR-060) — before that, a live agent run
+  citing an unsensored station was rejected `missing_interval`. The verifier checks an
+  interval is PRESENT, not that it matches the source.

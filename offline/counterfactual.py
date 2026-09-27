@@ -25,7 +25,7 @@ writes `<jobs>/<proposal_id>.forecast.json`, which `/api/proposals` reads.
 from __future__ import annotations
 
 import argparse
-import copy
+import pickle
 import json
 import os
 import sys
@@ -38,6 +38,7 @@ import numpy as np
 
 from offline.benchmarks.simrun import with_horizon
 from offline.config_schema import load_plant_config
+from offline.live_twin import warm_cache
 from offline.live_twin.engine import LiveTwinEngine
 from offline.live_twin.incidents import MAX_HUMIDITY_ADD_PCT, MAX_TOOL_DEFICIT, Incident
 from serve.live_simulation import MITIGATIONS
@@ -157,8 +158,11 @@ def _run_arm(forked: LiveTwinEngine, scenario: str, action: str, station_id: int
     steps = int(horizon_s // CHECKPOINT_S)
     units, defects, alerts = [], [], []
     trajectory = np.zeros((replicas, steps))
+    # One pickle, then a cheap load per replica: the same isolated copy as deepcopy at
+    # about a sixth of the cost (ADR-064 CPU work).
+    blob = pickle.dumps(forked, protocol=pickle.HIGHEST_PROTOCOL)
     for k in range(replicas):
-        f = copy.deepcopy(forked)
+        f = pickle.loads(blob)
         _reseed(f, k)
         if action != DO_NOTHING:
             _mitigate(f, scenario, action, station_id)
@@ -180,10 +184,14 @@ def _prepare(plant_id: str, scenario: str, severity: float, station_id: int, see
     """The decision-point snapshot: warmed, the condition injected, given time to bite.
     Deterministic in its arguments -- which is what lets each arm rebuild it in its own
     process rather than pickling an engine."""
-    cfg = with_horizon(load_plant_config(ROOT / "configs" / f"{plant_id}.yaml"), 3.0)
-    twin = LiveTwinEngine(cfg, seed=seed, artifacts=ROOT / "artifacts",
-                          budget_threshold=budget_threshold)
-    twin.start()
+    if seed == warm_cache.SNAPSHOT_SEED:
+        # The warm-up is shared with every experiment on this plant and code: cached.
+        twin = warm_cache.warm_twin(plant_id, budget_threshold)
+    else:
+        cfg = with_horizon(load_plant_config(ROOT / "configs" / f"{plant_id}.yaml"), 3.0)
+        twin = LiveTwinEngine(cfg, seed=seed, artifacts=ROOT / "artifacts",
+                              budget_threshold=budget_threshold)
+        twin.start()
     # Humidity is a zone condition; everything else is local to the firing station.
     twin.inject(Incident(scenario, severity,
                          station_id=None if scenario == "high_humidity" else station_id))
@@ -310,13 +318,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--replicas", type=int, default=8)
     p.add_argument("--horizon-s", type=float, default=7200.0)
+    p.add_argument("--workers", type=int, default=2)
     args = p.parse_args(argv)
 
     _write(args.out, {"version": 1, "status": "running"})
+    # ADR-064: a forecast is background work nobody waits on, while an agent's experiment
+    # is on its critical path. Measured on a 4-core container: two forecasts at one
+    # process per CPU starved the experiments ~15x (35 s per simulated hour vs 2.5 s).
+    # So forecasts run at lower OS priority and with at most two processes.
+    if hasattr(os, "nice"):
+        try:
+            os.nice(10)
+        except OSError:
+            pass
     try:
         result = forecast(args.plant, args.detector, args.station, json.loads(args.evidence),
                           args.budget_threshold, replicas=args.replicas,
-                          horizon_s=args.horizon_s)
+                          horizon_s=args.horizon_s, workers=args.workers)
     except Exception as exc:  # noqa: BLE001 - the row must never sit at `running`
         _write(args.out, {"version": 1, "status": "failed", "error": f"{type(exc).__name__}: {exc}"})
         raise

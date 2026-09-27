@@ -16,7 +16,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   AlertTriage, Bottleneck, ShiftSummary, StationCfg,
-  getAlertTriage, getBottleneck, getHealth, getRole, getShiftSummary, getStationStats,
+  getAlertTriage, getBottleneck, getHealth, getRole, getShiftSummary, getStationStats, roleAtLeast,
   getSession, getStations, restoreSession, type Role, type Session,
 } from "@/lib/api";
 import { canEnter, policyFor } from "@/lib/routeAccess";
@@ -50,9 +50,9 @@ interface StationStat {
 // second plant with a different cycle time without being re-tuned -- which the config
 // swap in CLAUDE.md §1 requires.
 //
-// Unsensored stations get no band at all: /api/stations/stats reports their figures
-// without a confidence interval, so placing them on a scale against measured ones is
-// the same laundering the league table below refuses to do.
+// Unsensored stations get no band at all. Their figures are inferred: they carry a 95%
+// interval (ADR-060) but are not measurements, so placing them on a scale against
+// measured ones is the same laundering the league table below refuses to do.
 type Band = "normal" | "watch" | "critical" | "unknown";
 
 interface Bands {
@@ -194,15 +194,21 @@ export default function OverviewPage() {
     getStationStats(plant).then((r) => setStats(r as StationStat[])).catch(() => setStats([]));
     getBottleneck(plant).then(setBn).catch(() => setBn(null));
     getAlertTriage(plant, 50).then(setTriage).catch(() => setTriage(null));
-    getShiftSummary(plant)
-      .then((s) => {
-        setShift(s);
-        setShiftDenied(false);
-      })
-      .catch(() => {
-        setShift(null);
-        setShiftDenied(true);
-      });
+    // manager-gated: below it, don't issue a request we know is refused (same as AppShell)
+    if (!roleAtLeast(getRole(), "manager")) {
+      setShift(null);
+      setShiftDenied(true);
+    } else {
+      getShiftSummary(plant)
+        .then((s) => {
+          setShift(s);
+          setShiftDenied(false);
+        })
+        .catch(() => {
+          setShift(null);
+          setShiftDenied(true);
+        });
+    }
     setLoaded(true);
   }, [plant]);
 
@@ -214,10 +220,9 @@ export default function OverviewPage() {
 
   const byStation = new Map(stats.map((s) => [s.station_id, s]));
 
-  // CLAUDE.md §8: /api/stations/stats ships `provenance: "inferred"` rows with no
-  // ci_low/ci_high, which violates contract #1. Ranking those rows against measured
-  // ones would launder an un-bounded estimate into a league position, so the ranked
-  // list below is measured-only and says so. The inferred stations still appear in the
+  // Inferred rows now carry `<field>_ci_low/_ci_high` (ADR-060), but an interval is not a
+  // measurement: ranking them against measured rows would still launder an estimate
+  // into a league position, so the ranked list below is measured-only and says so. The inferred stations still appear in the
   // heatmap, hatched, because "we cannot see this station well" is itself the finding.
   const measured = stats.filter((s) => s.provenance === "measured");
   const inferredCount = stats.length - measured.length;
@@ -307,7 +312,7 @@ export default function OverviewPage() {
     >
       <div className="space-y-6">
         {/* ---------------------------------------------------------- KPI row */}
-        <div className="grid grid-cols-1 gap-px bg-line sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-px bg-line sm:grid-cols-2 xl:grid-cols-5 sm:[&>*:last-child]:col-span-2 xl:[&>*:last-child]:col-span-1">
           {!loaded ? (
             Array.from({ length: 5 }, (_, i) => <Skeleton key={i} className="h-28" />)
           ) : (

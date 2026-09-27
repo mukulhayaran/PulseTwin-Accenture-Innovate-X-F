@@ -218,3 +218,17 @@ def test_an_orphaned_mqtt_run_can_be_stopped_and_stops_blocking(client):
         _wait_terminal(client, run["run_id"])
     finally:
         db.execute(app.state.ops, "DELETE FROM simulation_runs WHERE run_id=?", (run_id,))
+
+
+def test_the_frontend_scenario_list_mirrors_the_backend():
+    """The supervisor picker and `SimulationScenario` hardcode the scenario keys (the
+    unused /api/simulations/scenarios route was removed), so pin them to SCENARIOS."""
+    import re
+    from serve.live_simulation import SCENARIOS
+    root = Path(__file__).resolve().parents[1] / "frontend"
+    api = (root / "lib" / "api.ts").read_text(encoding="utf-8")
+    union = api[api.index("export type SimulationScenario"):].split(";", 1)[0]
+    assert set(re.findall(r'"([a-z_]+)"', union)) == set(SCENARIOS)
+    page = (root / "app" / "supervisor" / "page.tsx").read_text(encoding="utf-8")
+    for key in SCENARIOS:
+        assert f'value: "{key}"' in page, f"{key} missing from the supervisor picker"

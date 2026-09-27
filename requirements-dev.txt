@@ -2,6 +2,7 @@
 numpy>=2.1
 pandas>=2.2
 scipy>=1.14
+xgboost>=2.1  # ADR-061 challenger, offline only
 scikit-learn==1.7.2  # = the version that pickled data/<plant>/model.pkl (pyproject.toml)
 pyarrow>=17
 PyYAML>=6.0

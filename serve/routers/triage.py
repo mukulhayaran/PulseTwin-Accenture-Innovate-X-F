@@ -25,7 +25,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from serve import db
+from serve import db, session_store
 from serve.middleware.audit import log_action
 from serve.middleware.auth import require_role
 
@@ -61,7 +61,9 @@ PHASE_ORDER = (
     "Reading station performance",
     "Examining risk signals",
     "Tracing affected units",
+    "Recalling past outcomes",
     "Running simulation",
+    "Comparing interventions",
     "Costing the options",
     "Searching engineering knowledge",
     "Composing the finding",
@@ -169,6 +171,7 @@ def start_triage_run(
     api_base: str,
     thread_id: str | None = None,
     station_id: int | None = None,
+    allow_fallback: bool = False,
 ) -> dict[str, Any]:
     """Create the thread/run rows, write the first heartbeat, and spawn the detached
     `genai.triage` subprocess. This is the ONE path that starts a run -- called both by
@@ -195,12 +198,14 @@ def start_triage_run(
         # answer as a verifier exemption.
         if thread["plant_id"] != plant_id:
             raise ValueError(f"thread '{thread_id}' belongs to plant '{thread['plant_id']}'")
-        busy = db.query_one(
+        # A run whose worker died never records its end, so "in flight" must mean ALIVE --
+        # otherwise one killed worker locks the whole conversation forever.
+        busy = next((r for r in db.query_all(
             ops,
-            "SELECT run_id FROM triage_runs WHERE thread_id = ? "
-            "AND status IN ('queued','running') LIMIT 1",
+            "SELECT run_id, created_at FROM triage_runs WHERE thread_id = ? "
+            "AND status IN ('queued','running')",
             (thread_id,),
-        )
+        ) if not _worker_is_dead(r["run_id"], r["created_at"])), None)
         if busy:
             # Per-turn spawn means two concurrent turns would interleave heartbeats in
             # one file and race for the same turn index. One turn at a time per thread.
@@ -263,6 +268,12 @@ def start_triage_run(
     except OSError:
         log = None
 
+    # ADR-063: the worker's tool calls act as `acting_role` (already capped at the caller's
+    # role). A bare role header no longer grants that outside dev mode, so the run gets its
+    # own short-lived server session -- in the child's ENVIRONMENT, never its argv, which
+    # any local user can read from the process list.
+    token = session_store.issue(acting_role, f"genai-{run_id}",
+                                ttl_s=WORKER_STALE_S)["token"]
     subprocess.Popen(
         [sys.executable, "-m", "genai.triage",
          "--plant", plant_id, "--question", question,
@@ -270,9 +281,11 @@ def start_triage_run(
          "--role", acting_role, "--requested-by", role, "--mode", mode,
          "--intent", intent,
          "--thread-id", thread_id, "--turn-index", str(turn_index)]
-        + (["--station-id", str(station_id)] if station_id is not None else []),
+        + (["--station-id", str(station_id)] if station_id is not None else [])
+        + (["--allow-fallback"] if allow_fallback else []),
         cwd=str(ROOT),
-        env={**os.environ, "OMP_NUM_THREADS": "1", "PYTHONPATH": str(ROOT)},
+        env={**os.environ, "OMP_NUM_THREADS": "1", "PYTHONPATH": str(ROOT),
+             "PULSETWIN_API_TOKEN": token},
         stdout=log or subprocess.DEVNULL,
         stderr=subprocess.STDOUT if log else subprocess.DEVNULL,
     )
@@ -319,6 +332,8 @@ def start_run(req: TriageRequest, request: Request,
             ops, plant_id=req.plant_id, question=question, intent=req.intent,
             role=role, acting_role=acting, mode=mode, api_base=api_base,
             thread_id=req.thread_id, station_id=req.station_id,
+            # Only a request that left the mode to us may silently change it.
+            allow_fallback=req.mode == "auto",
         )
     except ValueError as exc:
         status = 404 if str(exc).startswith("unknown thread") else 409
@@ -350,6 +365,9 @@ def list_runs(request: Request, plant_id: str = "plant_a", limit: int = 10,
     # already follow in get_run/get_thread below.
     for r in rows:
         r["agents_used"] = _loads(r.get("agents_used"))
+        # Same verdict get_run gives, so the history list cannot show a dead run spinning.
+        if r["status"] in ("queued", "running") and _worker_is_dead(r["run_id"], r["created_at"]):
+            r["status"] = "failed"
     return {"runs": rows, "count": len(rows)}
 
 
@@ -401,7 +419,7 @@ def get_run(run_id: str, request: Request, include_evidence: bool = False,
         # failure. Report it rather than let the panel poll a dead run forever. The row
         # is left as-is: a GET does not write, and the worker may still finish it.
         out["status"] = "failed"
-        out["error"] = "worker_stopped: no progress for "                        f"{int(WORKER_STALE_S // 60)} minutes"
+        out["error"] = f"worker_stopped: no progress for {int(WORKER_STALE_S // 60)} minutes"
     elif row.get("status") in ("queued", "running"):
         hb = _read_heartbeat(run_id)
         if hb:
@@ -514,16 +532,3 @@ def get_thread(thread_id: str, request: Request,
 
     return {"thread": dict(thread), "turns": turns, "count": len(turns),
             "phase_order": list(PHASE_ORDER)}
-
-
-@router.get("/api/triage/intents")
-def list_intents(role: str = Depends(require_role("manager"))) -> dict[str, Any]:
-    """The named actions the copilot offers, so the UI does not hardcode them."""
-    return {
-        "intents": [
-            {"key": k, "label": v,
-             "requires_station": k == "whatif",
-             "requires_question": k == "ask"}
-            for k, v in INTENT_LABELS.items()
-        ]
-    }

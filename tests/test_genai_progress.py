@@ -207,7 +207,7 @@ def test_an_unknown_tool_name_does_not_raise_in_the_progress_path(registry) -> N
 # ------------------------------------------------------- capability degradation in situ
 def test_a_400_degrades_and_the_run_still_finishes(registry, api) -> None:
     client = RejectingClient(
-        [_resp(_msg(content='{"summary":"s"}'), "stop")],
+        [_resp(_msg(content='{"summary":"s"}'), "stop")] * 2,   # + the evidence-first re-ask
         reject=lambda kw: (kw.get("response_format") or {}).get("type") == "json_schema",
     )
     out = L.run_loop(client, api, registry, plant_id=PLANT, question="q",
@@ -348,21 +348,37 @@ def test_a_200_with_no_tool_calls_degrades_and_the_rerun_uses_tools(registry, ap
     assert len(client.requests[1]["messages"]) == len(client.requests[0]["messages"])
 
 
-def test_a_200_with_no_tool_calls_but_valid_json_does_not_degrade(registry, api) -> None:
-    """The other half of the signature, and the reason it has two halves.
-
-    A model may legitimately answer without calling anything. That answer carries no
-    evidence and the VERIFIER rejects it -- which is the correct place for that judgement
-    and costs no extra round trip. Degrading here instead would re-ask every such turn at
-    a lower rung, spending a request against the provider's budget to reach the same
-    verdict. `tests/test_genai_loop.py::test_finishes_and_returns_content` pins the same
-    invariant from the loop's side.
-    """
-    client = ScriptedClient([_resp(_msg(content='{"summary":"s","claims":[]}'), "stop")])
+def test_a_200_with_no_tool_calls_degrades_even_when_the_json_is_valid(registry, api) -> None:
+    """The signature used to need broken JSON as well. Measured live 2026-09-26, three
+    runs: at a rung sending `response_format` this provider ALSO answers with valid JSON
+    and no tool call -- invented figures citing call_ids that never existed, rejected
+    whole by the gate. So a toolless first answer on such a rung degrades regardless."""
+    client = ScriptedClient([
+        _resp(_msg(content='{"summary":"s","claims":[]}'), "stop"),
+        _resp(_msg(tool_calls=[_call("get_bottleneck_current",
+                                     '{"plant_id": "%s"}' % PLANT)]), "tool_calls"),
+        _resp(_msg(content='{"summary":"s","claims":[]}'), "stop"),
+    ])
     out = L.run_loop(client, api, registry, plant_id=PLANT, question="q",
                      acting_role="leadership", classify_error=lambda e: None)
 
     assert out.status == "finished"
-    assert out.degradations == []
-    assert out.capability_profile == "L0", "the top rung must survive an early answer"
-    assert len(client.requests) == 1, "no re-ask, so no second request"
+    assert out.degradations == ["response_format_suppressed_tool_calls->L4"]
+    assert len(out.records) == 1, "the re-ask at the no-format rung must call a tool"
+    assert "response_format" not in client.requests[1]
+
+
+def test_a_toolless_answer_at_a_no_format_rung_gets_one_evidence_re_ask(
+        registry, api, monkeypatch) -> None:
+    """Below the format rungs there is nothing left to drop, so the model is told to
+    gather evidence first -- once, at the same rung."""
+    from genai import capabilities as C
+    monkeypatch.setattr(C, "initial", lambda model_id: C.LADDER[-1])
+    answer = _resp(_msg(content='{"summary":"s","claims":[]}'), "stop")
+    client = ScriptedClient([answer, answer])
+    out = L.run_loop(client, api, registry, plant_id=PLANT, question="q",
+                     acting_role="leadership", classify_error=lambda e: None)
+
+    assert out.status == "finished" and out.degradations == []
+    assert len(client.requests) == 2
+    assert {"role": "user", "content": L.EVIDENCE_FIRST_INSTRUCTION} in client.requests[1]["messages"]

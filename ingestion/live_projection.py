@@ -166,12 +166,13 @@ class LiveProjection:
                     risk: Any, ts: str) -> None:
         self.con.execute(
             """INSERT INTO active_alerts
-                   (alert_id,run_id,plant_id,unit_id,station_id,risk,status,opened_at)
-               VALUES (%s,%s,%s,%s,%s,%s,'OPEN',%s)
+                   (alert_id,run_id,plant_id,unit_id,station_id,risk,status,opened_at,
+                    opened_wall_at)
+               VALUES (%s,%s,%s,%s,%s,%s,'OPEN',%s,%s)
                ON CONFLICT (alert_id) DO UPDATE SET
                    station_id=EXCLUDED.station_id,risk=EXCLUDED.risk""",
             (f"{run_id}:{unit_id}", run_id, plant_id, unit_id, station_id,
-             float(risk or 0), ts),
+             float(risk or 0), ts, _utc_now()),
         )
 
     def _refresh_counts(self, run_id: str, ts: str, seq: int) -> None:

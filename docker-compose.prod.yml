@@ -85,6 +85,15 @@ services:
       MQTT_PORT: "1883"
       FRONTEND_HEALTH_URL: http://frontend:3000
       PULSETWIN_REQUIRE_POSTGRES: "1"
+      # ADR-063: roles come only from server-issued demo sessions; a bare role header can
+      # no longer claim one. Still NOT production auth -- the demo credentials are fixed.
+      PULSETWIN_AUTH_MODE: session
+      # ADR-064: job heartbeats, logs and the provider capability cache. On a volume so a
+      # redeploy does not forget the provider's request shape -- every fresh cache spent
+      # an extra AI request per run rediscovering it.
+      PULSETWIN_JOBS_DIR: /var/lib/pulsetwin/jobs
+    volumes:
+      - pulsetwin_jobs:/var/lib/pulsetwin/jobs
     ports:
       - "7860:7860"
     depends_on:
@@ -98,8 +107,7 @@ services:
         condition: service_completed_successfully
       load-data:
         condition: service_completed_successfully
-    # No volumes: feedback now lives in Postgres (migrations/016), and the only files the
-    # backend writes -- triage per-run .log/heartbeat files -- are ephemeral by design.
+    # One volume (above): the jobs directory. Feedback lives in Postgres (migrations/016).
     # The ./data and ./artifacts mounts existed for retraining (ADR-053); the image
     # already carries artifacts/.
     healthcheck:
@@ -156,4 +164,5 @@ services:
         condition: service_healthy
 
 volumes:
+  pulsetwin_jobs:
   pgdata:

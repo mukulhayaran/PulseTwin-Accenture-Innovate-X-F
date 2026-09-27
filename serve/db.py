@@ -2,17 +2,14 @@
 
 ADR-011: the precomputed artifact database is opened READ-ONLY via a file: URI when
 running on SQLite. An accidental write then raises immediately instead of silently
-mutating a committed artifact and breaking the reproducibility guarantee. Supervisor
-feedback goes to a SEPARATE writable database outside the image, because the container
-filesystem is ephemeral.
+mutating a committed artifact and breaking the reproducibility guarantee.
 
 Finals upgrade (ADR-033): when `DATABASE_URL` is set, both the artifact tables AND the new
 operational tables (audit_log, model_registry, drift_metrics, sensor_health) live in the
 same Postgres database -- a real database tolerates runtime writes into tables the
 artifact build never touches, so there is no read-only file to protect. Without
 `DATABASE_URL` (local dev with no Postgres running), the artifact file stays read-only
-exactly as before, and a SEPARATE writable SQLite file -- the same pattern already used
-for feedback -- backs the new operational tables.
+exactly as before, and a SEPARATE writable SQLite file backs the new operational tables.
 
 `query_all` / `query_one` / `execute` dispatch on the connection's type, so every existing
 call site in serve/main.py (~30 of them, all written in sqlite3's `?` placeholder style)
@@ -45,22 +42,6 @@ def open_readonly(path: str | Path) -> sqlite3.Connection:
     uri = f"file:{Path(path).as_posix()}?mode=ro"
     con = sqlite3.connect(uri, uri=True, check_same_thread=False)
     con.row_factory = sqlite3.Row
-    return con
-
-
-def open_feedback_db() -> sqlite3.Connection:
-    """Writable, ephemeral, and deliberately NOT the artifact database."""
-    path = Path(os.environ.get("PULSETWIN_FEEDBACK_DB", "")) or None
-    if path is None or str(path) == ".":
-        path = Path(tempfile.gettempdir()) / "pulsetwin_feedback.db"
-    con = sqlite3.connect(path, check_same_thread=False)
-    con.row_factory = sqlite3.Row
-    con.execute(
-        """CREATE TABLE IF NOT EXISTS feedback (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               plant_id TEXT, unit_id TEXT, verdict TEXT, created_at TEXT)"""
-    )
-    con.commit()
     return con
 
 
@@ -212,6 +193,147 @@ CREATE TABLE IF NOT EXISTS action_proposals (
     applied_at TEXT, effective_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_action_proposals_plant
     ON action_proposals (plant_id, created_at DESC);
+
+-- ADR-064: migrations/020_simulation_experiments.sql + 021_outcome_learning.sql,
+-- converted (JSONB -> TEXT, DOUBLE PRECISION -> REAL, BIGSERIAL -> AUTOINCREMENT).
+CREATE TABLE IF NOT EXISTS simulation_experiments (
+    experiment_id      TEXT PRIMARY KEY,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT,
+    plant_id           TEXT NOT NULL,
+    station_id         INTEGER NOT NULL,
+    objective          TEXT NOT NULL,
+    origin_run_id      TEXT,
+    origin_proposal_id TEXT,
+    requested_by       TEXT NOT NULL,
+    status             TEXT NOT NULL,
+    profile            TEXT,
+    horizon_s          REAL NOT NULL,
+    seeds              TEXT NOT NULL,
+    incident           TEXT,
+    interventions      TEXT NOT NULL,
+    cancel_requested   INTEGER DEFAULT 0,
+    pid                INTEGER,
+    started_at         TEXT,
+    finished_at        TEXT,
+    heartbeat_at       TEXT,
+    runtime_s          REAL,
+    error              TEXT,
+    simulator_version  TEXT,
+    summary            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sim_experiments_plant
+    ON simulation_experiments (plant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sim_experiments_origin
+    ON simulation_experiments (origin_run_id);
+
+CREATE TABLE IF NOT EXISTS simulation_scenarios (
+    scenario_id       TEXT PRIMARY KEY,
+    experiment_id     TEXT NOT NULL,
+    ordinal           INTEGER NOT NULL,
+    label             TEXT NOT NULL,
+    intervention_type TEXT,
+    params            TEXT,
+    is_baseline       INTEGER DEFAULT 0,
+    supported         INTEGER DEFAULT 1,
+    reason            TEXT,
+    simulated_as      TEXT,
+    summary           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sim_scenarios_experiment
+    ON simulation_scenarios (experiment_id, ordinal);
+
+CREATE TABLE IF NOT EXISTS simulation_scenario_results (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at         TEXT NOT NULL,
+    experiment_id      TEXT NOT NULL,
+    scenario_id        TEXT NOT NULL,
+    seed               INTEGER NOT NULL,
+    status             TEXT NOT NULL,
+    throughput_uph     REAL,
+    wip_mean           REAL,
+    blocked_pct        REAL,
+    starved_pct        REAL,
+    down_pct           REAL,
+    downtime_s         REAL,
+    expected_defects   REAL,
+    alerts             INTEGER,
+    bottleneck_station INTEGER,
+    runtime_s          REAL,
+    error              TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sim_results_seed
+    ON simulation_scenario_results (scenario_id, seed);
+CREATE TABLE IF NOT EXISTS action_outcomes (
+    outcome_id         TEXT PRIMARY KEY,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT,
+    plant_id           TEXT NOT NULL,
+    station_id         INTEGER NOT NULL,
+    proposal_id        TEXT NOT NULL,
+    sim_run_id         TEXT,
+    experiment_id      TEXT,
+    detector           TEXT,
+    intervention_type  TEXT NOT NULL,
+    status             TEXT NOT NULL,
+    metric             TEXT NOT NULL,
+    direction          TEXT NOT NULL,
+    applied_at         TEXT,
+    applied_seq        INTEGER,
+    window_s           REAL,
+    window_ends_at     TEXT,
+    baseline_value     REAL,
+    expected_change    REAL,
+    expected_ci_low    REAL,
+    expected_ci_high   REAL,
+    expected_source    TEXT,
+    actual_value       REAL,
+    actual_change      REAL,
+    prediction_error   REAL,
+    n_events_before    INTEGER,
+    n_events_after     INTEGER,
+    thresholds         TEXT,
+    observed           TEXT,
+    reason             TEXT,
+    evaluated_at       TEXT,
+    versions           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_action_outcomes_plant
+    ON action_outcomes (plant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_action_outcomes_lookup
+    ON action_outcomes (plant_id, station_id, intervention_type);
+
+CREATE TABLE IF NOT EXISTS incident_learning_records (
+    record_id          TEXT PRIMARY KEY,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT,
+    plant_id           TEXT NOT NULL,
+    station_id         INTEGER,
+    incident_type      TEXT NOT NULL,
+    trigger_ref        TEXT,
+    triage_run_id      TEXT,
+    proposal_id        TEXT,
+    decision           TEXT NOT NULL,
+    decided_by_role    TEXT,
+    decision_note      TEXT,
+    intervention_type  TEXT,
+    action             TEXT,
+    experiment_id      TEXT,
+    outcome_id         TEXT,
+    expected           TEXT,
+    baseline           TEXT,
+    actual             TEXT,
+    prediction_error   REAL,
+    success_status     TEXT,
+    confidence         TEXT,
+    context            TEXT,
+    simulator_version  TEXT,
+    model_version      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_learning_lookup
+    ON incident_learning_records (plant_id, incident_type, station_id);
+CREATE INDEX IF NOT EXISTS idx_learning_proposal
+    ON incident_learning_records (proposal_id);
 """
 
 # Columns added to tables that already exist on disk. See _ensure_columns.
@@ -226,6 +348,9 @@ _OPS_ADDED_COLUMNS: dict[str, dict[str, str]] = {
         # NULL means either no auto-investigation ran yet, or PULSETWIN_JOBS_ENABLED=0.
         "triage_run_id": "TEXT",
         "actioned_at": "TEXT", "validated_at": "TEXT", "closed_at": "TEXT",
+        # ADR-063: WALL clock when the alert opened. `opened_at` is the SIMULATION clock,
+        # and subtracting it from a wall-clock acknowledgement reported 241 days.
+        "opened_wall_at": "TEXT",
     },
     "model_predictions_log": {
         "run_id": "TEXT", "model_version": "INTEGER", "feature_set_version": "TEXT",
@@ -315,8 +440,8 @@ def open_ops_db() -> sqlite3.Connection:
 
     Mirrors migrations/002-004 in SQLite dialect (BIGSERIAL -> AUTOINCREMENT, JSONB/
     TIMESTAMPTZ -> TEXT, BOOLEAN -> INTEGER). Kept separate from the read-only artifact
-    file for the same reason feedback is (ADR-011): the container filesystem is
-    ephemeral and the artifact must never be mutated.
+    file (ADR-011): the container filesystem is ephemeral and the artifact must never be
+    mutated.
     """
     path = Path(os.environ.get("PULSETWIN_OPS_DB", "")) or None
     if path is None or str(path) == ".":
@@ -423,3 +548,23 @@ def execute(con: Any, sql: str, params: tuple = ()) -> None:
             con.commit()
         return
     _pg_module().execute(con, sql, params)
+
+
+def execute_batch(con: Any, statements: list[tuple[str, tuple]]) -> None:
+    """Several writes, ONE transaction and one commit. The live-simulation producer wrote
+    each event as four separately-committed statements; on the Postgres stack that capped
+    a run at ~7.5 events/s whatever speed was requested (measured). Rolls back on error so
+    a failed statement never leaves a write transaction open (CLAUDE.md section 8)."""
+    if not statements:
+        return
+    if isinstance(con, sqlite3.Connection):
+        with _lock:
+            try:
+                for sql, params in statements:
+                    con.execute(sql, params)
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
+        return
+    _pg_module().execute_batch(con, statements)

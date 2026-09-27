@@ -59,6 +59,17 @@ COMMON_GUIDANCE = (
 # them on a claim about `stalled_state` ("down" -- a string) and on the what-if station
 # LIST, so the verifier rightly dropped both; and a torque claim in "Nm" -- not a claim
 # unit -- made a whole tool-wear finding unparseable. Said here, where the model reads it.
+# ADR-064: the shared experiment discipline every action-proposing intent appends.
+EXPERIMENT_GUIDANCE = (
+    " SIMULATE BEFORE YOU PROPOSE: call get_similar_incidents (and get_action_outcomes) "
+    "for what happened last time, then run_simulation_experiment ONCE with the watch "
+    "firing's detector and evidence as its incident context and the catalogue "
+    "interventions that bear on your hypotheses. Propose an action only if its paired "
+    "change vs baseline has an interval clear of zero in the better direction; otherwise "
+    "set decision to no_improvement or too_uncertain and propose nothing for it. Claim "
+    "experiment figures with provenance inferred and their exact ci_low/ci_high."
+)
+
 ACTION_GUIDANCE = (
     " Every action's claim_ids must name NUMERIC claims -- a number read at the pointer, "
     "never a string such as a station state and never a list such as the what-if station "
@@ -92,8 +103,11 @@ INTENTS: dict[str, Intent] = {
             "moved is sometimes a sensor that went dark, so check get_sensor_dropouts "
             "and get_data_quality before concluding the line changed. Then identify the "
             "affected units with get_containment rather than describing them in the "
-            "abstract. If the evidence supports an association but not a cause, say so "
-            "in those words. If a procedure or fault-code meaning would strengthen your "
+            "abstract. Then TEST the flow hypotheses at the current constraint with ONE "
+            "run_simulation_experiment. Keep four things apart in your answer: observed "
+            "facts (measured claims), inferred relationships, simulation projections "
+            "(experiment claims) and recommendations. If the evidence supports an "
+            "association but not a cause, say so in those words. If a procedure or fault-code meaning would strengthen your "
             "evidence, call search_engineering_knowledge and cite anything you quote or "
             "paraphrase from it in `knowledge_citations`, never in prose alone. "
             + COMMON_GUIDANCE
@@ -114,7 +128,10 @@ INTENTS: dict[str, Intent] = {
             "been tried or ruled out, so they do not repeat it. Start from "
             "get_shift_summary. Name units and stations concretely. Anything you could "
             "not determine belongs in `unanswered` -- an incomplete handover an operator "
-            "can trust beats a complete one they cannot. " + COMMON_GUIDANCE
+            "can trust beats a complete one they cannot. Read get_proposals and "
+            "get_action_outcomes: say which actions were applied this shift, which still "
+            "await a decision, which outcomes are not yet mature (observing), and which "
+            "underperformed -- the next shift must not repeat them. " + COMMON_GUIDANCE
         ),
         plan="handover",
     ),
@@ -130,7 +147,11 @@ INTENTS: dict[str, Intent] = {
             "then rank the top three sources of loss and qualify each one: how confident "
             "the detector is, whether the underlying statistics are measured or "
             "reconstructed, and whether the model itself is drifting (get_model_health). "
-            "A loss you cannot rank confidently is worth saying so about. " + COMMON_GUIDANCE
+            "A loss you cannot rank confidently is worth saying so about. Then cover the "
+            "operational memory: open proposals, list_simulation_experiments, approved and "
+            "rejected decisions (get_proposals), and expected versus observed outcomes "
+            "(get_action_outcomes), naming any recommendation that failed its expected "
+            "result. " + COMMON_GUIDANCE
         ),
         plan="shift_intel",
     ),
@@ -138,18 +159,21 @@ INTENTS: dict[str, Intent] = {
         key=WHATIF,
         label="Run a what-if",
         instruction=(
-            "Evaluate a change at station {station_id} against the simulation grid and "
+            "Evaluate a change at station {station_id} with a fresh simulation and "
             "report the trade-off. {question}"
         ),
         guidance=(
-            "YOU MUST SIMULATE, NOT ASSERT. Call get_whatif_stations first to confirm the "
-            "station is in the grid, then simulate_whatif. Report baseline and projected "
-            "side by side and name the intervention you tested. The grid covers only "
-            "upstream FEED-buffer changes and cycle-time changes at seeded stations: if "
-            "the question asks for anything else -- taking a station offline, changing a "
-            "tool, reordering the line -- say plainly that the simulator cannot answer it "
-            "and put that in `unanswered`. Do NOT approximate an unsupported intervention "
-            "with a supported one. " + COMMON_GUIDANCE
+            "YOU MUST SIMULATE, NOT ASSERT. Use run_simulation_experiment as the primary "
+            "method: a paired baseline plus MORE THAN ONE supported intervention where the "
+            "question allows (e.g. a feed-buffer change and a cycle-time change), then "
+            "compare their intervals. Report whether each result is a fresh simulation or "
+            "a grid estimate: simulate_whatif is ONLY a precomputed-grid preview, used "
+            "when the experiment is unavailable, and must be labelled as interpolated. If "
+            "the question asks for something the catalogue does not support -- variant "
+            "sequencing, taking a station offline, reordering the line -- say plainly that "
+            "the simulator cannot answer it and put that in `unanswered`. Do NOT "
+            "approximate an unsupported intervention with a supported one. "
+            + COMMON_GUIDANCE
         ),
         plan="whatif",
         requires_station=True,
@@ -164,13 +188,14 @@ INTENTS: dict[str, Intent] = {
         guidance=(
             "START with get_watch_firings (detector starvation) and claim the measured "
             "stall evidence from it -- stalled_share and mean_cycle_time_s against takt_s. "
-            "Confirm the line context with get_bottleneck_current. Then check "
-            "get_whatif_stations: if the DOWNSTREAM station is in the grid, "
-            "simulate_whatif a positive buffer_delta for it and claim baseline and "
-            "projected throughput. PROPOSE a maintenance_ticket for a station that is "
-            "down, and increase_feed_buffer for the downstream station -- saying plainly "
-            "in the rationale when its effect was not simulated. " + COMMON_GUIDANCE
-            + ACTION_GUIDANCE
+            "Confirm the line context with get_bottleneck_current. Distinguish a fault AT "
+            "the station (stalled_state down) from insufficient FEED from upstream. Then "
+            "experiment with mitigation increase_feed_buffer, mitigation "
+            "maintenance_ticket and a cycle_time_pct change at the firing station. "
+            "PROPOSE maintenance_ticket and/or increase_feed_buffer (for the downstream "
+            "station) ONLY where the simulated throughput change is clear of zero -- never "
+            "a buffer change the simulation shows does not help." + EXPERIMENT_GUIDANCE
+            + " " + COMMON_GUIDANCE + ACTION_GUIDANCE
         ),
         plan="starvation",
     ),
@@ -187,8 +212,12 @@ INTENTS: dict[str, Intent] = {
             "search_engineering_knowledge for the paint humidity and dwell procedure and "
             "cite what you use. PROPOSE hvac_setpoint with target_humidity_pct at or below "
             "the humidity_threshold_pct the evidence carries, and resequence_paint_queue "
-            "when exposed units are on the line now. " + COMMON_GUIDANCE
-            + ACTION_GUIDANCE
+            "when exposed units are on the line now (get_recent_alerts names them). "
+            "Experiment with mitigation hvac_setpoint using objective quality: the twin "
+            "models humidity -> film -> defect propensity, so report the expected-defects "
+            "change. resequence_paint_queue CANNOT be simulated (it changes scoring "
+            "priority, not physics): say so in its rationale." + EXPERIMENT_GUIDANCE
+            + " " + COMMON_GUIDANCE + ACTION_GUIDANCE
         ),
         plan="paint_env",
     ),
@@ -207,7 +236,13 @@ INTENTS: dict[str, Intent] = {
             "measured util. PROPOSE a maintenance_ticket for the degraded station, and "
             "shift_weld_load to the adjacent same-capability station with the lowest "
             "util. There is no electrode-force signal: do not claim tip wear as measured. "
-            + COMMON_GUIDANCE + ACTION_GUIDANCE
+            "FIRST check the sensor itself is healthy (get_sensor_dropouts): a dark sensor "
+            "is engineering_review, not a worn tool. Then experiment with maintenance "
+            "delay_min 0 (now), maintenance at a planned stop (e.g. delay_min 120) and "
+            "mitigation shift_weld_load, objective quality, and state the throughput and "
+            "downtime cost of each. Never claim a remaining useful life: no model here "
+            "calculates one." + EXPERIMENT_GUIDANCE + " " + COMMON_GUIDANCE
+            + ACTION_GUIDANCE
         ),
         plan="tool_wear",
     ),

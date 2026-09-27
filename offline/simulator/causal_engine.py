@@ -76,7 +76,7 @@ def _pct_rank(values: np.ndarray) -> np.ndarray:
     if ok.sum() == 0:
         return out
     v = values[ok]
-    order = v.argsort().argsort()
+    order = v.argsort(kind="stable").argsort(kind="stable")
     out[ok] = 100.0 * order / max(1, len(v) - 1)
     return out
 
@@ -141,8 +141,10 @@ def build_unit_signals(
     # A weak batch is far worse, but a strong batch is not immune -- otherwise the latent
     # would be perfectly recoverable from the outcome, and the confounder would stop
     # confounding anything.
-    weak_factor = np.where(weak, 1.0, 0.06)
+    weak_factor = np.where(weak, 1.0, dp.mode_a.strong_batch_factor)
     df["signal_mode_a"] = np.where(gate, dwell_excess * hum_factor * weak_factor, 0.0)
+    # The same signal minus the latent batch term: what an observer of the line could know.
+    df["obs_mode_a"] = np.where(gate, dwell_excess * hum_factor, 0.0)
 
     # Mode B likewise fires only on an actual rush, not on any checklist faster than
     # nominal. A slightly brisk operator is not an adhesion failure.
@@ -219,7 +221,7 @@ def compute_defects(
         # Clipping at the 95th percentile flattened the top 5% into a single value and
         # destroyed the ordering that PR-AUC depends on.
         ref = float(np.quantile(pos, 0.995)) if len(pos) > 50 else 1.0
-        scaled = np.clip(v / max(ref, 1e-9), 0.0, 1.0) ** INTENSITY_SHARPENING
+        scaled = np.clip(v / max(ref, 1e-9), 0.0, 1.0) ** dp.intensity_sharpening
         # Divide by mean EXPOSURE (population mean, zeros included) so w_i expresses each
         # mode's share of defects rather than its per-unit hazard. Without this a mode
         # that fires on 60% of units swamps one that fires on 2.7%, whatever the weights
@@ -241,7 +243,7 @@ def compute_defects(
     def _prob(k: float) -> np.ndarray:
         survive = (1.0 - lot_hazard) * (1.0 - noise_hazard)
         for key, w in weights.items():
-            survive = survive * (1.0 - np.clip(k * w * intensity[key], 0.0, 0.85))
+            survive = survive * (1.0 - np.clip(k * w * intensity[key], 0.0, dp.hazard_cap))
         return 1.0 - survive
 
     lo, hi = 0.0, 40.0
@@ -258,7 +260,7 @@ def compute_defects(
     true_defect = (rng.random(n) < p).astype(np.int8)
 
     hazards = {
-        key: np.clip(fitted_k * w * intensity[key], 0.0, 0.85)
+        key: np.clip(fitted_k * w * intensity[key], 0.0, dp.hazard_cap)
         for key, w in weights.items()
     }
 

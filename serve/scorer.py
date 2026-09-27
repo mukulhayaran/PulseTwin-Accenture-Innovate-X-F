@@ -27,6 +27,9 @@ import numpy as np
 class Scorer:
     """One plant's ensemble. Load once at startup, score per request."""
 
+    model_type = "hist_gradient_boosting"
+    calibration_method = "platt"
+
     def __init__(self, path: str | Path) -> None:
         z = np.load(path, allow_pickle=True)
         self.feature_idx = z["feature_idx"]
@@ -171,3 +174,4 @@ class Scorer:
 
 def _sigmoid(z: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(z, -60.0, 60.0)))
+

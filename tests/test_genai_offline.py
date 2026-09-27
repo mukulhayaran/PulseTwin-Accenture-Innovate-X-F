@@ -226,3 +226,31 @@ def test_a_conversation_turn_answers_from_line_data_and_the_knowledge_base(ctx) 
     assert finding.claims and finding.knowledge_citations
     assert ver.knowledge_citations_verified == len(finding.knowledge_citations)
     assert served.knowledge_citations
+
+
+def test_the_whatif_plan_runs_a_fresh_experiment_not_the_grid(ctx, monkeypatch) -> None:
+    """ADR-064. Measured live: the plan passed a `profile` argument the tool schema had
+    dropped, every experiment call failed `invalid_arguments`, and the plan fell back to
+    the grid -- while a grid-only assertion kept passing. Pin the PRIMARY path."""
+    registry, _shared_api, client = ctx
+    # Its own run: the module's shared client has already spent its per-run experiment
+    # budget on earlier plans (the server refuses a 4th -- correctly). And other tests'
+    # real experiments may still hold the concurrency slots; this test is about the path
+    # taken when both allow it.
+    import secrets
+    from serve.routers import experiments as E
+    monkeypatch.setitem(E.LIMITS, "max_concurrent", 50)
+    api = PulseTwinAPI("http://testserver", "leadership", f"fresh-{secrets.token_hex(4)}",
+                       transport=_tc_transport(client))
+    station = client.get("/api/bottleneck/current?plant_id=plant_a").json()["current_station"]
+    loop, finding = offline_triage.run_plan(
+        "whatif", registry, api, plant_id="plant_a", question="what if?", station_id=station)
+    names = [r.name for r in loop.records]
+    assert "run_simulation_experiment" in names and "simulate_whatif" not in names,         finding.unanswered
+    assert not any("unavailable" in u or "invalid_arguments" in u for u in finding.unanswered)
+    assert finding.decision in ("recommend", "too_uncertain", "no_improvement")
+    assert "FRESH SIMULATION" in finding.summary
+    projected = [c for c in finding.claims if c.provenance == "inferred"]
+    assert projected and all(c.ci_low is not None for c in projected)
+    ver, _ = V.verify(finding, loop.transcript, station_ids=_station_ids(client, "plant_a"))
+    assert ver.status != V.REJECTED, ver.reject_reason

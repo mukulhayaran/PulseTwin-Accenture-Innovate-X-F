@@ -6,3 +6,10 @@ plant_a,baseline,active_period,Active Period (mean span),"faithful; Roser active
 plant_a,baseline,average_queue_length,Average Queue Length,faithful; time-weighted mean input-buffer occupancy,0,30,19,1,0.0,0.0,0.0,0.0,0.0,0.0,0.07762515262515264,0.07661782661782664,0.07866300366300367,9.0,9.0,9.0
 plant_a,baseline,turning_point_adapted,Turning Point (adapted),ADAPTED to 15-minute buckets; not a reproduction of the published algorithm,0,30,19,1,0.0,0.0,0.0,1.0,1.0,1.0,0.5,0.5,0.5,7.0,7.0,7.0
 plant_a,baseline,arrow_blocked_starved_adapted,Arrow / blocked-starved direction (adapted),ADAPTED to bucketed durations; decision rule is the published one,0,30,19,1,0.0,0.0,0.0,1.0,1.0,1.0,0.5,0.5,0.5,7.0,7.0,7.0
+plant_a,s12_constraint,active_share,Active Share,faithful; this is PulseTwin's shipped detector (offline/ml/bottleneck.py),1,30,12,1,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0
+plant_a,s12_constraint,utilization,Utilization,faithful; textbook utilisation,0,30,12,1,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0
+plant_a,s12_constraint,busy_ratio,Busy Ratio,faithful; occupancy including blocked time,0,30,12,1,0.0,0.0,0.0,0.0,0.0,0.0,0.15031746031746032,0.13988095238095238,0.1622242063492064,11.0,11.0,11.0
+plant_a,s12_constraint,active_period,Active Period (mean span),"faithful; Roser active-period method, measured at event level",0,30,12,1,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0
+plant_a,s12_constraint,average_queue_length,Average Queue Length,faithful; time-weighted mean input-buffer occupancy,0,30,12,1,0.0,0.0,0.0,1.0,1.0,1.0,0.33888888888888896,0.3333333333333334,0.35000000000000014,2.0,2.0,2.0
+plant_a,s12_constraint,turning_point_adapted,Turning Point (adapted),ADAPTED to 15-minute buckets; not a reproduction of the published algorithm,0,30,12,1,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0
+plant_a,s12_constraint,arrow_blocked_starved_adapted,Arrow / blocked-starved direction (adapted),ADAPTED to bucketed durations; decision rule is the published one,0,30,12,1,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0

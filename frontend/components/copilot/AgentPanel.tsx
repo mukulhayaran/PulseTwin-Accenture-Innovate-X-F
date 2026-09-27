@@ -12,9 +12,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Bottleneck, TriageIntent, TriageRun,
-  getBottleneck, getTriageAvailability, getTriageRun, startTriage,
+  Bottleneck, ExperimentListItem, TriageIntent, TriageRun,
+  getBottleneck, getTriageAvailability, getTriageRun, listSimulationExperiments, startTriage,
 } from "@/lib/api";
+import LifecycleStrip, { runLifecycle } from "@/components/agents/LifecycleStrip";
+import ExperimentComparison from "@/components/agents/ExperimentComparison";
 import { cn } from "@/lib/cn";
 import { Badge, Button, Panel } from "@/components/ui";
 import FindingView, { STATUS_VARIANT, VerdictStrip } from "./FindingView";
@@ -36,15 +38,16 @@ interface AgentDef {
 // `hint` restates genai/intents.py's guidance for each plan in one line -- what the run
 // will actually do, not a sales line.
 const AGENTS: AgentDef[] = [
-  { intent: "incident", title: "Incident agent", hint: "Reliability, production and risk specialists investigate in parallel, then one verified synthesis." },
-  { intent: "whatif", title: "What-if agent", hint: "Baseline vs projected on the simulation grid for the live constraint — or says it cannot.", needsStation: true },
-  { intent: "shift_intel", title: "Shift-intelligence agent", hint: "Top three sources of loss this shift, ranked and qualified." },
-  { intent: "handover", title: "Handover agent", hint: "What changed, what is open, and what the next shift must watch." },
+  // Specialists run ONE AFTER ANOTHER (deterministic call ids, one ledger) -- not in parallel.
+  { intent: "incident", title: "Incident agent", hint: "Reliability, production and risk specialists in sequence, a simulation planner that runs a fresh experiment, then one verified synthesis." },
+  { intent: "whatif", title: "What-if agent", hint: "A fresh paired simulation of more than one change at the live constraint; the precomputed grid only as a labelled fallback.", needsStation: true },
+  { intent: "shift_intel", title: "Shift-intelligence agent", hint: "Top sources of loss, plus experiments run, decisions taken and expected-vs-observed outcomes." },
+  { intent: "handover", title: "Handover agent", hint: "What changed, what was applied or awaits approval, outcomes not yet mature, and what to watch." },
   // ADR-051: normally started by the live watch the moment it fires; runnable here too.
   // Each PROPOSES an action -- decided in the Proposals inbox, never executed by the agent.
-  { intent: "starvation", watch: true, title: "Starvation agent", hint: "Reads the watch's stall evidence, tests a feed buffer on the grid, proposes a ticket and a buffer change." },
-  { intent: "paint_env", watch: true, title: "Paint environment agent", hint: "Reads the zone humidity excess, cites the paint SOP, proposes an HVAC setpoint and a resequence." },
-  { intent: "tool_wear", watch: true, title: "Tool degradation agent", hint: "Reads the torque / weld-current drift, proposes a maintenance ticket and a load shift to an adjacent station." },
+  { intent: "starvation", watch: true, title: "Starvation agent", hint: "Tells a station fault from starved feed, simulates buffer, repair and cycle options, and proposes only what the simulation shows helps." },
+  { intent: "paint_env", watch: true, title: "Paint environment agent", hint: "Reads the zone humidity excess, cites the paint SOP, simulates the HVAC fix's defect impact, and says what cannot be simulated." },
+  { intent: "tool_wear", watch: true, title: "Tool degradation agent", hint: "Checks the sensor first, then simulates maintenance now, at the planned stop, and a load shift. No remaining-life claim." },
 ];
 
 export default function AgentPanel({
@@ -124,6 +127,7 @@ function AgentCard({
 }) {
   const [run, setRun] = useState<TriageRun | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [experiments, setExperiments] = useState<ExperimentListItem[]>([]);
   const poller = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const stop = useCallback(() => {
@@ -133,6 +137,24 @@ function AgentCard({
   useEffect(() => stop, [stop]);
 
   const active = run != null && ACTIVE.has(run.status);
+
+  // ADR-064: the experiments this run started, found by its id -- re-read while it runs
+  // (a new experiment can appear mid-run) and once more when it finishes.
+  const runId = run?.run_id;
+  useEffect(() => {
+    if (!runId) return;
+    let cancelled = false;
+    const read = () =>
+      listSimulationExperiments(plant, { originRunId: runId })
+        .then((r) => !cancelled && setExperiments(r.experiments))
+        .catch(() => undefined);
+    read();
+    const id = active ? setInterval(read, 3000) : null;
+    return () => {
+      cancelled = true;
+      if (id) clearInterval(id);
+    };
+  }, [plant, runId, active]);
   const blocked = agent.needsStation && station == null;
   const label = agent.needsStation && station != null ? `${agent.title} · S${station}` : agent.title;
 
@@ -166,6 +188,7 @@ function AgentCard({
         intent: agent.intent,
         stationId: agent.needsStation ? station : null,
       });
+      setExperiments([]);
       setRun({ run_id: r.run_id, status: "queued", intent: r.intent,
                mode: r.mode as "agent" | "deterministic" });
       onAction?.(`${agent.title} started (${r.mode}, acting as ${r.acting_role})`);
@@ -201,13 +224,21 @@ function AgentCard({
 
       {run && (
         <div className="mt-3 border-t border-line pt-3">
-          {active && (
-            <div className="mb-2">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            {run.mode && (
+              <Badge variant={run.mode === "agent" ? "ai" : "neutral"}>
+                {run.mode === "agent" ? "AI agent" : "Deterministic fallback"}
+              </Badge>
+            )}
+            {active && (
               <Badge variant={STATUS_VARIANT[run.status] ?? "neutral"} dot>
                 {run.status}
               </Badge>
-            </div>
-          )}
+            )}
+          </div>
+          <div className="mb-3">
+            <LifecycleStrip lifecycle={runLifecycle(run, experiments)} />
+          </div>
           {agent.intent === "incident" &&
             (run.progress?.agents?.length || run.agents_used?.length) && (
               <AgentTrail agents={run.progress?.agents ?? run.agents_used ?? []} done={!active} />
@@ -217,6 +248,18 @@ function AgentCard({
               <PhaseTrail phases={phases} progress={run.progress} tools={run.tool_ledger} done={!active} />
             </div>
           )}
+          {experiments.map((e) => (
+            <details key={e.experiment_id} className="mb-3" open={!active}>
+              <summary className="cursor-pointer text-2xs text-ink-dim">
+                <span className="font-bold text-ink">Simulation experiment</span>{" "}
+                {e.experiment_id} · S{e.station_id} · {e.seed_count} seeds · {e.status}
+                {e.verdict ? ` · ${e.verdict.replace(/_/g, " ")}` : ""}
+              </summary>
+              <div className="mt-2">
+                <ExperimentComparison experimentId={e.experiment_id} />
+              </div>
+            </details>
+          ))}
           {!active && (
             <div className="scroll-fade-b max-h-[28rem] overflow-y-auto pr-1">
               <VerdictStrip run={run} />

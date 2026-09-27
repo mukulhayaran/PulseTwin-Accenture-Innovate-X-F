@@ -40,6 +40,12 @@ class ThresholdReport:
     marginal_cost_of_doubling: float
     units_per_shift: float
     curve: list[dict] = field(default_factory=list)
+    # ADR-061: where the budget threshold was CHOSEN, and what its ties did. Before this,
+    # train.py chose it on the test scores it is then measured on.
+    threshold_selected_on: str = "test"
+    budget_alerts_intended: int = 0
+    budget_alerts_at_selection: int = 0
+    score_count_at_budget_threshold: int = 0
 
     def to_dict(self) -> dict:
         d = {k: v for k, v in self.__dict__.items() if k != "curve"}
@@ -78,13 +84,27 @@ def build_thresholds(
     units_per_shift: float,
     escape_rate: float,
     n_shifts: float,
+    p_select: np.ndarray | None = None,
+    n_shifts_select: float | None = None,
 ) -> ThresholdReport:
-    """Compute both thresholds and the alarm-budget curve between them."""
+    """Compute both thresholds and the alarm-budget curve between them.
+
+    `p_select` / `n_shifts_select` are the scores the budget threshold is CHOSEN on
+    (validation, ADR-061); `y` / `p` are what it is MEASURED on (test). Omitting them keeps
+    the old behaviour of choosing on the evaluation scores themselves, which is test-set
+    selection when those are test scores -- train.py no longer does that.
+
+    The rule is the legacy top-k: the k-th highest selection score. When that score is a
+    tied plateau every tied unit alerts, which is how a 6/shift budget ran to 8.48/shift.
+    `budget_alerts_at_selection` and `score_count_at_budget_threshold` report it.
+    """
     p_cost = cost_optimal_threshold(econ, escape_rate)
+    sel = p if p_select is None else np.asarray(p_select)
+    n_sel = n_shifts if n_shifts_select is None else n_shifts_select
 
     # Budget threshold: the cut that admits at most `max_alerts_per_shift` per shift.
-    budget_total = econ.max_alerts_per_shift * n_shifts
-    order = np.sort(p)[::-1]
+    budget_total = econ.max_alerts_per_shift * n_sel
+    order = np.sort(sel)[::-1]
     k = int(min(max(1, round(budget_total)), len(order)))
     p_budget = float(order[k - 1])
 
@@ -110,6 +130,8 @@ def build_thresholds(
     # What a manager can actually decide: the marginal value of staffing enough response
     # capacity to double the alert budget. This IS a real choice with a real price.
     doubled = int(min(max(1, round(budget_total * 2)), len(order)))
+    # The doubled-budget point is chosen on the selection scores too; its recall is
+    # measured on the evaluation scores like everything else.
     p_doubled = float(order[doubled - 1])
     _, rec_2x, n_2x = _rates(y, p, p_doubled)
     extra_caught = max(0.0, rec_2x - rec_b) * float(y.sum())
@@ -145,4 +167,8 @@ def build_thresholds(
         marginal_cost_of_doubling=float(marginal_cost),
         units_per_shift=float(units_per_shift),
         curve=curve,
+        threshold_selected_on="test" if p_select is None else "validation",
+        budget_alerts_intended=k,
+        budget_alerts_at_selection=int((sel >= p_budget).sum()),
+        score_count_at_budget_threshold=int((p == p_budget).sum()),
     )

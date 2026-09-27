@@ -74,6 +74,9 @@ export default function ManagerPage() {
     getBottleneck(plant).then(setBn).catch(() => setBn(null));
     getMetrics(plant).then(setMetrics).catch(() => setMetrics(null));
     fetchHistory(plant);
+    // Clear first: the previous plant's station id is not in this plant's grid, and the
+    // debounced what-if below fired with it (a 404) before the new list arrived.
+    setWfStation(null);
     getWhatIfStations(plant).then((s) => {
       setWfStations(s);
       setWfStation(s[0]?.station_id ?? null);
@@ -226,7 +229,8 @@ export default function ManagerPage() {
                   <XAxis
                     dataKey="t"
                     {...axisProps}
-                    interval={Math.max(1, Math.floor(timeline.length / 8))}
+                    interval="preserveStartEnd"
+                    minTickGap={56}
                   />
                   <YAxis {...axisProps} domain={[0, "dataMax + 2"]} width={44} />
                   <RTooltip

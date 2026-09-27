@@ -60,6 +60,16 @@ APPROVED = {
     ("GET", "/api/knowledge/search"),
     # --- ADR-051: read-only -- the watch's evidence, never its decisions
     ("GET", "/api/watch/firings"),
+    # --- ADR-064: simulation experiments on an ISOLATED twin copy, and the structured
+    # outcome memory. The one POST runs the simulator, never the line; the proposal
+    # inbox is readable, its approve/reject endpoints are still not tools.
+    ("POST", "/api/simulation-experiments"),
+    ("GET", "/api/simulation-experiments"),
+    ("GET", "/api/simulation-experiments/{experiment_id}"),
+    ("GET", "/api/simulation-experiments/{experiment_id}/comparison"),
+    ("GET", "/api/learning/outcomes"),
+    ("GET", "/api/learning/similar"),
+    ("GET", "/api/proposals"),
 }
 
 # Surfaces that must NEVER become tools, whatever else is admitted.
@@ -70,7 +80,7 @@ APPROVED = {
 # argument should reopen: the full per-unit journey, the audit record of who did what,
 # anything mutating, and the unbounded stream.
 FORBIDDEN_SUBSTRINGS = ("/api/units/{", "/api/audit", "/api/admin",
-                        "/api/stream", "/api/feedback")
+                        "/api/stream")
 
 # Checklists carry `operator_group` (CLAUDE.md §3). No tool may reach a surface that
 # reads them -- the strongest privacy defence is that the data never leaves at all.
@@ -137,10 +147,12 @@ def test_path_param_tools_declare_their_placeholders(registry) -> None:
         )
 
 
-def test_only_one_non_get_tool_exists(registry) -> None:
-    """simulate_whatif is the sole POST, and it mutates no plant or model state."""
-    posts = [s for s in registry.values() if s.method != "GET"]
-    assert [s.name for s in posts] == ["simulate_whatif"]
+def test_the_only_non_get_tools_run_simulators(registry) -> None:
+    """Two POSTs, both simulators: the precomputed grid and an isolated twin experiment.
+    Neither mutates plant, model or proposal state -- approve/reject stay human-only."""
+    posts = sorted(s.name for s in registry.values() if s.method != "GET")
+    assert posts == ["run_simulation_experiment", "simulate_whatif"]
+    assert not any("approve" in s.path or "reject" in s.path for s in registry.values())
 
 
 def test_plant_ids_are_not_hardcoded(registry) -> None:
@@ -171,13 +183,34 @@ def test_every_read_tool_returns_data(registry, client, plant) -> None:
             args["limit"] = 10
         if name == "get_recent_alerts":
             args.update({"alerts_only": True, "limit": 5})
-        if spec.path_params:
+        if spec.path_params == ("experiment_id",):
+            # A real, finished experiment row rather than a spawned worker, which would
+            # simulate in the background while the rest of the suite runs.
+            args = {"experiment_id": _a_finished_experiment(client, plant)}
+        elif spec.path_params:
             # Path-param tools need a real id, so take one from the plant's own alerts
             # rather than inventing one -- a made-up unit id would make this assert a
             # 404 handler instead of the tool.
             args["unit_id"] = _an_alerting_unit(client, plant)
         out = T.dispatch(registry, api, name, __import__("json").dumps(args))
         assert out.get("ok") is True, f"{name} -> {out}"
+
+
+def _a_finished_experiment(client, plant: str) -> str:
+    from serve import db
+    ops = client.app.state.ops
+    eid = f"EXP-test-{plant}"
+    db.execute(ops, "DELETE FROM simulation_scenarios WHERE experiment_id=?", (eid,))
+    db.execute(ops, "DELETE FROM simulation_experiments WHERE experiment_id=?", (eid,))
+    db.execute(ops, """INSERT INTO simulation_experiments (experiment_id, created_at,
+                       plant_id, station_id, objective, requested_by, status, horizon_s,
+                       seeds, interventions) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+               (eid, "2026-01-01T00:00:00+00:00", plant, 12, "throughput", "manager",
+                "done", 3600.0, "[1]", "[]"))
+    db.execute(ops, """INSERT INTO simulation_scenarios (scenario_id, experiment_id,
+                       ordinal, label, is_baseline, supported) VALUES (?,?,0,?,1,1)""",
+               (f"{eid}-0", eid, "baseline (no intervention)"))
+    return eid
 
 
 def test_simulate_whatif_returns_a_projection(registry, client) -> None:

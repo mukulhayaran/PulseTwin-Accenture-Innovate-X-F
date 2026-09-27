@@ -29,7 +29,7 @@ can actually hold.
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from genai import config
@@ -42,6 +42,9 @@ UNKNOWN_CALL = "unknown_call"
 UNRESOLVABLE_POINTER = "unresolvable_pointer"
 NON_NUMERIC_TARGET = "non_numeric_target"
 VALUE_MISMATCH = "value_mismatch"
+# ADR-064: a claim carrying an interval that is not the interval the cited result carries.
+# Before experiments existed the gate only checked that an inferred claim HAD an interval.
+INTERVAL_MISMATCH = "interval_mismatch"
 UNSOURCED_CURRENCY = "unsourced_currency"
 MISSING_INTERVAL = "missing_interval"
 PROVENANCE_MISMATCH = "provenance_mismatch"
@@ -201,7 +204,12 @@ def derive_tolerance(claim: Claim) -> float:
 # ------------------------------------------------------------------- number extraction
 def _numbers_in(text: str) -> list[tuple[str, float]]:
     out: list[tuple[str, float]] = []
-    for token in _NUMBER_RE.findall(text):
+    for m in _NUMBER_RE.finditer(text):
+        token = m.group()
+        # "101-125s" is a RANGE, not 101 and minus 125: a hyphen glued to a preceding
+        # digit is not a sign. Measured live: the phantom -125 cost a correct sentence.
+        if token.startswith("-") and m.start() > 0 and text[m.start() - 1].isdigit():
+            token = token[1:]
         cleaned = token.replace("$", "").replace(",", "").replace("%", "")
         if not cleaned or cleaned in ("-", "."):
             continue
@@ -210,6 +218,26 @@ def _numbers_in(text: str) -> list[tuple[str, float]]:
         except ValueError:
             continue
     return out
+
+
+def _printed_matches(token: str, value: float, pool: set[float]) -> float | None:
+    """The pool value this printed number stands for, or None.
+
+    The SAME rounding rule claims get (derive_tolerance: half a unit in the last printed
+    place), applied to prose -- before, a claim could say 41.8 for 41.77 but the sentence
+    beside it could not. Integers stay exact: "3" must not absorb every value in [2.5,3.5].
+    A percentage may also stand for a RATIO the API returned (85.9% for 0.8586), at the
+    ratio's equivalent precision -- a unit conversion, not a looser match.
+    """
+    cleaned = token.replace("$", "").replace(",", "").replace("%", "")
+    d = _decimals(cleaned) or 0
+    tol = 0.5 * 10.0 ** -d if d else 1e-6
+    for c in pool:
+        if abs(value - c) <= tol:
+            return c
+        if token.endswith("%") and abs(value / 100.0 - c) <= max(tol / 100.0, 1e-9):
+            return c
+    return None
 
 
 def _flatten_numbers(node: Any, acc: set[float]) -> None:
@@ -308,6 +336,19 @@ def verify(
         finding.recommendation, cited_values, corpus, station_ids, carried)
     prose_issues.extend(more_issues)
     carried_used = used_summary | used_reco
+    # ADR-064: hypothesis statements are prose too, under exactly the same sweep.
+    served_hypotheses = []
+    for h in finding.hypotheses:
+        if _contains_operator_identity(h.statement):
+            verdicts.append(ClaimVerdict(f"<{h.id}>", OPERATOR_IDENTITY,
+                                         "operator identity in a hypothesis"))
+            continue
+        h_issues, clean, used = _sweep_prose(h.statement, cited_values, corpus,
+                                             station_ids, carried)
+        prose_issues.extend(h_issues)
+        carried_used |= used
+        served_hypotheses.append(replace(h, statement=clean,
+                                         claim_ids=[c for c in h.claim_ids if c in ok_ids]))
 
     # ---- outcome
     total = len(finding.claims)
@@ -370,6 +411,8 @@ def verify(
         # marker because a run with even one bad one never reaches this line.
         knowledge_citations=finding.knowledge_citations,
         proposed_actions=served_actions,
+        decision=finding.decision,
+        hypotheses=served_hypotheses,
     )
     return (
         Verification(status=status, claims_total=total, claims_verified=verified,
@@ -466,8 +509,29 @@ def _verify_claim(claim: Claim, transcript: dict[str, Any]) -> ClaimVerdict:
             return ClaimVerdict(claim.id, PROVENANCE_MISMATCH,
                                 f"row says {row_prov}, claim says {claim.provenance}")
 
-    # ---- C2 faithful
+    # ---- C2 faithful. A claim written as a percentage of a ratio the API returned
+    # (85.9% for 0.8586) is the same number in another unit, compared at its printed
+    # precision -- the live run's commonest false rejection.
     tol = derive_tolerance(claim)
+    as_percent = claim.unit in ("percent", "pct", "%") or any(
+        t.endswith("%") and _numbers_in(t) and abs(_numbers_in(t)[0][1] - claim.value) < 1e-9
+        for t in _NUMBER_RE.findall(claim.text))
+    if as_percent and abs(float(target) * 100.0 - claim.value) <= tol:
+        return ClaimVerdict(claim.id, OK, resolved_value=float(target))
+    # ---- the interval, when the cited result carries one beside the value
+    if (isinstance(parent, dict) and claim.ci_low is not None and claim.ci_high is not None
+            and isinstance(parent.get("ci_low"), (int, float))
+            and isinstance(parent.get("ci_high"), (int, float))
+            and abs(float(target) - claim.value) <= tol):
+        for side in ("ci_low", "ci_high"):
+            got = float(getattr(claim, side))
+            want = float(parent[side])
+            d = _decimals(repr(got))
+            side_tol = max(tol, 0.5 * 10.0 ** -(d if d is not None else 3))
+            if abs(got - want) > side_tol:
+                return ClaimVerdict(claim.id, INTERVAL_MISMATCH,
+                                    f"{side} {got} vs result {want} (tol {side_tol})",
+                                    float(target))
     if abs(float(target) - claim.value) > tol:
         return ClaimVerdict(claim.id, VALUE_MISMATCH,
                             f"claim {claim.value} vs result {target} (tol {tol})",
@@ -535,13 +599,13 @@ def _sweep_prose(
     for sentence in _SENTENCE_SPLIT.split(text.strip()) if text.strip() else []:
         bad: list[str] = []
         for token, value in _numbers_in(sentence):
-            if any(abs(value - c) < 1e-6 for c in cited):
+            if _printed_matches(token, value, cited) is not None:
                 continue
-            if any(abs(value - c) < 1e-6 for c in corpus):
+            if _printed_matches(token, value, corpus) is not None:
                 continue
             if value.is_integer() and int(value) in station_ids:
                 continue
-            match = next((c for c in carried if abs(value - c) < 1e-6), None)
+            match = _printed_matches(token, value, carried)
             if match is not None:
                 used.add(match)
                 continue

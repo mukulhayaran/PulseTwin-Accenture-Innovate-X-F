@@ -30,6 +30,7 @@ if not (ROOT / "artifacts" / "pulsetwin.db").exists():
 from fastapi.testclient import TestClient  # noqa: E402
 
 from genai import config, intents  # noqa: E402
+from genai import loop as L  # noqa: E402
 from genai import orchestrator as O  # noqa: E402
 from genai import tools as T  # noqa: E402
 from genai import verifier as V  # noqa: E402
@@ -176,9 +177,17 @@ def test_every_specialist_can_search_engineering_knowledge() -> None:
         assert "search_engineering_knowledge" in spec.tool_names, spec.key
 
 
-def test_wallclock_budgets_sum_to_the_single_agent_ceiling() -> None:
-    total = sum(s.wallclock_cap_s for s in O.SPECIALISTS.values()) + 60.0
-    assert total == config.RUN_WALLCLOCK_CAP_S
+def test_wallclock_budgets_partition_the_incident_ceiling() -> None:
+    """ADR-063/064: the incident run is five sequential stages with their own ceiling
+    (the single-agent 300 s could not hold a reasoning synthesis plus a simulation); the
+    stages must still sum to it exactly, and it must stay inside the stale-worker verdict
+    so a slow run is never mistaken for a dead one."""
+    from serve.routers.triage import WORKER_STALE_S
+    total = (sum(s.wallclock_cap_s for s in O.SPECIALISTS.values())
+             + O.PLANNER.wallclock_cap_s + O._SYNTHESIS_WALLCLOCK_CAP_S)
+    assert total == config.INCIDENT_WALLCLOCK_CAP_S
+    assert config.INCIDENT_WALLCLOCK_CAP_S < WORKER_STALE_S
+    assert config.RUN_WALLCLOCK_CAP_S < WORKER_STALE_S
 
 
 # --------------------------------------------------------------------------- end to end
@@ -196,6 +205,8 @@ def test_happy_path_produces_a_globally_sequential_transcript_the_real_verifier_
         _tool_turn(("get_recent_alerts", {"plant_id": "plant_a", "alerts_only": True,
                                           "limit": 5})),
         _final("{}"),
+        # ADR-064 simulation planner: declines to simulate (answer, evidence re-ask, answer)
+        _final("{}"), _final("{}"),
         # synthesis (no tools; just the final text the orchestrator returns as .content)
         _final('{"summary": "s", "claims": [], "recommendation": "r"}'),
     ]
@@ -204,7 +215,9 @@ def test_happy_path_produces_a_globally_sequential_transcript_the_real_verifier_
     assert out.status == "finished"
     assert [r.call_id for r in out.records] == ["call_0001", "call_0002", "call_0003"]
     assert [r.agent for r in out.records] == ["reliability", "production", "risk"]
-    assert [a["status"] for a in out.agents_used] == ["ok", "ok", "ok"]
+    assert [a["key"] for a in out.agents_used] == ["reliability", "production", "risk",
+                                                   "simulation"]
+    assert [a["status"] for a in out.agents_used] == ["ok", "ok", "ok", "ok"]
     assert out.content == '{"summary": "s", "claims": [], "recommendation": "r"}'
 
     # Build a Finding that cites ONE real number gathered by EACH specialist, and prove a
@@ -252,12 +265,14 @@ def test_a_specialist_that_hits_its_own_iteration_cap_is_marked_partial_and_synt
         dataclasses.replace(O.SPECIALISTS["risk"], max_iterations=1),
     )
     script = [
-        # reliability finishes cleanly
-        _final("{}"),
+        # reliability finishes cleanly (answer, then again after the evidence-first re-ask)
+        _final("{}"), _final("{}"),
         # production finishes cleanly
-        _final("{}"),
+        _final("{}"), _final("{}"),
         # risk: a tool call that never gets a chance to finish within max_iterations=1
         _tool_turn(("get_recent_alerts", {"plant_id": "plant_a"})),
+        # ADR-064 simulation planner declines to simulate
+        _final("{}"), _final("{}"),
         # synthesis
         _final('{"summary": "s", "claims": [], "recommendation": "r"}'),
     ]
@@ -304,3 +319,49 @@ def test_the_synthesizer_gets_no_tools(registry, api) -> None:
 
     synthesis_request = client.seen_requests[-1]
     assert synthesis_request["tools"] == []
+
+
+def test_the_synthesizer_sees_every_specialist_record_even_when_evidence_is_large() -> None:
+    """Truncating the evidence as ONE list kept head+tail and dropped whole records from
+    the middle -- measured, two of six results vanished and the synthesizer cited their
+    call_ids blind. Each record is now shrunk to an equal share instead."""
+    recs = [L.ToolRecord(call_id=f"call_{i:04d}", provider_call_id="", seq=i, name="t",
+                         arguments={}, result={"rows": [{"k": j, "v": "x" * 40}
+                                                        for j in range(400)]},
+                         duration_ms=1.0, phase="p") for i in range(6)]
+    text = O._render_evidence(recs, [])
+    assert all(f'"call_id": "call_{i:04d}"' in text for i in range(6))
+
+
+def test_the_simulation_planner_runs_after_the_specialists_and_before_synthesis(
+        registry, api) -> None:
+    """ADR-064. The planner's experiment call is tagged `simulation`, sequenced after the
+    specialists' calls, and visible to the synthesizer's evidence."""
+    script = [
+        _final("{}"), _final("{}"),          # reliability: no tool, re-asked, answers
+        _final("{}"), _final("{}"),          # production
+        _final("{}"), _final("{}"),          # risk
+        _tool_turn(("get_similar_incidents", {"plant_id": "plant_a"})),
+        _final("{}"),
+        _final('{"summary": "s", "claims": [], "recommendation": "r"}'),
+    ]
+    out = _run(StubClient(script), api, registry)
+    assert out.status == "finished"
+    assert [(r.agent, r.name) for r in out.records] == [("simulation", "get_similar_incidents")]
+    assert out.agents_used[-1] == {"key": "simulation", "label": "Simulation planner",
+                                   "status": "ok", "tool_calls": 1}
+
+
+def test_every_citable_pointer_resolves_against_the_recorded_result() -> None:
+    """ADR-064 follow-up: the synthesizer copies pointers instead of guessing them."""
+    from genai import verifier as V
+    result = {"ok": True, "data": {"stations": [{"station_id": 12, "util": 0.93,
+                                                 "provenance": "inferred", "ci_low": 0.9,
+                                                 "ci_high": 0.96, "name": "Body"}],
+                                   "count": 1, "flag": True, "a/b": 2.5,
+                                   "_truncated": {"omitted": 4}}}
+    rows = O.citable_numbers(result)
+    assert rows and all(V.resolve_pointer(result, p) == v for p, v, *_ in rows)
+    assert ["/data/stations/0/util", 0.93, "inferred"] in rows
+    assert not any("_truncated" in p or p.endswith("/flag") for p, *_ in rows)
+    assert ["/data/a~1b", 2.5] in rows

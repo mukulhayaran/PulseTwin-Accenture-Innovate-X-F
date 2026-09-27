@@ -65,6 +65,8 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 from genai.api_client import PulseTwinAPI
+from serve.experiment_catalog import INTERVENTIONS as EXPERIMENT_INTERVENTIONS
+from serve.experiment_catalog import OBJECTIVES as EXPERIMENT_OBJECTIVES
 
 ROLE_ORDER = ("supervisor", "manager", "leadership", "system")
 
@@ -82,7 +84,9 @@ PHASE_ORDER: tuple[str, ...] = (
     "Reading station performance",
     "Examining risk signals",
     "Tracing affected units",
+    "Recalling past outcomes",
     "Running simulation",
+    "Comparing interventions",
     "Costing the options",
     "Searching engineering knowledge",
     "Composing the finding",
@@ -108,6 +112,11 @@ class ToolSpec:
     # here. `dispatch` pops them out of the args and formats them into the path, so a
     # value can never smuggle a second path segment past the egress allowlist.
     path_params: tuple[str, ...] = ()
+    # ADR-064: a call that waits on a simulation needs longer than the client default,
+    # and an experiment is attributed to the run that asked for it -- the server enforces
+    # per-run experiment and seed budgets on that id, so the agent cannot out-count them.
+    timeout_s: float | None = None
+    inject_run_id: bool = False
 
 
 def phase_for(registry: dict[str, ToolSpec], name: str) -> str:
@@ -148,6 +157,16 @@ def _q_except(*path_names: str) -> Callable[[dict[str, Any]], tuple[dict, None]]
         return {k: v for k, v in args.items() if k not in path_names}, None
 
     return _build
+
+
+def _experiment_body(args: dict[str, Any]) -> tuple[None, dict[str, Any]]:
+    """The experiment request, told to wait for its result so the model reads numbers in
+    one call instead of polling (each poll would cost a provider round trip). Always the
+    SMOKE profile: measured live, an agent that chose `standard` (5 seeds x 2 h x 4
+    scenarios) ran 219 s and the run died at its wall-clock cap. People can still ask
+    for the longer profile through the API."""
+    return None, {**{k: v for k, v in args.items() if k != "profile"},
+                  "profile": "smoke", "wait_s": 150.0}
 
 
 def _obj(required: list[str], props: dict[str, Any]) -> dict[str, Any]:
@@ -198,7 +217,9 @@ def build_registry(plant_ids: list[str]) -> dict[str, ToolSpec]:
             "conversion is a value_mismatch. Also carries lost throughput in units/hour, "
             "ordered by lost throughput descending, and a 'provenance' field of "
             "'measured' or 'inferred' -- an inferred row means the station has no "
-            "continuous sensors and the value is reconstructed.",
+            "continuous sensors and the value is reconstructed. An inferred row also "
+            "carries '<field>_ci_low' and '<field>_ci_high' (e.g. lost_uph_ci_low): "
+            "copy them into the claim's ci_low/ci_high verbatim.",
             "Reading station performance",
             "GET", "/api/stations/stats", None,
             _obj(["plant_id"], {"plant_id": plant}), _q(plant_id="plant_id"),
@@ -424,6 +445,126 @@ def build_registry(plant_ids: list[str]) -> dict[str, ToolSpec]:
             }),
             _q(query="query", limit="limit"),
         ),
+        # ------------------------------------------------------------------- ADR-064
+        ToolSpec(
+            "run_simulation_experiment",
+            "Run a FRESH simulation on an isolated copy of the plant twin: a paired "
+            "baseline plus 1-4 interventions, every one on the same seeds. Returns, per "
+            "scenario, throughput, WIP, the station's starved/blocked/down %, expected "
+            "defects and alerts -- each a 95% interval -- the paired change vs baseline, and "
+            "a DETERMINISTIC verdict (improved / too_uncertain / no_improvement). Supported "
+            "interventions ONLY: feed_buffer_delta {delta: -4..8}, cycle_time_pct {pct: "
+            "-20..20}, repair_time_pct {pct: -50..50}, maintenance {delay_min: 0..240}, "
+            "mitigation {action_type: hvac_setpoint|maintenance_ticket|shift_weld_load|"
+            "increase_feed_buffer|rebalance_cycle} (a mitigation needs an incident context "
+            "it addresses). Anything else is refused with a reason: report the refusal, "
+            "never approximate it with a different intervention. The server enforces a "
+            "budget of 3 experiments and 48 scenario-seeds per run. If the result comes "
+            "back with status queued or running, call get_simulation_experiment with its "
+            "experiment_id -- NEVER start a second experiment for the same question. Every "
+            "value is SIMULATED: claim it with provenance inferred and its ci_low/ci_high.",
+            "Running simulation",
+            "POST", "/api/simulation-experiments", "manager",
+            _obj(["plant_id", "station_id", "objective", "interventions"], {
+                "plant_id": plant,
+                "station_id": {"type": "integer"},
+                "objective": {"type": "string", "enum": sorted(EXPERIMENT_OBJECTIVES)},
+                "interventions": {
+                    "type": "array", "minItems": 1, "maxItems": 4,
+                    "items": {"type": "object", "required": ["type", "params"],
+                              "properties": {
+                                  "type": {"type": "string",
+                                           "enum": sorted(EXPERIMENT_INTERVENTIONS)},
+                                  "params": {"type": "object"}}},
+                },
+                "incident": {"type": "object",
+                             "description": "Optional operating context: {detector, "
+                                            "evidence} copied from a watch firing, or "
+                                            "{scenario, severity}."},
+            }),
+            _experiment_body, timeout_s=170.0, inject_run_id=True,
+        ),
+        ToolSpec(
+            "get_simulation_experiment",
+            "Read a simulation experiment by id: status, seeds, horizon, per-scenario "
+            "intervals and the paired change vs baseline. While it is still running this "
+            "waits up to a minute for it to finish, so one call is usually enough.",
+            "Comparing interventions",
+            "GET", "/api/simulation-experiments/{experiment_id}", "manager",
+            _obj(["experiment_id"], {"experiment_id": {"type": "string"}}),
+            lambda args: ({"wait_s": 60}, None), path_params=("experiment_id",),
+            timeout_s=80.0,
+        ),
+        ToolSpec(
+            "compare_simulation_interventions",
+            "The compact comparison table for an experiment: one row per scenario -- the "
+            "baseline in absolute terms, every intervention as its paired change -- with "
+            "whether the throughput change is distinguishable from zero.",
+            "Comparing interventions",
+            "GET", "/api/simulation-experiments/{experiment_id}/comparison", "manager",
+            _obj(["experiment_id"], {"experiment_id": {"type": "string"}}),
+            _q_except("experiment_id"), path_params=("experiment_id",),
+        ),
+        ToolSpec(
+            "list_simulation_experiments",
+            "Recent simulation experiments for a plant, newest first, with each one's "
+            "verdict and best intervention.",
+            "Recalling past outcomes",
+            "GET", "/api/simulation-experiments", "manager",
+            _obj(["plant_id"], {"plant_id": plant,
+                                "limit": {"type": "integer", "minimum": 1, "maximum": 20}}),
+            _q(plant_id="plant_id", limit="limit"),
+        ),
+        ToolSpec(
+            "get_action_outcomes",
+            "What happened after approved actions were applied to the simulated twin: "
+            "baseline and observed values of the station metric, the deterministic "
+            "verdict (successful / partially_successful / no_material_effect / harmful / "
+            "inconclusive / cancelled) and, where an experiment projected the same "
+            "quantity, the projection error. Includes projection-accuracy statistics.",
+            "Recalling past outcomes",
+            "GET", "/api/learning/outcomes", "manager",
+            _obj(["plant_id"], {
+                "plant_id": plant,
+                "station_id": {"type": "integer"},
+                "intervention_type": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            }),
+            _q(plant_id="plant_id", station_id="station_id",
+               intervention_type="intervention_type", limit="limit"),
+        ),
+        ToolSpec(
+            "get_similar_incidents",
+            "Prior incidents that match on structured fields -- incident type (starvation, "
+            "paint_env, tool_wear), station, intervention -- with the human decision, the "
+            "action, its evaluated outcome, a per-intervention tally, and interventions "
+            "that repeatedly failed. Rejected recommendations are listed but are not "
+            "failures.",
+            "Recalling past outcomes",
+            "GET", "/api/learning/similar", "manager",
+            _obj(["plant_id"], {
+                "plant_id": plant,
+                "incident_type": {"type": "string",
+                                  "enum": ["starvation", "paint_env", "tool_wear"]},
+                "station_id": {"type": "integer"},
+                "intervention_type": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            }),
+            _q(plant_id="plant_id", incident_type="incident_type", station_id="station_id",
+               intervention_type="intervention_type", limit="limit"),
+        ),
+        ToolSpec(
+            "get_proposals",
+            "The action-proposal inbox, READ-ONLY: each watch firing's proposed actions, "
+            "the human decision (approved / rejected / awaiting), whether it was applied "
+            "to the simulated twin, its lifecycle stage and its outcome. You cannot "
+            "approve or reject anything -- only a person can.",
+            "Recalling past outcomes",
+            "GET", "/api/proposals", "manager",
+            _obj(["plant_id"], {"plant_id": plant,
+                                "limit": {"type": "integer", "minimum": 1, "maximum": 20}}),
+            _q(plant_id="plant_id", limit="limit"),
+        ),
     ]
     return {s.name: s for s in specs}
 
@@ -481,6 +622,25 @@ def validate_args(spec: ToolSpec, args: dict[str, Any]) -> str | None:
             # silently accept anything, and `alerts_only="yes"` must not pass.
             if not isinstance(value, bool):
                 return f"{key} must be a boolean"
+        elif kind == "array":
+            if not isinstance(value, list):
+                return f"{key} must be an array"
+            if len(value) > rule.get("maxItems", len(value)) or len(value) < rule.get("minItems", 0):
+                return f"{key} must hold {rule.get('minItems', 0)}..{rule.get('maxItems')} items"
+            item = rule.get("items") or {}
+            for i, entry in enumerate(value):
+                if item.get("type") == "object":
+                    if not isinstance(entry, dict):
+                        return f"{key}[{i}] must be an object"
+                    for req_key in item.get("required", []):
+                        if req_key not in entry:
+                            return f"{key}[{i}] is missing {req_key}"
+                    for sub, subrule in (item.get("properties") or {}).items():
+                        if "enum" in subrule and sub in entry and entry[sub] not in subrule["enum"]:
+                            return f"{key}[{i}].{sub} must be one of {subrule['enum']}"
+        elif kind == "object":
+            if not isinstance(value, dict):
+                return f"{key} must be an object"
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             if "minimum" in rule and value < rule["minimum"]:
                 return f"{key} must be >= {rule['minimum']}"
@@ -530,8 +690,11 @@ def dispatch(
         path = spec.path.format(**substituted)
 
     params, body = spec.build(args)
+    if spec.inject_run_id:
+        body = {**(body or {}), "origin_run_id": api.run_id}
     status, payload = (
-        api.get(path, params) if spec.method == "GET" else api.post(path, body or {})
+        api.get(path, params, timeout_s=spec.timeout_s) if spec.method == "GET"
+        else api.post(path, body or {}, timeout_s=spec.timeout_s)
     )
 
     if status == 403:

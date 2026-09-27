@@ -108,7 +108,7 @@ def ambient_at(cfg: PlantConfig, ts: np.ndarray, rng: np.random.Generator) -> pd
         np.isin(weekday, list(amb.humidity_high_days)), amb.humidity_high_add_pct, 0.0
     )
 
-    order = np.argsort(ts)
+    order = np.argsort(ts, kind="stable")
     noise = np.empty(len(ts))
     noise[order] = ar1(len(ts), phi_for_halflife(40.0), amb.hvac_noise_sigma_pct, rng)
     humid = np.clip(humid + noise, 5.0, 100.0)
@@ -168,7 +168,7 @@ def generate_signals(
 
         # visits at this station, in time order
         sub_idx = np.flatnonzero(mask)
-        order = np.argsort(out["entry_ts"].to_numpy()[sub_idx])
+        order = np.argsort(out["entry_ts"].to_numpy()[sub_idx], kind="stable")
         sidx = sub_idx[order]
 
         targets = _station_targets(st.id)

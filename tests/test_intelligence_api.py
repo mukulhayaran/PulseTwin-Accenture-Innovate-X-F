@@ -315,3 +315,12 @@ def test_metrics_serves_the_blobs_it_stores(client, plant) -> None:
     assert body["bottleneck_report"].get("forecast_skill") is not None
     assert body["soft_sensor_validation"].get("mean_r2") is not None
     assert body["station_value"]
+
+
+def test_a_shift_without_a_bottleneck_move_reports_no_agreement(client) -> None:
+    for plant in PLANTS:
+        b = client.get(f"/api/shift/summary?plant_id={plant}", headers=MANAGER).json()["bottleneck"]
+        if b["shift_events"] == 0 and b["windows_in_shift"]:
+            assert b["detector_agreement"] is None and b["detector_agreement_note"]
+        else:
+            assert b["detector_agreement_note"] is None

@@ -256,9 +256,10 @@ function UserChip({ role, sessionRole }: { role: Role; sessionRole: Role | null 
   // page to link to: each restricted view asks for sign-in in place (SignInGate).
   if (!sessionRole) {
     return (
-      <span className="flex items-center gap-2 px-3 py-1.5 text-xs text-ink-faint">
+      <span className="flex items-center gap-2 px-3 py-1.5 text-xs text-ink-faint" title="Not signed in">
         <IconLock size={13} />
-        Not signed in
+        <span className="hidden sm:inline">Not signed in</span>
+        <span className="sr-only sm:hidden">Not signed in</span>
       </span>
     );
   }
@@ -275,6 +276,8 @@ function UserChip({ role, sessionRole }: { role: Role; sessionRole: Role | null 
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
+        aria-haspopup="menu"
+        aria-label={`Account: ${name}, ${sessionRole}`}
         className={cn(
           "flex items-center gap-2.5 border border-transparent py-1 pl-1 pr-2 text-left",
           "transition-colors duration-150 hover:border-line-strong"
@@ -344,11 +347,14 @@ function Rail({
   const pathname = usePathname();
 
   return (
-    <div className="flex h-full flex-col bg-surface-dark">
+    <div className="relative flex h-full flex-col bg-[linear-gradient(180deg,#1c242d,#1a2129_40%,#161c23)] shadow-[inset_-1px_0_0_rgb(255_255_255/0.06)]">
+      <div aria-hidden className="tex-grain pointer-events-none absolute inset-0" />
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-[radial-gradient(120%_80%_at_0%_0%,rgb(28_105_212/0.28),transparent_70%)]" />
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-48 bg-[radial-gradient(100%_80%_at_100%_100%,rgb(124_58_237/0.12),transparent_70%)]" />
       <Link
         href="/"
         onClick={onNavigate}
-        className="block px-5 pb-6 pt-5 transition-opacity hover:opacity-90"
+        className="relative block px-5 pb-6 pt-5 transition-opacity hover:opacity-90"
       >
         <span className="flex items-center gap-2.5">
           <span aria-hidden className="flex items-end gap-[3px]">
@@ -364,9 +370,9 @@ function Rail({
         </span>
       </Link>
 
-      <nav className="flex-1 px-3" aria-label="Views">
+      <nav className="relative flex-1 px-3" aria-label="Views">
         <ul className="space-y-0.5">
-          {ROUTE_POLICIES.map(({ href, label, requires }) => {
+          {ROUTE_POLICIES.filter((p) => !p.hideFromRail).map(({ href, label, requires }) => {
             const Icon = VIEW_ICONS[href] ?? IconHome;
             const active = pathname === href;
             const open = canEnter(href, sessionRole);
@@ -381,11 +387,11 @@ function Rail({
                     onClick={onNavigate}
                     aria-current={active ? "page" : undefined}
                     title={`Sign in as ${requires?.join(" or ")} to open this view.`}
-                    className="relative flex items-center gap-3 px-3 py-2.5 text-sm text-on-dark/45 transition-colors duration-150 hover:bg-on-dark/5 hover:text-on-dark-soft"
+                    className="group relative flex items-center gap-3 px-3 py-2.5 text-sm text-on-dark/45 transition-colors duration-200 hover:bg-on-dark/[0.035] hover:text-on-dark/60"
                   >
                     <Icon size={17} className="shrink-0" />
                     {label}
-                    <IconLock size={12} className="ml-auto shrink-0" />
+                    <IconLock size={12} className="ml-auto shrink-0 transition-colors duration-200 group-hover:text-on-dark-soft" />
                   </Link>
                 </li>
               );
@@ -398,16 +404,22 @@ function Rail({
                   onClick={onNavigate}
                   aria-current={active ? "page" : undefined}
                   className={cn(
-                    "relative flex items-center gap-3 px-3 py-2.5 text-sm transition-colors duration-150",
+                    "group relative flex items-center gap-3 px-3 py-2.5 text-sm transition-colors duration-200",
                     active
-                      ? "bg-on-dark/8 font-bold text-on-dark"
-                      : "text-on-dark-soft hover:bg-on-dark/5 hover:text-on-dark"
+                      ? "bg-[linear-gradient(90deg,rgb(138_180_240/0.16),rgb(255_255_255/0.03))] font-bold text-on-dark"
+                      : "text-on-dark-soft hover:bg-on-dark/[0.035] hover:text-on-dark"
                   )}
                 >
                   {active && (
-                    <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-info-on-dark" />
+                    <span aria-hidden className="bar-in absolute inset-y-0 left-0 w-[3px] bg-info-on-dark" />
                   )}
-                  <Icon size={17} className="shrink-0" />
+                  <Icon
+                    size={17}
+                    className={cn(
+                      "shrink-0 transition-[color,transform] duration-200",
+                      active ? "text-info-on-dark" : "motion-safe:group-hover:translate-x-px"
+                    )}
+                  />
                   {label}
                 </Link>
               </li>
@@ -416,7 +428,7 @@ function Rail({
         </ul>
       </nav>
 
-      <div className="px-5 pb-5 pt-6">
+      <div className="relative px-5 pb-5 pt-6">
         <div className="flex items-center justify-between gap-2 border-t border-line-on-dark pt-3">
           <span className="text-numeric text-2xs text-on-dark-soft">v0.4.0</span>
           <span
@@ -425,7 +437,7 @@ function Rail({
               connected ? "text-ok-on-dark" : "text-danger-on-dark"
             )}
           >
-            <span className="size-1.5 rounded-full bg-current" />
+            <span className={cn("size-1.5 rounded-full bg-current", connected && "dot-pulse")} />
             {connected ? "All systems online" : "Twin unreachable"}
           </span>
         </div>
@@ -547,7 +559,7 @@ export default function AppShell({
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-canvas text-ink-dim">
+      <div className="app-canvas min-h-screen text-ink-dim">
         {/* ---------------------------------------------------------- the rail */}
         <aside className="fixed inset-y-0 left-0 z-40 hidden w-60 overflow-y-auto lg:block">
           <Rail role={role} sessionRole={sessionRole} connected={connected} />
@@ -575,7 +587,7 @@ export default function AppShell({
           <OfflineBanner connected={connected} lastKnownAt={lastKnownAt} onRetry={onRetry} />
 
           {/* ------------------------------------------------------- top bar */}
-          <header className="sticky top-0 z-30 border-b border-line bg-canvas">
+          <header className="sticky top-0 z-30 border-b border-[rgb(15_23_42/0.07)] bg-canvas/80 backdrop-blur-xl">
             <div className="flex h-16 items-center gap-3 px-4 lg:px-6">
               <button
                 type="button"
@@ -633,8 +645,8 @@ export default function AppShell({
                   aria-label="Open a unit by id, or ask the Copilot"
                   className={cn(
                     "h-10 w-full border border-line-strong bg-canvas pl-9 pr-3 text-xs text-ink",
-                    "placeholder:text-ink-faint transition-colors",
-                    "hover:border-ink focus:border-ink focus:outline-none"
+                    "placeholder:text-ink-faint transition-[border-color,box-shadow] duration-200",
+                    "hover:border-ink focus:border-primary focus:shadow-[0_0_0_3px_rgb(28_105_212/0.12)] focus:outline-none"
                   )}
                 />
               </form>
@@ -647,8 +659,8 @@ export default function AppShell({
           </header>
 
           {/* ------------------------------------------------------ sub-bar */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line px-4 py-2.5 lg:px-6">
-            <h1 className="shrink-0 text-lg font-bold text-ink">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[rgb(15_23_42/0.07)] bg-canvas/55 px-4 py-2.5 backdrop-blur-sm lg:px-6">
+            <h1 className="shrink-0 text-xl font-bold text-ink">
               {persona}
             </h1>
             {controls}
@@ -668,7 +680,7 @@ export default function AppShell({
           </div>
 
           {/* pb-20 keeps the last panel scrollable clear of the fixed copilot dock */}
-          <main className="flex-1 p-4 pb-20 lg:p-6 lg:pb-20">{children}</main>
+          <main key={pathname} className="page-in flex-1 p-4 pb-20 lg:p-6 lg:pb-20">{children}</main>
         </div>
       </div>
     </TooltipProvider>

@@ -66,6 +66,10 @@ ml = [
     # it (No module named '_loss'), which failed all 10 scorer-parity tests after a
     # lock refresh bumped it (82b9f8b). Retraining to move the pin changes the model.
     "scikit-learn==1.7.2",
+    # ADR-061: the XGBoost defect-risk CHALLENGER (offline/ml/xgb_challenger.py). Trained
+    # and exported offline only; serve/ walks the exported Booster JSON with numpy and
+    # never imports it (tests/test_serve_imports.py).
+    "xgboost>=2.1",
     "pyarrow>=17",
     "PyYAML>=6.0",
 ]

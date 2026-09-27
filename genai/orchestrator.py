@@ -92,6 +92,19 @@ RISK_GUIDANCE = (
     + _KNOWLEDGE_GUIDANCE + " " + intents.COMMON_GUIDANCE
 )
 
+PLANNING_GUIDANCE = (
+    "You are the SIMULATION PLANNER on an incident-investigation team (ADR-064). The "
+    "specialists' evidence is below. You choose experiments; the deterministic simulator "
+    "calculates them -- you never compute plant physics. Read get_similar_incidents and "
+    "get_action_outcomes first: what happened the last times this station or incident "
+    "type came up? Then form at most 3 bounded hypotheses about the constraint or quality "
+    "risk and test the strongest with ONE run_simulation_experiment (catalogue "
+    "interventions only, at the station the evidence implicates). Revise at most once if "
+    "the first result is too uncertain. If nothing is worth simulating -- no implicated "
+    "station, or only unsupported interventions -- say so and stop. "
+    + intents.COMMON_GUIDANCE
+)
+
 SYNTHESIS_GUIDANCE = (
     "You are the LEAD investigator reconciling three specialists' findings into ONE report "
     "for a shift engineer. You have NO tools -- every fact you can cite is in the evidence "
@@ -103,7 +116,17 @@ SYNTHESIS_GUIDANCE = (
     "call_ids shown below -- you cannot call a tool to check anything further. If a "
     "specialist's evidence includes a search_engineering_knowledge result you quote or "
     "paraphrase, cite it in `knowledge_citations` with the exact call_id shown below, not "
-    "as free prose. " + intents.COMMON_GUIDANCE
+    "as free prose. CITE BY COPYING: each evidence entry carries `citable`, a list of "
+    "[pointer, value, provenance] for every number in it. A claim's citation.pointer and "
+    "value MUST be copied from the `citable` list of the call_id you cite -- a pointer "
+    "that is not listed there does not resolve and the claim is rejected. When an entry "
+    "says inferred, the claim is inferred and carries the ci_low/ci_high listed beside it. "
+    "Keep four things apart: OBSERVED facts (measured claims), INFERRED "
+    "relationships, SIMULATION PROJECTIONS (claims citing run_simulation_experiment, "
+    "provenance inferred with their exact ci_low/ci_high) and your RECOMMENDATION. Set "
+    "`decision` from the planner's experiment: recommend only a change whose paired "
+    "interval is clear of zero; otherwise no_improvement or too_uncertain. "
+    + intents.COMMON_GUIDANCE
 )
 
 SPECIALISTS: dict[str, SpecialistSpec] = {
@@ -130,14 +153,22 @@ SPECIALISTS: dict[str, SpecialistSpec] = {
         RISK_GUIDANCE, max_iterations=6, max_tool_calls=5, wallclock_cap_s=90.0),
 }
 
-# reliability(60) + production(90) + risk(90) + synthesis(60) == 300s == config.
-# RUN_WALLCLOCK_CAP_S exactly. The orchestrated run's worst-case wallclock ceiling is the
-# SAME number the single-agent path already uses, just partitioned across four bounded
-# stages instead of spent by one -- not a new budget to justify.
-_SYNTHESIS_WALLCLOCK_CAP_S = 60.0
+# ADR-064: the simulation-planning stage. Separate from SPECIALISTS -- it reads THEIR
+# evidence, so it always runs after them -- and it only runs when the registry holds the
+# experiment tool (a keyless or narrowed registry skips it).
+PLANNER = SpecialistSpec(
+    "simulation", "Simulation planner",
+    ("run_simulation_experiment", "compare_simulation_interventions",
+     "get_similar_incidents", "get_action_outcomes"),
+    PLANNING_GUIDANCE, max_iterations=5, max_tool_calls=3, wallclock_cap_s=120.0)
+
+# reliability(60) + production(90) + risk(90) + planner(120) + synthesis(150) == 510 s ==
+# config.INCIDENT_WALLCLOCK_CAP_S exactly: a bounded ceiling partitioned across five
+# stages. The planner's slice includes one smoke experiment (~40 s of simulation).
+_SYNTHESIS_WALLCLOCK_CAP_S = 150.0
 assert (
-    sum(s.wallclock_cap_s for s in SPECIALISTS.values()) + _SYNTHESIS_WALLCLOCK_CAP_S
-    == config.RUN_WALLCLOCK_CAP_S
+    sum(s.wallclock_cap_s for s in SPECIALISTS.values()) + PLANNER.wallclock_cap_s
+    + _SYNTHESIS_WALLCLOCK_CAP_S == config.INCIDENT_WALLCLOCK_CAP_S
 )
 
 
@@ -178,19 +209,56 @@ def _sum_opt(a: float | None, b: float | None) -> float | None:
     return (a or 0.0) + (b or 0.0)
 
 
+CITABLE_PER_RECORD = 60
+
+
+def citable_numbers(result: Any, limit: int = CITABLE_PER_RECORD) -> list[list[Any]]:
+    """Every numeric leaf of a RECORDED tool result as [pointer, value, provenance?].
+
+    The synthesizer has no tools, so it used to GUESS paths into nested evidence --
+    measured live: `/data/nodes/6/plain_language`, `/data/at_risk_units` (a list),
+    `/data/alerts/0/factors/8` (past the end), each rejected by the gate. Built from the
+    same recorded result the verifier resolves against, so every listed pointer resolves
+    by construction; copying one is not a guess. `_truncated` bookkeeping is skipped."""
+    out: list[list[Any]] = []
+
+    def walk(node: Any, path: str, prov: str | None) -> None:
+        if len(out) >= limit:
+            return
+        if isinstance(node, bool):
+            return
+        if isinstance(node, (int, float)):
+            out.append([path, node] + ([prov] if prov else []))
+            return
+        if isinstance(node, dict):
+            here = node.get("provenance") if isinstance(node.get("provenance"), str) else prov
+            for k, v in node.items():
+                if str(k).startswith("_"):
+                    continue
+                walk(v, f"{path}/{str(k).replace('~', '~0').replace('/', '~1')}", here)
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, f"{path}/{i}", prov)
+
+    walk(result, "", None)
+    return out
+
+
 def _render_evidence(records: list[L.ToolRecord], agent_statuses: list[dict]) -> str:
+    # Each record gets an EQUAL SHARE of the budget. Truncating the bundle as one list
+    # kept its head and tail and dropped whole records from the middle: measured, two of
+    # six specialists' results vanished and the synthesizer cited their call_ids blind,
+    # inventing pointers (`/data/nodes/6/plain_language`) the gate then rejected.
+    share = config.SYNTHESIS_EVIDENCE_BUDGET // max(1, len(records))
     bundle = [
         {"call_id": r.call_id, "tool_name": r.name, "specialist": r.agent,
-         "phase": r.phase, "result": r.result}
+         "phase": r.phase, "result": L.truncate(r.result, budget=share),
+         "citable": citable_numbers(r.result)}
         for r in records
     ]
-    # A looser re-truncation than any individual result's own MAX_TOOL_RESULT_BYTES cap,
-    # sized for a prompt that carries no tool schemas. This can only ever HIDE a data
-    # point the synthesizer might have cited -- it can never let it cite a number the
-    # verifier cannot resolve, because verification always checks against each
-    # specialist's OWN recorded (already-truncated) ToolRecord.result, never against this
-    # re-rendered view.
-    bundle = L.truncate(bundle, budget=config.SYNTHESIS_EVIDENCE_BUDGET)
+    # Shrinking can only HIDE a data point the synthesizer might have cited -- it can never
+    # let it cite a number the verifier cannot resolve, because verification checks each
+    # specialist's OWN recorded ToolRecord.result, never this re-rendered view.
     status_lines = "\n".join(
         f"- {a['label']}: {a['status']} ({a['tool_calls']} tool call(s))"
         for a in agent_statuses
@@ -222,6 +290,7 @@ def run_orchestrated_incident(
     returns -- so genai/triage.py::_persist() needs no new type to consume. `agents_used`
     on the result is what tells the caller this run was orchestrated at all.
     """
+    run_started = now()
     specialist_keys = select_specialists(intents.INCIDENT, question)
     all_records: list[L.ToolRecord] = []
     agent_statuses: list[dict[str, Any]] = [
@@ -293,6 +362,40 @@ def run_orchestrated_incident(
             result.agents_used = agent_statuses
             return result
 
+    # ---- ADR-064 simulation planning: a bounded agent that CHOOSES experiments
+    if PLANNER.tool_names[0] in registry:
+        plan_registry = {n: registry[n] for n in PLANNER.tool_names if n in registry}
+        agent_statuses.append({"key": PLANNER.key, "label": PLANNER.label,
+                               "status": "running", "tool_calls": 0})
+        emit(PLANNER.key, PLANNER.label)
+
+        def _on_plan_progress(ev: L.ProgressEvent) -> None:
+            emit(PLANNER.key, PLANNER.label, ev)
+
+        plan = L.run_loop(
+            client, api, plan_registry,
+            plant_id=plant_id, question=question, acting_role=acting_role,
+            thread_context=thread_context,
+            intent_guidance=PLANNER.guidance + "\n\n"
+            + _render_evidence(all_records, agent_statuses),
+            on_progress=_on_plan_progress,
+            classify_error=classify_error, retry_after=retry_after, now=now,
+            initial_seq=seq, max_iterations=PLANNER.max_iterations,
+            max_tool_calls=PLANNER.max_tool_calls, wallclock_cap_s=PLANNER.wallclock_cap_s,
+        )
+        for r in plan.records:
+            r.agent = PLANNER.key
+        all_records.extend(plan.records)
+        seq = plan.final_seq
+        prompt_tokens += plan.prompt_tokens
+        completion_tokens += plan.completion_tokens
+        total_iterations += plan.iterations
+        provider_cost_usd = _sum_opt(provider_cost_usd, plan.provider_cost_usd)
+        degradations.extend(f"{PLANNER.key}:{d}" for d in plan.degradations)
+        agent_statuses[-1]["tool_calls"] = len(plan.records)
+        agent_statuses[-1]["status"] = "ok" if plan.status == "finished" else "partial"
+        emit(PLANNER.key, PLANNER.label)
+
     # ---- synthesis: same run_loop, an empty registry, no new mechanism
     evidence = _render_evidence(all_records, agent_statuses)
 
@@ -307,7 +410,11 @@ def run_orchestrated_incident(
         on_progress=_on_synth_progress,
         classify_error=classify_error, retry_after=retry_after, now=now,
         initial_seq=seq, max_iterations=2, max_tool_calls=0,
-        wallclock_cap_s=_SYNTHESIS_WALLCLOCK_CAP_S,
+        # What the specialists left unspent, never below the 60 s floor: the run's 300 s
+        # ceiling holds, but a fast investigation no longer strands a reasoning model at
+        # 60 s for its one large composing call (measured: a 14-tool incident timed out).
+        wallclock_cap_s=max(_SYNTHESIS_WALLCLOCK_CAP_S,
+                            config.INCIDENT_WALLCLOCK_CAP_S - (now() - run_started)),
     )
     all_records.extend(synth.records)   # empty in practice; harmless if a model misbehaves
     prompt_tokens += synth.prompt_tokens

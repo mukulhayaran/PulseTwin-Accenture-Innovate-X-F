@@ -210,8 +210,10 @@ def record_agents_used(con: Any, run_id: str, agents: list[dict[str, Any]]) -> N
     `orchestrated=0` and `agents_used=NULL`."""
     db.execute(
         con,
-        "UPDATE triage_runs SET orchestrated=1, agents_used=? WHERE run_id=?",
-        (_dumps(agents), run_id),
+        # A bound bool, not a literal 1: Postgres's column is BOOLEAN (migration 014) and
+        # refuses an integer, which crashed every orchestrated incident run on the stack.
+        "UPDATE triage_runs SET orchestrated=?, agents_used=? WHERE run_id=?",
+        (True, _dumps(agents), run_id),
     )
 
 
@@ -229,6 +231,12 @@ def bump_thread(con: Any, thread_id: str) -> None:
 def _now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def mark_fallback(con: Any, run_id: str) -> None:
+    """ADR-064: the provider was unavailable, so this run is now the deterministic plan.
+    The row must say so -- the inbox and the cards label every run by its real mode."""
+    db.execute(con, "UPDATE triage_runs SET mode='deterministic' WHERE run_id=?", (run_id,))
 
 
 def mark_running(con: Any, run_id: str, provider: str | None, model_id: str | None) -> None:

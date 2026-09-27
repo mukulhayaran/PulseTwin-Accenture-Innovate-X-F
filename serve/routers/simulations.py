@@ -11,7 +11,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from serve import db
-from serve.live_simulation import SCENARIOS
 from serve.middleware.auth import get_role
 
 
@@ -55,11 +54,6 @@ def _call(action, *args):
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.get("/api/simulations/scenarios")
-def scenarios() -> dict:
-    return {"scenarios": list(SCENARIOS), "source": "synthetic"}
-
-
 @router.post("/api/simulations")
 def start_simulation(req: StartSimulationRequest, request: Request,
                      role: str = Depends(get_role)) -> dict:
@@ -87,8 +81,8 @@ def simulation_metrics(run_id: str, request: Request) -> dict:
     run = _call(_manager(request).get, run_id)
     alert_rows = db.query_all(
         request.app.state.ops,
-        """SELECT opened_at, acknowledged_at, actioned_at, validated_at, closed_at,
-                  status, outcome FROM active_alerts
+        """SELECT opened_at, opened_wall_at, acknowledged_at, actioned_at, validated_at,
+                  closed_at, status, outcome FROM active_alerts
              WHERE run_id=?""",
         (run_id,),
     )
@@ -106,15 +100,20 @@ def simulation_metrics(run_id: str, request: Request) -> dict:
         result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         return result if result.tzinfo is not None else result.replace(tzinfo=timezone.utc)
 
+    # Human response times are WALL-clock durations (ADR-063): acknowledged_at and
+    # actioned_at are wall clock, opened_at is the simulation clock, so they are measured
+    # from opened_wall_at. A row without it (opened before migration 019) is left out
+    # rather than reported as a months-long mixed-clock difference.
     for row in alert_rows:
+        opened = row.get("opened_wall_at")
+        if not opened:
+            continue
         if row.get("acknowledged_at"):
             acknowledgement_s.append(max(0.0, (
-                parsed(row["acknowledged_at"]) - parsed(row["opened_at"])
-            ).total_seconds()))
+                parsed(row["acknowledged_at"]) - parsed(opened)).total_seconds()))
         if row.get("actioned_at"):
             containment_s.append(max(0.0, (
-                parsed(row["actioned_at"]) - parsed(row["opened_at"])
-            ).total_seconds()))
+                parsed(row["actioned_at"]) - parsed(opened)).total_seconds()))
     validation_counts: dict[str, int] = {}
     for row in decisions:
         result = row.get("validation_result") or "pending"

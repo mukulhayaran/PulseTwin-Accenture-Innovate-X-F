@@ -13,6 +13,10 @@ import {
   SegmentedControl, SkeletonChart, SkeletonStats, SkeletonTable, type Column,
 } from "@/components/ui";
 
+const COMPACT_USD = new Intl.NumberFormat("en-US", {
+  style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 2,
+});
+
 type Scenario = "pessimistic" | "base" | "optimistic";
 
 export default function LeadershipPage() {
@@ -276,7 +280,8 @@ export default function LeadershipPage() {
                     <LabelList
                       dataKey="value"
                       position="top"
-                      formatter={(v: number) => money(v)}
+                      // compact on the bar (5 labels must fit a phone); exact figure in the tooltip
+                      formatter={(v: number) => COMPACT_USD.format(v)}
                       style={{ fill: theme.ink, fontSize: 12, fontWeight: 700, fontFamily: "var(--font-mono)" }}
                     />
                     {bridge.map((b: any, i: number) => (

@@ -13,6 +13,7 @@ without a socket, which is what lets the whole tool surface be tested with no AP
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,11 +32,12 @@ class Transport(Protocol):
 
 
 def urllib_transport(
-    method: str, url: str, headers: dict[str, str], body: bytes | None
+    method: str, url: str, headers: dict[str, str], body: bytes | None,
+    timeout: float = DEFAULT_TIMEOUT_S,
 ) -> Response:
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT_S) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
             return resp.status, (json.loads(raw) if raw else None)
     except urllib.error.HTTPError as exc:
@@ -61,7 +63,11 @@ class PulseTwinAPI:
         self.base_url = base_url.rstrip("/")
         self.role = role
         self.run_id = run_id
-        self._transport = transport or urllib_transport
+        # One call may wait longer than the default (a simulation experiment returns when
+        # its seeds finish); the default transport reads this, test transports ignore it.
+        self._timeout = DEFAULT_TIMEOUT_S
+        self._transport = transport or (
+            lambda m, u, h, b: urllib_transport(m, u, h, b, timeout=self._timeout))
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -74,19 +80,33 @@ class PulseTwinAPI:
             # POST /api/whatif writes an audit row; without this the IATF 16949 trail
             # would be ambiguous about who acted.
             "X-PulseTwin-Actor": f"genai_triage/{self.run_id}",
+            # ADR-063: the per-run session serve minted at spawn. Absent in dev mode and in
+            # a hand-run CLI, where the role header alone is honoured.
+            **({"X-PulseTwin-Token": os.environ["PULSETWIN_API_TOKEN"]}
+               if os.environ.get("PULSETWIN_API_TOKEN") else {}),
         }
 
-    def get(self, path: str, params: dict[str, Any] | None = None) -> Response:
+    def get(self, path: str, params: dict[str, Any] | None = None,
+            timeout_s: float | None = None) -> Response:
         qs = f"?{urllib.parse.urlencode(params)}" if params else ""
-        return self._transport("GET", f"{self.base_url}{path}{qs}", self._headers(), None)
+        self._timeout = timeout_s or DEFAULT_TIMEOUT_S
+        try:
+            return self._transport("GET", f"{self.base_url}{path}{qs}", self._headers(), None)
+        finally:
+            self._timeout = DEFAULT_TIMEOUT_S
 
-    def post(self, path: str, payload: dict[str, Any]) -> Response:
-        return self._transport(
-            "POST",
-            f"{self.base_url}{path}",
-            self._headers(),
-            json.dumps(payload).encode("utf-8"),
-        )
+    def post(self, path: str, payload: dict[str, Any],
+             timeout_s: float | None = None) -> Response:
+        self._timeout = timeout_s or DEFAULT_TIMEOUT_S
+        try:
+            return self._transport(
+                "POST",
+                f"{self.base_url}{path}",
+                self._headers(),
+                json.dumps(payload).encode("utf-8"),
+            )
+        finally:
+            self._timeout = DEFAULT_TIMEOUT_S
 
 
 def testclient_transport(client: Any) -> Callable[..., Response]:

@@ -58,9 +58,9 @@ export default function Panel({
   const hasHeader = Boolean(title || note || actions);
 
   return (
-    <section className={cn("panel-surface flex min-w-0 flex-col", TONE_RING[tone], className)}>
+    <section className={cn("panel-surface flex min-w-0 flex-col hover:border-[rgb(15_23_42/0.14)]", TONE_RING[tone], className)}>
       {hasHeader && (
-        <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-line px-5 py-3">
+        <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-line bg-[linear-gradient(180deg,#fbfcfe,#ffffff)] px-5 py-3">
           {title && (
             <h2
               className={cn(

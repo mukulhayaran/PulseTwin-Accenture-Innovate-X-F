@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from genai import offline_triage, tools as T, verifier as V  # noqa: E402
 from genai.api_client import PulseTwinAPI  # noqa: E402
 from genai.api_client import testclient_transport as _tc_transport  # noqa: E402
-from genai.finding import ACTION_TYPES, Citation, Claim, Finding, ProposedAction  # noqa: E402
+from genai.finding import ACTION_TYPES, DECISIONS, Citation, Claim, Finding, ProposedAction  # noqa: E402
 from serve import db  # noqa: E402
 from serve.live_simulation import MITIGATIONS, LiveSimulationManager, _mitigated  # noqa: E402
 from serve.main import app  # noqa: E402
@@ -110,7 +110,14 @@ def test_each_watch_plan_proposes_verified_actions(ctx, detector) -> None:
     ver, served = V.verify(finding, loop.transcript, station_ids=_station_ids(client))
 
     assert ver.status != V.REJECTED, ver.reject_reason
-    assert served.proposed_actions, ver.action_issues
+    # ADR-064: a watch plan TESTS its options on a fresh simulation and proposes only what
+    # the paired interval supports -- "nothing helped" is a correct, named answer.
+    assert "run_simulation_experiment" in [r.name for r in loop.records]
+    assert finding.decision in DECISIONS and finding.decision
+    if finding.decision == "recommend":
+        assert served.proposed_actions, ver.action_issues
+    else:
+        assert not finding.proposed_actions, finding.decision
     assert ver.actions_served == ver.actions_total
     ok = {v.claim_id for v in ver.claim_verdicts if v.ok}
     for action in served.proposed_actions:
@@ -275,3 +282,25 @@ def test_a_proposal_waits_for_its_counterfactual(ctx, tmp_path, monkeypatch) -> 
     view = listed()
     assert view["counterfactual"]["status"] == "failed"
     assert view["status"] == "PROPOSED"  # a dead job must not hold the decision forever
+
+
+def test_forecast_jobs_are_capped_and_a_refusal_says_why(tmp_path, monkeypatch) -> None:
+    # Uncapped, a scenario firing repeatedly stacked 32 Monte Carlo jobs and starved the host.
+    from serve.routers import proposals as P
+
+    class Running:
+        def __init__(self, *a, **kw):
+            pass
+
+        def poll(self):
+            return None
+
+    monkeypatch.setenv("PULSETWIN_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(P.subprocess, "Popen", Running)
+    monkeypatch.setattr(P, "_FORECAST_JOBS", [])
+    for i in range(P.MAX_FORECAST_JOBS + 1):
+        P.start_counterfactual(f"P-{i}", "plant_a", "starvation", 12, {}, 0.4)
+    assert len(P._FORECAST_JOBS) == P.MAX_FORECAST_JOBS
+    refused = P._counterfactual(f"P-{P.MAX_FORECAST_JOBS}")
+    assert refused["status"] == "failed" and "twin busy" in refused["error"]
+    assert P._counterfactual("P-0")["status"] == "queued"

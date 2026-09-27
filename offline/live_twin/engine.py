@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict, deque
+from functools import partial
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -52,6 +53,7 @@ from offline.live_twin.signals import LiveSignalGenerator
 from offline.simulator.line_model import SIM_START, LineSimulator
 from offline.simulator.operators import OperatorPool
 from offline.simulator.physics import build_latents
+from serve.model_loader import load_scorer
 from serve.scorer import Scorer
 
 # Visit tuple layout emitted by LineSimulator. Mirrors generate.VISIT_COLUMNS; named here
@@ -128,7 +130,14 @@ class LiveTwinEngine:
         )
         self.incidents = IncidentState()
         self.causal = LiveCausal(cfg)
-        self.scorer = Scorer(artifacts / f"model_{cfg.plant_id}.npz")
+        # The plant's CHAMPION (artifacts/model_selection_<plant>.json, ADR-061), and its
+        # own alert policy: a trailing-window budget for an XGBoost champion (ADR-062),
+        # the static budget_threshold passed in otherwise.
+        self.scorer, champion = load_scorer(artifacts, cfg.plant_id)
+        if self.scorer is None:
+            self.scorer = Scorer(artifacts / f"model_{cfg.plant_id}.npz")
+            champion = {}
+        self._rolling = champion.get("rolling")
 
         self._stations = {s.id: s for s in cfg.stations}
         self._base_capacity = {s.id: s.buffer_capacity_after for s in cfg.stations}
@@ -138,13 +147,14 @@ class LiveTwinEngine:
 
         self.units: dict[int, UnitRecord] = {}
         self._consumed_visits = 0
-        self._history: dict[tuple[int, str], deque] = defaultdict(lambda: deque(maxlen=MAX_HISTORY))
+        # partial, not lambda: identical behaviour, and picklable -- ADR-064 caches the
+        # warmed engine on disk so each experiment skips the ~13 s warm-up.
+        self._history: dict[tuple[int, str], deque] = defaultdict(
+            partial(deque, maxlen=MAX_HISTORY))
         self._variant_history: dict[tuple[int, str, str], deque] = defaultdict(
-            lambda: deque(maxlen=TRAILING_MEDIAN_UNITS)
-        )
+            partial(deque, maxlen=TRAILING_MEDIAN_UNITS))
         self._lot_outcomes: dict[str, deque] = defaultdict(
-            lambda: deque(maxlen=LOT_TRAILING_UNITS)
-        )
+            partial(deque, maxlen=LOT_TRAILING_UNITS))
         self._warmup_rows: list[dict] = []
         self._bucket_cache: dict[str, int] = {}
         self._cutoff_seen = 0
@@ -534,7 +544,10 @@ class LiveTwinEngine:
 
         record.risk_raw = float(self.scorer.predict_raw_proba(vector)[0])
         record.risk = float(self.scorer.predict(vector)[0])
-        record.alerted = record.risk >= self.budget_threshold
+        cut = self._rolling.threshold if self._rolling is not None else self.budget_threshold
+        record.alerted = record.risk >= cut
+        if self._rolling is not None:
+            self._rolling.observe(record.risk)
         record.scored_at = self.now
         self.units_scored += 1
 

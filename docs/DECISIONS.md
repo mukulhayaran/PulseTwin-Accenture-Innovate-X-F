@@ -2146,3 +2146,401 @@ the defect model carries `s13..s18_humidity_pct` and `paint_buffer_dwell_s`. The
 paint rule stays a detector of zone-climate *faults*.
 
 **Result:** see `docs/AGENT_EVAL.md`, which has both plants.
+
+### ADR-060 — Inferred station stats carry their interval; transient provider errors are retried
+
+**Context.** A live `shift_intel` run on the prod stack failed `provider_unreachable` after
+six good tool calls and 78 s: one dropped OpenRouter response ended the whole run,
+because the loop retried only rate limits and malformed tool calls. The re-run then
+reached a finding and was **rejected** `missing_interval:c8`. The model had correctly
+cited S15's lost throughput (21.38 UPH) and its `inferred` label from
+`/api/stations/stats`, and that endpoint shipped inferred rows with no interval. That
+contract-#1 violation was already recorded as a known gotcha in CLAUDE.md §8.
+
+**Decisions.**
+1. `genai/loop.py` retries `config.TRANSIENT_ERRORS` (connection drop, timeout,
+   500/502/503/504) up to `MAX_TRANSIENT_RETRIES = 2`, with a 2 s then 4 s backoff,
+   inside `RUN_WALLCLOCK_CAP_S`. The same request is retried, not a capability rung, and
+   a 4xx is never retried. Each retry is recorded in `degradations`.
+2. `/api/stations/stats` gives every figure of an inferred row
+   `<field>_ci_low`/`<field>_ci_high`: a 95% normal-approximation interval of its hourly
+   mean (numpy, inside the import wall). Measured rows are unchanged. The tool
+   description tells the model to copy them verbatim.
+
+**Verified live** (OpenRouter, Nemotron, 2026-09-25): the same investigation came back
+`verified_with_redactions`, 13/14 claims, citing "S15 lost 21.38 uph (inferred, 95% CI
+20.85–21.91)" with the interval copied from the API. The one redaction was the model
+citing a text field as a number.
+
+**Not done.** The verifier checks that an inferred claim HAS an interval, not that it
+matches the cited source, so a model could invent one. The overview page and the
+deterministic plan still rank measured stations only, which is a deliberate choice and
+not a gap.
+
+### ADR-061 — An XGBoost defect-risk challenger, tuned and gated; not promoted
+
+**Context.** Plant A's HistGradientBoosting champion cannot rank its own alerts: all 178
+test alerts carry one calibrated score (0.406079), because every tree splits on
+`paint_buffer_dwell_s` at the root (MODEL_CARD, "Within-alert discrimination"). A challenger
+was requested with reproducible tuning, and promotion only if it beats the champion on an
+untouched test set.
+
+**This deliberately relaxes a CLAUDE.md rule, and says how.** CLAUDE.md said "Do not tune
+the model to raise PR-AUC" and "Do NOT retrain to spread the scores". The owner asked for
+exactly that. It is done in the one form the rule's reasoning allows: a challenger that
+cannot replace the champion unless every pre-registered gate passes on test data never used
+for tuning, calibration or thresholds. The oracle framing still stands: the challenger's
+0.278 PR-AUC is 58% of the 0.481 ceiling, against the champion's 53%.
+
+**A pre-existing flaw found on the way.** `offline/ml/train.py` picks the champion's
+budget threshold ON THE TEST SPLIT (`build_thresholds(y_te, p_te, ...)`, top-k). The
+published precision 0.354 / recall 0.276 are therefore measured at a test-chosen threshold,
+and the 6/shift budget became 8.48/shift because the k-th score is a 178-unit tie. Chosen on
+validation with a tie-aware rule, the champion alerts on **nothing**: its top plateau
+(162 validation units) is bigger than the 126-alert budget. The published numbers remain
+the promotion baseline, as the brief specified, and the report shows both.
+
+**Decision.** `offline/ml/xgb_challenger.py`:
+* It uses the champion's own chronological splits (train days 1–14, validate 15–21, test
+  22–28). `pre_test()` strips test rows before any search code runs. There are two
+  walk-forward folds (train 1–7 → 8–14; train 1–14 → validate), and no K-fold.
+* The search is `XGBClassifier(objective="binary:logistic", eval_metric="aucpr", hist,
+  random_state=42)`, sampled by a seeded `ParameterSampler` over the documented space, with
+  early stopping on the chronological fold. It is fully deterministic: two runs are
+  bit-identical at `n_jobs=4`.
+* Calibration: Platt (on the logit) vs isotonic. The fit uses validation only, and the
+  methods are compared by Brier **cross-fitted** across the two halves of the validation
+  days, because an in-sample Brier always favours isotonic. Isotonic is rejected when its
+  plateaus collapse the alert cohort.
+* The threshold is learned on validation, and a tied block that would overrun the budget
+  is excluded whole and reported. The test set is used exactly once, after everything is
+  frozen.
+* Runtime: the booster is truncated to its best iteration and exported in XGBoost's own JSON
+  format, then walked by `serve/xgb_scorer.py` with numpy (parity < 1e-5). serve never
+  imports xgboost, and a test pins that. `serve/model_loader.py` loads whichever champion
+  `artifacts/model_selection_<plant>.json` names. `/api/predict/defect` keeps every old
+  field and adds `calibrated_risk`, `raw_model_score`, `alert_threshold`, `risk_band`,
+  `model_type` and `calibration_method`. A non-promoted challenger is registered in
+  `model_registry` with status `challenger` and its failed gates.
+
+**The selection rule was amended once, and both runs are disclosed.** Run 1 ranked by
+validation precision after a count of satisfied constraints. The recall floor (0.276) is
+unreachable on validation for every candidate: validation has 373 defects against a
+126-alert budget, which caps recall at 0.338, and the floor needs 82% precision. That
+rewarded alerting on as few units as possible. The winner filled 32 of 126 slots, used 10
+trees and 2 isotonic plateaus, and failed on test (precision 0.33, recall 0.07). The
+amendment is lexicographic constrained selection: hard constraints first, then the
+smallest recall shortfall, then precision. It also puts one diversity definition behind
+eligibility, calibrator choice and the gate. It was justified on validation evidence, but
+made after run 1's test result was seen, so run 2 is the second look at the test set.
+Run 1's report is kept (`artifacts/xgb_challenger_plant_a_run1.json`).
+
+**Result, run 2 (30 trials, `docs/XGB_CHALLENGER.md`): NOT PROMOTED, failed `alert_budget`.**
+
+| Test | HGB published | XGBoost | Gate |
+|---|---:|---:|---|
+| Precision at budget | 0.3539 | 0.3676 | pass |
+| Recall at budget | 0.2763 | 0.2982 | pass |
+| PR-AUC | 0.2559 | 0.2783 | pass |
+| Brier / ECE | 0.0206 / 0.0104 | 0.0207 / 0.0130 | pass |
+| Alerts/shift | 8.48 | **8.81** | **fail** (> 6 and > 8.48) |
+| Unique alert scores | 1 | 185 | pass |
+
+The winner filled exactly 126 alerts (6.00/shift) on validation, but the same threshold
+admits 185 test units. That is distribution shift between the weeks, not ties: there are
+no ties at the threshold. The threshold was not moved on test to fit under 8.48, because
+that is the manipulation the gates exist to forbid. The champion keeps serving.
+
+**What would change this.** Recalibrating the threshold against a trailing score
+distribution (MODEL_CARD: "NOT IMPLEMENTED") would address the week-to-week alert-rate
+shift for both models. The challenger's ranking and diversity gains are real on test; its
+alert rate is the only blocker.
+
+### ADR-062 — Thresholds chosen on validation, a trailing-window alert budget, promotion that reaches everything
+
+**Context.** ADR-061 left five limitations. The champion's budget threshold was chosen on
+test. The challenger's static threshold drifted with the week (6.00/shift on validation,
+8.81 on test). Plant B was never evaluated. A promotion would have switched only
+`/api/predict/defect`. And the new API fields were believed to need frontend types.
+
+**Decisions and what they measured.**
+1. **`offline/ml/train.py` chooses the budget threshold on VALIDATION**, via
+   `build_thresholds(..., p_select, n_shifts_select)`, and measures it on test. It records
+   `threshold_selected_on`, the intended versus admitted alert counts, and the tie at the
+   cut. Both plants were retrained (identical models: the largest score difference is
+   3.6e-16, and PR-AUC is bit-identical) and the artifacts rebuilt.
+   * **Plant A is unchanged.** The validation top-k lands on the same 0.4060785 plateau (162
+     validation units, 178 test units), so precision 0.354 and recall 0.276 stand, now
+     honestly derived. Only the "doubling" economics moved, because that threshold is now
+     also chosen on validation.
+   * **Plant B changes.** Its test-chosen threshold (0.0928) hit exactly 6.00/shift by
+     construction. Chosen on validation (0.1898), it alerts 1.19/shift on test, at
+     precision 0.240 and recall 0.034, where it was 0.079 / 0.056. README, MODEL_CARD,
+     CLAIMS, SUBMISSION_README and STATE are updated.
+2. **A trailing-window budget threshold (`serve/rolling_threshold.py`).** For each unit, in
+   prediction-time order, it is the tie-aware budget cut over the previous 21 shifts of
+   calibrated scores, seeded with the validation week. It reads scores only, never a label.
+   The offline evaluation uses the exact runtime class, so the two cannot drift. The policy
+   is part of the MODEL ARTIFACT: XGBoost artifacts declare `trailing_budget`, and the HGB
+   champion keeps its static published threshold. Under the tie-aware rule, plant A's HGB
+   would alert on nothing, because its top plateau exceeds every week's budget.
+   **Pre-registered** before its test result existed: the challenger's gates are scored
+   under this policy.
+3. **Plant A, run 3 (the third look at its test set): NOT PROMOTED.** Under the trailing
+   policy it alerts 7.33/shift (was 8.81) at precision 0.377 and PR-AUC 0.278. It keeps
+   154 unique scores, and Brier and ECE pass. Recall falls to **0.254, below the
+   champion's 0.276, so it fails `recall_at_budget`**. The champion's recall is bought with
+   8.48 alerts/shift; matching it inside ~6/shift needs about 50% precision. This is the
+   trade-off, measured, not a defect to tune away.
+4. **Plant B, run 1: NOT PROMOTED.** It is worse on precision (0.118 vs 0.240), recall
+   (0.022 vs 0.034) and PR-AUC (0.043 vs 0.052).
+   Observed: under the tie-aware trailing rule both plant B models under-fill the budget
+   (1.3–1.6/shift), because large tied blocks sit near the cut.
+5. **Promotion now reaches everything a user sees.** On an XGBoost promotion
+   (`offline/champion.py`), `build_artifact` re-scores every unit and re-derives the alert
+   flags under the model's own trailing policy. It also recomputes the explanations, the
+   plant threshold and the headline metrics, and the live twin loads the same champion
+   and trailing window (`__deepcopy__` keeps the counterfactual fork working). The research
+   analyses in `validate.run_all` (ablations, soft sensors, retrofit uplift) remain studies
+   of the HGB model and would need rerunning for a promoted model.
+6. **Frontend types: not needed.** No frontend code calls `/api/predict/defect`, so there is
+   no type to extend. The fields are served to any API client.
+
+The reports are per plant: `docs/XGB_CHALLENGER_<plant>.md`, indexed by
+`docs/XGB_CHALLENGER.md`.
+
+### ADR-063 — Final application audit: session auth, causal stream, float8 risk, capped twin jobs
+
+**Context.** A full run-it audit of the Postgres stack (`docs/FINAL_APPLICATION_AUDIT.md`)
+found defects that the unit suite could not see, because each one lives at a seam between
+two parts of the system.
+
+**Decisions and what they measured.**
+1. **`PULSETWIN_AUTH_MODE=session`** is the shared-demo posture (compose and `render.yaml`).
+   In dev mode, a bare `X-PulseTwin-Role: system` header passed every role check. In
+   session mode only a server-issued demo session grants a role. A header can lower the
+   role, which the `/ops` "Viewing as" selector uses, but never raise it. With no session
+   the caller gets the anonymous floor view. A spawned agent run gets its own short-lived
+   session (`WORKER_STALE_S`) through the `PULSETWIN_API_TOKEN` environment variable,
+   never on argv. JWT mode is unchanged.
+2. **The replay stream is causal.** `build_artifact._risk_fields` emits no risk, alert or
+   lead time on an event before the unit's `prediction_ts`. Before this, plant A's first
+   alert appeared at S1, 20 stations before the model could have scored the unit, and
+   containment answered 409. It now appears at S21, 10.4 minutes ahead of inspection.
+   Pinned by `tests/test_stream_causality.py`.
+3. **Risk columns are DOUBLE PRECISION** (migration 017). In float4 the stored threshold
+   rounded UP past the 0.4060785366 plateau, so every alerting unit got "Monitor". It now
+   gets "Hold for inspection". Pinned by `tests/test_risk_precision.py`, which also
+   requires every `_OPS_ADDED_COLUMNS` entry to have a Postgres migration. That check is
+   how migration 018 (`active_alerts.triage_run_id`, a 500 on the alert status route)
+   was found.
+4. **Alert response times use one clock** (migration 019, `opened_wall_at`). The mean
+   time to acknowledge had subtracted a replay timestamp from a wall-clock one and read
+   20,812,517 s.
+5. **Twin forecast jobs are capped** (`MAX_FORECAST_JOBS = 2`). Every watch firing spawned
+   an uncapped physical-twin Monte Carlo of about 160 MB. A scenario sweep stacked 32 of
+   them and starved the host, so the API and even the static UI stopped answering. Past
+   the cap a job is refused with `failed: twin busy`, which the UI already renders as
+   "decide on the evidence alone".
+6. **Throughput and latency.** The live producer batches each event's writes into one
+   transaction: about 7.5 → 17 events/s. `stations/stats` and `data-quality` now
+   aggregate in SQL: 3.7 s → about 1 s.
+7. **The agent loop gets a closing turn.** When the loop reaches its last iteration or the
+   wall-clock reserve (`FINALIZE_RESERVE_S`), it withdraws the tools and asks for the
+   finding. A live run had spent 24 tool calls and ended without an answer.
+8. **The replay window prefers a day with an alert.** ADR-062's validation-chosen
+   threshold (0.1898) sat above every risk in plant B's served day, so plant B's demo had
+   no alert, no explanation and no containment to show, and 10 plant-B tests failed.
+   `build_artifact` now prefers a peak day with an alert, then the latest day with an alert,
+   then the old peak-day rule. That selects on model OUTPUT, never on labels, and every
+   metric is computed on the full test split, so none moved (checked: plant B's
+   `metrics` rows are equal to the last float digit). Plant A keeps 2026-01-28 (109 alerts
+   in window). Plant B moves to 2026-01-31, which holds all 25 of its test-split alerts:
+   they cluster on Sundays, and no humidity-peak day has one.
+9. **A shift with no bottleneck move reports no agreement.** After the plant B window
+   moved, `/api/shift/summary` read "detector agreement 100%": 32 windows, zero moves,
+   one station held all shift. That is n=1, not an accuracy, and the rule that bottleneck
+   accuracy never reads 100% exists to stop exactly that number reaching a manager. Such a
+   shift now returns `detector_agreement: null` with a `detector_agreement_note`, whatever
+   the value would have been. The whole-run accuracy (85.9% / 90.2%) is unchanged.
+
+**Follow-up, 2026-09-26: coupling audit and a live pass over every agent intent.**
+
+10. **Unused surface removed.** Five pieces had no caller:
+    - `POST /api/feedback` (the supervisor's "Useful / False alarm" buttons wrote rows
+      nothing read, and S30 inspection already supplies the real outcome);
+    - `GET /api/triage/intents` (duplicated by `availability.intents`);
+    - `GET /api/simulations/scenarios`;
+    - the frontend `EvidenceGraph` and `ChassisBlueprint` components, which were never
+      rendered;
+    - `getPlants`, `getEvidenceGraph` and `clearViewRole`.
+
+    The alert card now shows the S30 result itself. The `feedback` table (migration 016)
+    is kept, because dropping stored rows is not reversible.
+11. **Containment ranks on evidence, not on a tied risk.** Peers were `ORDER BY risk
+    LIMIT 12`, and the risks are identical, so the 12 were arbitrary. Now:
+    - still-on-the-line vehicles come first, then by number of shared factors, then by
+      time;
+    - a vehicle already through final inspection *as of the view's clock* is `INSPECTED`
+      with its `inspection_outcome`, and a decision on it is refused (409);
+    - with no clock (API and agent callers) nothing changes.
+12. **Mirrors pinned by tests:** the scenario list (frontend ↔ `SCENARIOS`), and
+    escalation and triage severity (`serve/` ↔ `configs/alert_policies.yaml`).
+13. **Live agent defects found and fixed:**
+    - `incident` crashed on Postgres (`orchestrated=1` into a BOOLEAN);
+    - a provider call could hang indefinitely, because OpenRouter keeps a slow request
+      alive with whitespace and the SDK timeout is per-read. Each call now has a total
+      deadline equal to the run's remaining budget;
+    - a toolless valid-JSON first answer at a `response_format` rung now degrades,
+      instead of only broken JSON triggering it;
+    - a toolless answer at a no-format rung gets one evidence-first re-ask;
+    - a dead worker no longer locks its thread or shows "running" in lists and proposals;
+    - the incident synthesizer inherits the specialists' unspent budget (floor 60 s,
+      ceiling still 300 s).
+14. **Verifier consistency.** Prose numbers now round by the same rule as claims:
+    - half a unit in the last printed place;
+    - integers stay exact.
+
+    A percentage may stand for a returned ratio, compared at the equivalent precision. A
+    numeric range "101-125" is no longer read as −125. What stays fatal is unchanged:
+    provenance mismatch, missing interval, operator identity.
+15. **The orchestrated incident gets its own ceiling: 390 s** (`config.INCIDENT_WALLCLOCK_CAP_S`).
+    The three specialists and the synthesizer run one after another. Once each call is
+    bounded (item 13), a 60 s synthesis slice timed out on every live incident run: 16
+    calls and 171k prompt tokens, all three specialists `ok`, no answer. The budget is
+    now 60 + 90 + 90 + 150 = 390 s, and the synthesizer also inherits any time the
+    specialists leave unspent. Single-agent runs keep 300 s. The 900 s stale-worker
+    verdict still covers both.
+16. **The synthesizer sees every record.** Its evidence bundle was truncated as ONE list,
+    which keeps the head and tail and drops the middle, so two of six specialists'
+    results never reached it. It then cited their call_ids blind, with invented pointers
+    that the gate rejected (5/10). Each record now gets an equal share of the budget.
+
+### ADR-064 — Evidence-driven agents: dynamic simulation experiments and outcome learning
+
+**Context.** The agents investigated and proposed, but nothing simulated the options fresh. The what-if agent interpolated a precomputed grid. The ADR-055 counterfactual forecast arms that were fixed per detector. Nothing checked afterwards whether an approved action worked, so no later investigation could learn from one.
+
+**Decisions.**
+1. **Two shared capabilities, not new agents.**
+   - *Simulation experiments* (`offline/sim_experiment.py`, `serve/routers/experiments.py`): a paired baseline plus up to 4 catalogue interventions, run on identical seeds against isolated copies of the physical twin (`copy.deepcopy`, every RNG reseeded).
+   - *Outcome learning* (`serve/outcomes.py`, `serve/routers/learning.py`).
+
+   The existing agent cards, intents, verifier, deterministic fallback, proposals, roles and human approval are unchanged in role.
+2. **The LLM never computes physics.** Agents choose interventions from
+   `serve/experiment_catalog.py`, the one definition both sides of the import wall share.
+   The simulator computes the numbers, and the verdict (`improved` / `too_uncertain` /
+   `no_improvement`) is a fixed rule: the paired 95% interval must clear zero in the
+   better direction.
+3. **Only honest interventions are offered:**
+   - feed-buffer delta (the buffer feeding the station);
+   - cycle-time %;
+   - repair-time %;
+   - maintenance now or at a delay, through the simulator's own failure/repair path;
+   - catalogue mitigations of a condition the experiment actually reproduces.
+
+   Variant sequencing, `resequence_paint_queue` and taking a station offline are refused, each with its reason. Nothing is mapped onto an unrelated knob.
+4. **Limits are enforced server-side:**
+   - 5 scenarios, 12 seeds and 4 h of horizon per experiment;
+   - 2 experiments running at once;
+   - a 420 s wall clock;
+   - 3 experiments and 48 scenario-seeds per agent run.
+
+   Cancellation takes effect between seeds. An abandoned worker is reaped after 180 s without a heartbeat. Results persist in the database (migration 020), so they survive a restart. The limits mirror `configs/deployment.yaml`, and a test pins the two together. The grid stays as an explicitly labelled fallback (`PRECOMPUTED-GRID ESTIMATE`).
+5. **Tools.** Six new tools were added:
+   - `run_simulation_experiment`
+   - `get_simulation_experiment`
+   - `list_simulation_experiments`
+   - `compare_simulation_interventions`
+   - `get_action_outcomes`
+   - `get_similar_incidents`
+
+   A seventh, `get_proposals`, is read-only; approve and reject remain human-only. The experiment tool waits for its result, so the model reads numbers in one call, and it is attributed to its run for budgeting.
+
+   The verifier now checks that a claimed interval **matches** the cited result's interval (`interval_mismatch`); before, it only checked that one existed. Experiment rows carry `provenance: inferred`, so contract #1's cross-check applies.
+6. **Stopping is first-class.** A finding carries a `decision`: one of `recommend`,
+   `insufficient_evidence`, `unsupported_intervention`, `simulator_unavailable`,
+   `no_improvement`, `too_uncertain` or `engineering_review`. It also carries bounded
+   `hypotheses`, which are swept like prose. The deterministic plans:
+   - propose an action only when its paired interval shows a benefit;
+   - tool wear: check the sensor before blaming the tool, and never claim remaining useful life;
+   - paint: says the resequencing effect cannot be simulated.
+7. **Incident.** The specialists still run one after another (deterministic call ids, one ledger, no database races); the UI no longer says "in parallel". A **simulation-planner** stage now sits between them and the synthesizer, with only the experiment and memory tools. The budget is 60 + 90 + 90 + 120 + 150 = 510 s.
+8. **Outcome learning is deterministic** (migration 021).
+   - **On approval**, the action is applied to the simulated twin only, and an `action_outcomes` window opens with the pre-action baseline.
+   - **When the window matures** (simulated time), `serve/outcomes.py` classifies the change against `configs/alert_policies.yaml outcome_evaluation:`. The possible verdicts are `successful`, `partially_successful`, `no_material_effect`, `harmful`, `inconclusive` and `cancelled`.
+   - **Prediction error** is computed only where a linked experiment projected the same quantity.
+   - `incident_learning_records` links trigger, run, proposal, decision, experiment and outcome.
+   - **A rejection** is stored as `not_applied`, never as a failure.
+   - **Similarity** is exact structured matching (incident type, station, intervention), ranked by fields matched, then recency.
+
+**Limitation, stated rather than hidden.** The live twin replays the committed stream with scripted conditions, so line throughput cannot respond to an action there. Outcome evaluation therefore observes **station-level** metrics:
+- stalled share (starvation);
+- humidity excess (paint);
+- signal deviation (tool wear).
+
+Only the stalled share has a simulated analogue, the station's starved + blocked + down share, so it is the only metric with a projection error. A physics-driven live twin would allow a throughput outcome, and `LiveTwinEngine` already exists to drive one.
+
+**Found by running it on the stack (all fixed and pinned):**
+- **The experiment worker read the SQLite artifact**, which the production image does
+  not ship (ADR-052). The API now passes the plant's threshold as an argument.
+- **An AI agent chose the `standard` profile** (20 replicas, 219 s) and the run died at
+  its cap. The agent tool now always runs `smoke`; the run cap is 420 s; and
+  `get_simulation_experiment` waits server-side, so a running experiment costs one poll,
+  not a new experiment.
+- **The deterministic plans passed an argument the tool schema had dropped.** Every
+  experiment call failed `invalid_arguments` and the plans quietly took their "simulator
+  unavailable" path, while a grid-only test kept passing. A new test pins the fresh path.
+- **The proposal view blanked every outcome field.** `proposals._loads` maps non-JSON
+  text to None, so only the JSON columns are decoded now.
+- **A watch investigation failed outright when the provider quota ran out.** Runs that
+  allow it now fall back to the verified deterministic plan, labelled on the row and in
+  the finding. An explicit agent request, and a credential error, still fail visibly.
+- **Background forecasts starved the agents' experiments about 15×** (8 CPU-bound
+  processes on 4 cores). Forecasts now run at lower OS priority with at most 2 processes.
+- **The starvation plan tested a cycle-time change but could only propose a buffer or a
+  ticket.** It now proposes `rebalance_cycle` when that is what the simulation supports.
+
+**Live evidence, 2026-09-26.**
+- **AI-agent starvation run:** 8 tools, one experiment, 4 hypotheses (supported, rejected
+  or untested), `no_improvement`, nothing proposed, 8/8 claims verified.
+- **Deterministic paint run:** approved, applied, then `successful` (humidity excess
+  16.7 → 0.1 points).
+- **Deterministic congestion run:** a fresh experiment returned `improved`; the plan
+  proposed only `rebalance_cycle`, which was approved and then evaluated `successful`
+  (stalled share 1.00 → 0.48). The projection error was −0.52: better than simulated,
+  because the physics twin did not reproduce the replay's scripted stall at that station.
+  That mismatch is exactly what the outcome memory exists to surface.
+
+### ADR-065 — Reproducible simulation, a repaired registry, citable synthesis, and a 5.5× faster twin
+
+**Bugs.**
+1. **The simulator did not reproduce its own shipped data.** The labels in `data/plant_a`
+   hash to `5048d329…`, but both the committed code and the current code regenerated
+   `e1666b60…`. The cause: `np.argsort` (default `kind`, not stable) ordered tied timestamps
+   differently across numpy/CPU builds, so the ambient noise series landed on different
+   rows. Every tie-sensitive sort in the simulator, features, bottleneck and artifact
+   build is now `kind="stable"`, and regeneration is deterministic (`05e7077c…` on two
+   runs). The shipped data and models were NOT regenerated: doing so would change every
+   published metric, and that is the owner's decision. `tests/test_sim_knob_defaults.py`
+   pins the stable hash.
+2. **The stray `plant_a_defect_risk_reliability_test` champion** was retired in the live
+   registry, and `plant_a_defect_risk_committed` restored (ADR-063 §15.1).
+3. **The incident synthesizer cited paths that do not exist.** Its evidence now carries a
+   `citable` index: every numeric leaf of the RECORDED result, as [pointer, value,
+   provenance]. It is built from the same object the verifier resolves against, so
+   copying an entry cannot fail to resolve.
+4. **Every redeploy dropped the provider capability cache,** costing an extra AI request
+   per run. The jobs directory is now the `pulsetwin_jobs` volume.
+
+**CPU. Measured on one experiment: 4 scenarios × 3 seeds × 1 h, 4-core container.**
+
+| Change | Effect |
+|---|---|
+| `feature_contract` used `statistics.stdev`/`mean` (exact Fractions) on every sensor value of every unit; now `math.fsum` two-pass float (≤1 ulp, closer to pandas) | replica 2.4 s → 0.9 s |
+| warm-up (`start()`, about 4.8 simulated hours) cached on disk, keyed by the hash of every input (`offline/live_twin/warm_cache.py`) | 13 s → 0.02 s after the first run |
+| per-replica `copy.deepcopy` → `pickle.loads` of one blob (the engine was made picklable: `partial` instead of lambda) | 0.31 s → 0.05 s per replica |
+| replicas on a `fork` pool of ≤3 workers (serial where fork is unavailable); order and results independent of the process | ≈3× on the replica phase |
+| background forecasts at lower OS priority, ≤2 processes, sharing the warm cache and pickle copies | stop starving experiments |
+
+**Result: 39.4 s → 7.1 s warm, 15.5 s cold, with identical numbers to the digit**
+(baseline 56.6188 UPH; changes +0.6808, +0.3579, −8.6629).

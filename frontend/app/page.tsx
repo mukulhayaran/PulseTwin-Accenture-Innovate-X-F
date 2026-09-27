@@ -81,13 +81,46 @@ const PRINCIPLES = [
   },
 ] as const;
 
-const EASE = [0.2, 0.8, 0.25, 1] as const;
+const EXPO = [0.16, 1, 0.3, 1] as const;
+
+// One-shot entrance for the hero copy: each piece rises on its own beat.
+const heroItem = (reduced: boolean | null, delay: number, y = 24, x = 0) => ({
+  initial: reduced ? false : { opacity: 0, y, x },
+  animate: { opacity: 1, y: 0, x: 0 },
+  transition: { duration: 0.7, ease: EXPO, delay },
+});
+
+// Scroll reveal for the marketing bands only: once, and never for a reduced-motion user.
+const reveal = (reduced: boolean | null, i: number) => ({
+  initial: reduced ? false : { opacity: 0, y: 20 },
+  whileInView: { opacity: 1, y: 0 },
+  viewport: { once: true, margin: "0px 0px -60px 0px" },
+  transition: { duration: 0.65, ease: EXPO, delay: i * 0.07 },
+});
+
+/** Sets --mx/--my on whichever `.spotlight` card the pointer is over. One listener per grid. */
+function trackSpotlight(e: React.PointerEvent<HTMLElement>) {
+  if (e.pointerType !== "mouse") return;
+  const card = (e.target as HTMLElement).closest<HTMLElement>(".spotlight");
+  if (!card) return;
+  const r = card.getBoundingClientRect();
+  card.style.setProperty("--mx", `${e.clientX - r.left}px`);
+  card.style.setProperty("--my", `${e.clientY - r.top}px`);
+}
 
 export default function Landing() {
   const [health, setHealth] = useState<any>(null);
   const [err, setErr] = useState(false);
   const reduced = useReducedMotion();
   const lineRef = useRef<HTMLDivElement>(null);
+  const [scrolled, setScrolled] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 8);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   useEffect(() => {
     getHealth().then(setHealth).catch(() => setErr(true));
@@ -102,7 +135,14 @@ export default function Landing() {
   return (
     <main className="relative w-full bg-canvas">
       {/* ======================================================== top nav */}
-      <header className="sticky top-0 z-40 border-b border-line bg-canvas">
+      <header
+        className={cn(
+          "sticky top-0 z-40 border-b transition-[background-color,box-shadow,border-color] duration-300",
+          scrolled
+            ? "border-[rgb(15_23_42/0.07)] bg-canvas/[0.97] shadow-[0_4px_20px_-8px_rgb(15_23_42/0.12)] backdrop-blur-md"
+            : "border-line bg-canvas"
+        )}
+      >
         <div className="mx-auto flex h-16 w-full max-w-[1280px] items-center gap-3 px-5 sm:gap-6 sm:px-8">
           <Link href="/" className="flex items-center gap-2.5">
             <span aria-hidden className="flex items-end gap-[3px]">
@@ -115,13 +155,13 @@ export default function Landing() {
           </Link>
 
           <nav className="ml-6 hidden items-center gap-7 md:flex" aria-label="Sections">
-            <a href="#principles" className="text-xs text-ink-dim transition-colors hover:text-primary">
+            <a href="#principles" className="link-underline text-xs text-ink-dim transition-colors hover:text-primary">
               How it works
             </a>
-            <a href="#views" className="text-xs text-ink-dim transition-colors hover:text-primary">
+            <a href="#views" className="link-underline text-xs text-ink-dim transition-colors hover:text-primary">
               Views
             </a>
-            <Link href="/overview" className="text-xs text-ink-dim transition-colors hover:text-primary">
+            <Link href="/overview" className="link-underline text-xs text-ink-dim transition-colors hover:text-primary">
               Overview
             </Link>
           </nav>
@@ -134,7 +174,7 @@ export default function Landing() {
             )}
             <Link
               href="/overview"
-              className="group inline-flex min-h-10 shrink-0 items-center gap-2 whitespace-nowrap border border-line px-3 text-xs font-bold text-ink transition-colors hover:border-primary hover:text-primary sm:px-4"
+              className="group inline-flex min-h-10 shrink-0 items-center gap-2 whitespace-nowrap border border-line px-3 text-xs font-bold text-ink transition-[color,border-color,background-color] duration-200 hover:border-primary hover:bg-primary/[0.03] hover:text-primary sm:px-4"
             >
               Open workspace
               <IconArrowRight size={14} className="transition-transform motion-safe:group-hover:translate-x-0.5" />
@@ -144,67 +184,104 @@ export default function Landing() {
       </header>
 
       {/* ============================================== hero (light band) */}
-      <section className="relative overflow-hidden border-b border-line" aria-labelledby="hero-title">
+      <section
+        className="relative overflow-hidden border-b border-line bg-[linear-gradient(180deg,#ffffff_0%,#fbfcfe_55%,#f8fafc_100%)]"
+        aria-labelledby="hero-title"
+        onPointerMove={(e) => {
+          if (reduced || e.pointerType !== "mouse") return;
+          const r = e.currentTarget.getBoundingClientRect();
+          e.currentTarget.style.setProperty("--mouse-x", `${e.clientX - r.left}px`);
+          e.currentTarget.style.setProperty("--mouse-y", `${e.clientY - r.top}px`);
+        }}
+      >
         {/* A quiet engineering grid connects the photograph to the product UI. */}
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-0 opacity-40"
+          className="pointer-events-none absolute inset-0 opacity-70"
           style={{
             backgroundImage:
               "linear-gradient(var(--color-line) 1px, transparent 1px), linear-gradient(90deg, var(--color-line) 1px, transparent 1px)",
             backgroundSize: "48px 48px",
-            maskImage: "radial-gradient(60% 55% at 5% 0%, #000 5%, transparent 100%)",
+            maskImage: "radial-gradient(75% 70% at 30% 20%, #000 10%, transparent 100%)",
+          }}
+        />
+        <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="aurora aurora-a left-[-8%] top-[-20%] h-[460px] w-[560px] bg-[rgb(28_105_212/0.16)]" />
+          <div className="aurora aurora-b right-[-6%] top-[10%] h-[520px] w-[620px] bg-[rgb(138_180_240/0.22)]" />
+          <div className="aurora aurora-a bottom-[-30%] left-[35%] h-[380px] w-[520px] bg-[rgb(124_58_237/0.07)]" />
+        </div>
+        {/* A soft bloom behind the vehicle and a 5% pointer light -- both barely there. */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute right-[-10%] top-[5%] hidden aspect-square w-[60%] lg:block"
+          style={{ background: "radial-gradient(circle, rgb(28 105 212 / 0.08), transparent 62%)" }}
+        />
+        <div
+          aria-hidden
+          className="pointer-light pointer-events-none absolute inset-0"
+          style={{
+            background:
+              "radial-gradient(500px circle at var(--mouse-x, -600px) var(--mouse-y, -600px), rgb(28 105 212 / 0.08), transparent 60%)",
           }}
         />
 
         <div className="relative mx-auto grid w-full max-w-[1280px] gap-10 px-5 py-10 sm:px-8 sm:py-12 lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-12 xl:gap-16">
-          <motion.div
-            initial={reduced ? false : { opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, ease: EASE }}
-          >
-            <span className="label-upper flex items-center gap-3 text-primary">
-              <span aria-hidden className="h-px w-8 shrink-0 bg-primary" />
+          <div>
+            <motion.span
+              {...heroItem(reduced, 0, 0, -10)}
+              className="label-upper inline-flex items-center gap-2.5 border border-primary/20 bg-canvas/70 px-3 py-1.5 text-primary shadow-[0_1px_2px_rgb(15_23_42/0.04)] backdrop-blur-sm"
+            >
+              <span aria-hidden className="live-dot size-1.5 shrink-0 rounded-full bg-primary text-primary" />
               Digital twin · mixed-model assembly
-            </span>
+            </motion.span>
 
-            <h1 id="hero-title" className="mt-6 max-w-2xl text-3xl font-bold leading-[1.08] text-ink sm:text-4xl lg:text-[clamp(2.25rem,3.5vw,3rem)]">
-              The line never fails in one place.
-              <span className="mt-2 block text-ink-faint">
+            <h1 id="hero-title" className="mt-6 max-w-2xl text-3xl font-bold leading-[1.04] text-ink sm:text-4xl lg:text-[clamp(2.5rem,4vw,3.6rem)]">
+              <motion.span {...heroItem(reduced, 0.08)} className="block">
+                The line never fails in one place.
+              </motion.span>
+              <motion.span {...heroItem(reduced, 0.2)} className="text-gradient mt-2 block pb-1">
                 It fails in the space between stations.
-              </span>
+              </motion.span>
             </h1>
 
-            <p className="mt-7 max-w-lg text-base leading-relaxed text-ink-dim">
+            <motion.p
+              {...heroItem(reduced, 0.32, 12)}
+              className="mt-7 max-w-lg text-base leading-relaxed text-ink-dim"
+            >
               PulseTwin is a digital twin for the assembly line — a second set of eyes that
               watches every station at once, catching what no single sensor, checklist or
               inspector could ever catch alone.
-            </p>
+            </motion.p>
 
-            <div className="mt-8 flex flex-wrap items-center gap-6">
+            <motion.div
+              {...heroItem(reduced, 0.42, 10)}
+              className="mt-8 flex flex-wrap items-center gap-6"
+            >
               <Link
                 href="/overview"
                 className={cn(
                   "group inline-flex h-12 items-center gap-3 bg-primary px-7 text-sm font-bold",
-                  "tracking-[0.03em] text-on-primary transition-colors hover:bg-primary-active"
+                  "btn-lift tracking-[0.03em] text-on-primary hover:bg-primary-active"
                 )}
               >
                 Open the twin
                 <IconArrowRight size={15} className="transition-transform motion-safe:group-hover:translate-x-1" />
               </Link>
-              <a href="#views" className="label-upper flex items-center gap-1.5 text-ink hover:text-primary">
+              <a href="#views" className="group label-upper flex items-center gap-1.5 text-ink transition-colors hover:text-primary">
                 Explore the views
-                <span aria-hidden>›</span>
+                <span aria-hidden className="transition-transform duration-200 motion-safe:group-hover:translate-x-[3px]">›</span>
               </a>
-            </div>
-            <div className="mt-8 flex max-w-lg items-center gap-3 border-t border-line pt-5 text-2xs text-ink-faint sm:gap-5">
+            </motion.div>
+            <motion.div
+              {...heroItem(reduced, 0.52, 0)}
+              className="mt-8 flex max-w-lg items-center gap-3 border-t border-line pt-5 text-2xs text-ink-faint sm:gap-5">
               <span>Station signals</span>
               <span aria-hidden className="text-primary">↗</span>
               <span>Shared context</span>
               <span aria-hidden className="text-primary">↗</span>
               <span className="text-ink">Clear decisions</span>
-            </div>
-          </motion.div>
+            </motion.div>
+          </div>
 
           <motion.div
             initial={reduced ? false : { opacity: 0 }}
@@ -218,12 +295,17 @@ export default function Landing() {
       </section>
 
       {/* ========================================== principles (dark band) */}
-      <section id="principles" className="scroll-mt-16 bg-surface-dark">
-        <div className="mx-auto w-full max-w-[1280px] px-5 py-section sm:px-8">
+      <section id="principles" className="band-dark relative scroll-mt-16 overflow-hidden">
+        {/* Hairline highlight where the light hero hands over to the dark band. */}
+        <div aria-hidden className="absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgb(138_180_240/0.35),transparent)]" />
+        <div aria-hidden className="tex-grid-dark pointer-events-none absolute inset-0 [mask-image:linear-gradient(180deg,#000,transparent_85%)]" />
+        <div aria-hidden className="aurora aurora-b right-[-10%] top-[-30%] h-[420px] w-[620px] bg-[rgb(28_105_212/0.22)]" />
+        <div aria-hidden className="tex-grain pointer-events-none absolute inset-0" />
+        <div className="relative mx-auto w-full max-w-[1280px] px-5 py-section sm:px-8">
           <div className="max-w-2xl">
             <span className="label-upper text-on-dark-soft">What it refuses to do</span>
-            <h2 className="mt-4 text-3xl font-bold leading-[1.1] text-on-dark">
-              Three contracts the interface cannot break.
+            <h2 className="mt-4 text-3xl font-bold leading-[1.1] text-on-dark sm:text-4xl">
+              Three contracts the interface <span className="text-gradient-dark">cannot break.</span>
             </h2>
             <p className="mt-5 text-base leading-relaxed text-on-dark-soft">
               A twin that quietly guesses is worse than no twin at all. These are enforced
@@ -232,14 +314,24 @@ export default function Landing() {
             </p>
           </div>
 
-          <div className="mt-14 grid gap-px bg-line-on-dark md:grid-cols-3">
-            {PRINCIPLES.map((p) => (
-              <div key={p.n} className="bg-surface-dark px-6 py-7">
-                <div className="m-stripe w-12" />
+          <div onPointerMove={trackSpotlight} className="beam-top mt-14 grid gap-px border border-line-on-dark bg-line-on-dark md:grid-cols-3">
+            {PRINCIPLES.map((p, i) => (
+              <motion.div
+                key={p.n}
+                {...reveal(reduced, i)}
+                className="spotlight bg-[#171e26]/95 px-7 py-8 transition-colors duration-300 [--spot:rgb(138_180_240/0.14)] hover:bg-[#1c242e]"
+              >
+                <motion.div
+                  className="m-stripe w-12 origin-left"
+                  initial={reduced ? false : { scaleX: 0 }}
+                  whileInView={{ scaleX: 1 }}
+                  viewport={{ once: true }}
+                  transition={{ duration: 0.7, ease: EXPO, delay: 0.25 + i * 0.1 }}
+                />
                 <span className="text-numeric mt-5 block text-2xs text-on-dark-soft">{p.n}</span>
                 <h3 className="mt-2 text-lg font-bold leading-snug text-on-dark">{p.title}</h3>
                 <p className="mt-3 text-sm leading-relaxed text-on-dark-soft">{p.body}</p>
-              </div>
+              </motion.div>
             ))}
           </div>
         </div>
@@ -266,19 +358,22 @@ export default function Landing() {
             </div>
           </div>
 
-          <ol className="mt-14 grid gap-px bg-line sm:grid-cols-2 xl:grid-cols-4">
-            {STATIONS.map((s) => (
-              <Station key={s.id} station={s} />
+          <ol onPointerMove={trackSpotlight} className="mt-14 grid gap-px border border-line bg-line sm:grid-cols-2 xl:grid-cols-4">
+            {STATIONS.map((s, i) => (
+              <Station key={s.id} station={s} index={i} reduced={reduced} />
             ))}
           </ol>
         </div>
       </section>
 
       {/* ================================================ cta (dark band) */}
-      <section className="bg-surface-dark">
-        <div className="mx-auto w-full max-w-[1280px] px-5 py-section text-center sm:px-8">
-          <h2 className="mx-auto max-w-2xl text-2xl font-bold leading-[1.15] text-on-dark sm:text-3xl">
-            Start on the overview. It tells you where to look first.
+      <section className="band-dark relative overflow-hidden">
+        <div aria-hidden className="absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgb(138_180_240/0.35),transparent)]" />
+        <div aria-hidden className="tex-grain pointer-events-none absolute inset-0" />
+        <div aria-hidden className="aurora aurora-a left-[calc(50%-360px)] top-[calc(50%-180px)] h-[360px] w-[720px] bg-[rgb(28_105_212/0.2)]" />
+        <div className="relative mx-auto w-full max-w-[1280px] px-5 py-section text-center sm:px-8">
+          <h2 className="mx-auto max-w-2xl text-2xl font-bold leading-[1.15] text-on-dark sm:text-4xl">
+            Start on the overview. <span className="text-gradient-dark">It tells you where to look first.</span>
           </h2>
           <p className="mx-auto mt-5 max-w-xl text-sm leading-relaxed text-on-dark-soft">
             Live constraint, station health, what the alert budget has left, and the one thing
@@ -287,10 +382,10 @@ export default function Landing() {
           <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
             <Link
               href="/overview"
-              className="inline-flex h-12 items-center gap-2 bg-primary px-8 text-sm font-bold tracking-[0.03em] text-on-primary transition-colors hover:bg-primary-active"
+              className="btn-lift cta-glow group inline-flex h-12 items-center gap-2 bg-primary px-8 text-sm font-bold tracking-[0.03em] text-on-primary hover:bg-primary-active"
             >
               Open the overview
-              <IconArrowRight size={15} />
+              <IconArrowRight size={15} className="transition-transform motion-safe:group-hover:translate-x-[3px]" />
             </Link>
           </div>
         </div>
@@ -352,24 +447,34 @@ export default function Landing() {
   );
 }
 
-function Station({ station }: { station: (typeof STATIONS)[number] }) {
+function Station({
+  station,
+  index,
+  reduced,
+}: {
+  station: (typeof STATIONS)[number];
+  index: number;
+  reduced: boolean | null;
+}) {
   const { Icon } = station;
 
   return (
-    <li className="contents">
+    <motion.li {...reveal(reduced, index)} className="flex bg-canvas">
       <Link
         href={station.href}
         className={cn(
-          "group relative flex flex-col border-t-2 border-transparent bg-canvas p-6",
-          "transition-colors duration-200 ease-soft hover:border-primary hover:bg-surface-2 focus-visible:border-primary"
+          "spotlight group relative flex w-full flex-col border-t-2 border-transparent bg-canvas p-7",
+          "transition-[background-color,border-color,box-shadow] duration-200 ease-soft",
+          "hover:border-primary hover:bg-[linear-gradient(180deg,rgb(28_105_212/0.04),transparent_70%)]",
+          "hover:shadow-[inset_0_1px_0_rgb(255_255_255/0.9)] focus-visible:border-primary"
         )}
       >
         <div className="flex items-center justify-between gap-3">
-          <Icon size={22} className="text-primary" />
+          <Icon size={22} className="text-primary transition-[color,transform] duration-200 group-hover:text-primary-active motion-safe:group-hover:-translate-y-px" />
           <span className="text-numeric text-2xs text-ink-faint">{station.id}</span>
         </div>
 
-        <h3 className="mt-5 text-lg font-bold text-ink">{station.title}</h3>
+        <h3 className="mt-5 text-lg font-bold text-ink transition-transform duration-200 motion-safe:group-hover:-translate-y-px">{station.title}</h3>
         <span className="mt-1 text-2xs uppercase tracking-[0.115em] text-ink-faint">
           {station.role}
         </span>
@@ -378,10 +483,10 @@ function Station({ station }: { station: (typeof STATIONS)[number] }) {
 
         <span className="label-upper mt-6 flex items-center gap-1.5 text-ink transition-colors group-hover:text-primary">
           Enter
-          <IconArrowRight size={14} className="transition-transform motion-safe:group-hover:translate-x-1" />
+          <IconArrowRight size={14} className="transition-transform motion-safe:group-hover:translate-x-[3px]" />
         </span>
       </Link>
-    </li>
+    </motion.li>
   );
 }
 

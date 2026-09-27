@@ -38,7 +38,6 @@ from serve.schemas import (
     BottleneckResponse,
     ContainmentDecisionRequest,
     ContainmentResponse,
-    FeedbackRequest,
     HealthResponse,
     MetricsResponse,
     PredictRequest,
@@ -54,18 +53,18 @@ from serve.middleware import jwt_auth
 from serve.middleware.rate_limit import RateLimitMiddleware
 from serve.privacy import contains_operator_identity
 from serve.routers import (
-    alerts_mgmt, audit, auth_demo, intelligence, knowledge, model_health, proposals,
-    simulations, system, triage,
+    alerts_mgmt, audit, auth_demo, experiments, intelligence, knowledge, learning,
+    model_health, proposals, simulations, system, triage,
 )
 from serve.knowledge_index import KnowledgeIndex
-from serve.scorer import Scorer
+from serve.model_loader import load_scorer
 from serve.live_simulation import LiveSimulationManager
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = Path(os.environ.get("PULSETWIN_ARTIFACTS", ROOT / "artifacts"))
 
 STATE: dict = {
-    "con": None, "ops": None, "feedback": None, "scorers": {}, "fallback_scorers": {},
+    "con": None, "ops": None, "scorers": {}, "fallback_scorers": {},
     "plants": {}, "model_info": {}, "started": 0.0, "backend": "sqlite",
     "knowledge_index": None,
 }
@@ -85,7 +84,36 @@ def rss_mb() -> tuple[float | None, str]:
         return None, "unavailable"
 
 
-def _bootstrap_registry_champion(plant_id: str, committed_path: Path) -> None:
+def _register_challenger(plant_id: str, challenger: dict | None) -> None:
+    """ADR-061: an evaluated-but-not-promoted XGBoost challenger is recorded in the registry
+    with its failed gates, so the model choice is explicit rather than implied by absence.
+    Keyed by its model_version, so each challenger run is one row and a restart adds none."""
+    if not challenger or challenger.get("promoted"):
+        return
+    model_id = f"{plant_id}_defect_risk_xgboost_{challenger.get('model_version', 'unknown')}"
+    if db.query_one(STATE["ops"], "SELECT model_id FROM model_registry WHERE model_id=?",
+                    (model_id,)):
+        return
+    db.execute(
+        STATE["ops"],
+        """INSERT INTO model_registry
+               (model_id, model_type, version, status, plant_id, trained_at,
+                training_data_range, metrics, artifact_path, notes)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (model_id, "defect_risk", 2, "challenger", plant_id,
+         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "train days 1-14",
+         json.dumps({"failed_gates": challenger.get("failed_gates", []),
+                     "calibration_method": challenger.get("calibration_method"),
+                     "alert_threshold": challenger.get("alert_threshold")}),
+         str(ARTIFACTS / str(challenger.get("artifact", ""))),
+         "XGBoost challenger evaluated by offline/ml/xgb_challenger.py and NOT promoted: "
+         "failed " + ", ".join(challenger.get("failed_gates", [])) + ". See "
+         "docs/XGB_CHALLENGER.md."),
+    )
+
+
+def _bootstrap_registry_champion(plant_id: str, committed_path: Path,
+                                 info: dict | None = None) -> None:
     """Give the committed build-time artifact a real registry row the first time a plant is
     served, so `model_registry` is never silent about the model that is actually answering
     `/api/predict/defect`. Since ADR-053 removed retraining this is the ONLY champion a plant
@@ -96,7 +124,9 @@ def _bootstrap_registry_champion(plant_id: str, committed_path: Path) -> None:
     Idempotent on a deterministic model_id: a restart against the same long-lived ops DB
     (docs/STATE.md bug #69/#70 -- this file is not rebuilt per run) must not double-insert.
     """
-    model_id = f"{plant_id}_defect_risk_committed"
+    info = info or {}
+    _register_challenger(plant_id, info.get("challenger"))
+    model_id = info.get("model_id", f"{plant_id}_defect_risk_committed")
     if db.query_one(STATE["ops"], "SELECT model_id FROM model_registry WHERE model_id=?",
                     (model_id,)):
         return
@@ -118,7 +148,7 @@ def _bootstrap_registry_champion(plant_id: str, committed_path: Path) -> None:
                (model_id, model_type, version, status, plant_id, trained_at,
                 training_data_range, metrics, artifact_path, notes)
            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (model_id, "defect_risk", 1, "champion", plant_id,
+        (model_id, "defect_risk", int(info.get("version", 1)), "champion", plant_id,
          meta.get("built_at") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
          f"{meta.get('replay_start_ts', '?')} to {meta.get('replay_end_ts', '?')}",
          json.dumps(metrics), str(committed_path),
@@ -161,21 +191,17 @@ async def lifespan(app: FastAPI):
     )
     STATE["started"] = time.time()
     STATE["con"], STATE["ops"], STATE["backend"] = db.open_database(ARTIFACTS / "pulsetwin.db")
-    # On Postgres, feedback is a table in the ops database (migrations/016) so it survives
-    # a restart; the tempdir SQLite file it used to live in is wiped on every Render deploy.
-    STATE["feedback"] = (STATE["ops"] if STATE["backend"] == "postgresql"
-                         else db.open_feedback_db())
     for row in db.query_all(STATE["con"], "SELECT * FROM plant_meta"):
         pid = row["plant_id"]
         STATE["plants"][pid] = row
-        # ADR-053: there is no promotion, so the committed seed-42 model is the only one a
-        # plant ever serves -- no registry lookup can select a different artifact.
-        committed_npz = ARTIFACTS / f"model_{pid}.npz"
-        if committed_npz.exists():
-            STATE["scorers"][pid] = Scorer(committed_npz)
-            _bootstrap_registry_champion(pid, committed_npz)
-            STATE["model_info"][pid] = {"model_id": f"{pid}_defect_risk_committed",
-                                        "version": 1}
+        # ADR-061: the champion is whatever artifacts/model_selection_<plant>.json names --
+        # the XGBoost challenger ONLY if every promotion gate passed on the untouched test
+        # set -- and the committed seed-42 HistGradientBoosting .npz otherwise.
+        scorer, info = load_scorer(ARTIFACTS, pid)
+        if scorer is not None:
+            STATE["scorers"][pid] = scorer
+            STATE["model_info"][pid] = info
+            _bootstrap_registry_champion(pid, Path(info["artifact"]), info)
         fb_npz = ARTIFACTS / f"fallback_{pid}.npz"
         if fb_npz.exists():
             STATE["fallback_scorers"][pid] = FallbackScorer(fb_npz)
@@ -208,6 +234,8 @@ async def lifespan(app: FastAPI):
     # The SAME dict object, not a copy, so routers and _predict() below read one mapping.
     app.state.scorers = STATE["scorers"]
     app.state.model_info = STATE["model_info"]
+    # ADR-064: a worker killed with the previous process cannot mark its own experiment.
+    experiments.reap_abandoned(STATE["ops"])
     app.state.knowledge_index = STATE["knowledge_index"]
     app.state.live_simulation = LiveSimulationManager(
         STATE["con"], STATE["ops"], ARTIFACTS, STATE["plants"]
@@ -217,7 +245,7 @@ async def lifespan(app: FastAPI):
     yield
     app.state.live_simulation.shutdown()
     seen = set()
-    for key in ("con", "ops", "feedback"):
+    for key in ("con", "ops"):
         handle = STATE[key]
         if handle is not None and id(handle) not in seen:
             seen.add(id(handle))
@@ -263,6 +291,8 @@ app.include_router(intelligence.router)
 app.include_router(simulations.router)
 app.include_router(knowledge.router)
 app.include_router(proposals.router)
+app.include_router(experiments.router)
+app.include_router(learning.router)
 
 
 def _plant(plant_id: str) -> dict:
@@ -333,13 +363,38 @@ def stations(plant_id: str = "plant_a") -> StationConfigResponse:
 _shift_window = shift_window
 
 
+# Simulated seconds of line context shown before the first alert when a replay starts at
+# `start=first_alert`: 12 s of real time at the default 10x.
+FIRST_ALERT_LEAD_S = 120.0
+_first_alert_ts: dict[str, str | None] = {}
+
+
+def _replay_first_alert(plant_id: str, path: Path) -> str | None:
+    """The committed stream's first alert, found once per plant. The recorded shift opens
+    with ~55 quiet minutes (plant A: first alert at 06:55 on a 05:59 start), which is
+    ~5.5 minutes of an empty alert feed at 10x -- long enough to look broken."""
+    if plant_id not in _first_alert_ts:
+        found = None
+        with path.open("rb") as fh:
+            for line in fh:
+                if line.strip() and json.loads(line).get("alert"):
+                    found = json.loads(line)["ts"]
+                    break
+        _first_alert_ts[plant_id] = found
+    return _first_alert_ts[plant_id]
+
+
 @app.get("/api/stream")
 async def stream(
     plant_id: str = "plant_a",
     speed: float = Query(10.0, gt=0, le=500),
     from_ts: str | None = None,
+    start: str = Query("shift", pattern="^(shift|first_alert)$"),
 ):
     """Server-sent events replay of the committed JSONL.
+
+    `start=first_alert` (ignored when `from_ts` is given) begins FIRST_ALERT_LEAD_S of
+    simulated time before the shift's first alert instead of at the top of the shift.
 
     ADR-009: `await asyncio.sleep`, never `time.sleep`. A blocking sleep here freezes the
     whole event loop under `--workers 1`, so a second browser tab would make every other
@@ -349,6 +404,12 @@ async def stream(
     path = ARTIFACTS / f"stream_{plant_id}.jsonl"
     if not path.exists():
         raise HTTPException(404, "no stream artifact for this plant")
+
+    if start == "first_alert" and not from_ts:
+        first = _replay_first_alert(plant_id, path)
+        if first:
+            from_ts = (datetime.fromisoformat(first)
+                       - timedelta(seconds=FIRST_ALERT_LEAD_S)).isoformat()
 
     offset = 0
     if from_ts:
@@ -505,6 +566,7 @@ def _predict(req: PredictRequest) -> PredictResponse:
 
     try:
         x = scorer.vector_from(req.features)
+        raw = float(scorer.predict_raw_proba(x.reshape(1, -1))[0])
         p = float(scorer.predict(x.reshape(1, -1))[0])
         factors = scorer.explain(x, top=5)
     except (ValueError, IndexError, KeyError) as e:
@@ -522,6 +584,16 @@ def _predict(req: PredictRequest) -> PredictResponse:
     ).hexdigest()[:12]
     model_info = STATE["model_info"].get(req.plant_id, {})
     half = 0.5 * p * (1.0 - p) ** 0.5 + 0.02
+    # The champion's own threshold: an XGBoost champion learned it on validation
+    # (ADR-061); the HGB champion's is the plant's published budget threshold.
+    rolling = model_info.get("rolling")
+    if rolling is not None:
+        # ADR-062: judged against the window BEFORE this unit joins it.
+        alert_threshold = rolling.threshold
+        rolling.observe(p)
+    else:
+        alert_threshold = float(model_info.get("alert_threshold")
+                                or STATE["plants"][req.plant_id]["budget_threshold"])
 
     return PredictResponse(
         probability=p,
@@ -541,7 +613,7 @@ def _predict(req: PredictRequest) -> PredictResponse:
             for f in factors
         ],
         recommended_action=(
-            "Hold for inspection" if p >= STATE["plants"][req.plant_id]["budget_threshold"]
+            "Hold for inspection" if p >= alert_threshold
             else "Monitor - below the alarm-budget threshold"
         ),
         model_id=model_info.get("model_id", f"{req.plant_id}_defect_risk_committed"),
@@ -554,7 +626,22 @@ def _predict(req: PredictRequest) -> PredictResponse:
             100.0 * len(measured) / max(1, len(scorer.feature_names)), 2
         ),
         source=req.source,
+        calibrated_risk=p,
+        raw_model_score=raw,
+        alert_threshold=alert_threshold,
+        risk_band=risk_band(p, alert_threshold),
+        model_type=getattr(scorer, "model_type", None),
+        calibration_method=getattr(scorer, "calibration_method", None),
     )
+
+
+def risk_band(calibrated_risk: float, alert_threshold: float) -> str:
+    """On the CALIBRATED risk only. `high` mirrors the supervisor feed's own split
+    (frontend/app/supervisor/page.tsx::riskBand, > 0.5); `at_risk` is anything at or over
+    the alert threshold; everything else is `monitor`."""
+    if calibrated_risk >= alert_threshold:
+        return "high" if calibrated_risk > 0.5 else "at_risk"
+    return "monitor"
 
 
 # ------------------------------------------------------------------------ unit/trace
@@ -756,6 +843,13 @@ def unit_detail(
     return u
 
 
+def _naive(ts) -> datetime:
+    """A stored or query timestamp as naive UTC -- SQLite gives ISO text, Postgres may give
+    a tz-aware datetime or '+00:00' text; string comparison across the two is wrong."""
+    dt = ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts).replace(" ", "T"))
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
+
+
 @app.get("/api/trace/containment/{unit_id}", response_model=ContainmentResponse)
 def containment(
     unit_id: str,
@@ -795,12 +889,16 @@ def containment(
         window_end = at_ts
     peers = db.query_all(
         STATE["con"],
-        """SELECT u.unit_id, u.calibrated_risk, u.lot_id, u.variant, u.prediction_ts
+        # NOT ordered by risk: alerting units share one calibrated score (MODEL_CARD), so
+        # "top 12 by risk" was an arbitrary 12. Rank below on evidence instead.
+        # ponytail: pool capped at 40 (two lookups per peer); widen if windows get denser.
+        """SELECT u.unit_id, u.calibrated_risk, u.lot_id, u.variant, u.prediction_ts,
+                  u.end_ts, u.actual_defect
              FROM units u
             WHERE u.plant_id = ? AND u.unit_id != ?
               AND u.prediction_ts >= ? AND u.prediction_ts <= ?
               AND (u.lot_id = ? OR u.calibrated_risk >= ?)
-            ORDER BY u.calibrated_risk DESC LIMIT 12""",
+            ORDER BY u.prediction_ts LIMIT 40""",
         (plant_id, unit_id, window_start, window_end, flagged["lot_id"],
          float(STATE["plants"][plant_id]["budget_threshold"]) * 0.6),
     )
@@ -876,6 +974,11 @@ def containment(
             explanation = explanation[0].upper() + explanation[1:] + f", within {delta_min:.0f} minutes."
         else:
             explanation = f"Passed through the line within {delta_min:.0f} minutes with elevated risk."
+        # Already through final inspection AS OF at_ts: its truth is known, so there is
+        # nothing left to hold or inspect -- report the outcome as evidence instead.
+        # Without a point in time (API/agent callers) there is no "already", so no change.
+        inspected = bool(at_ts) and p.get("end_ts") is not None and (
+            _naive(p["end_ts"]) <= _naive(at_ts))
         at_risk.append({
             "unit_id": p["unit_id"],
             "current_station": _station_at(p["unit_id"], plant_id, at_ts),
@@ -883,11 +986,19 @@ def containment(
             "shared_factors": shared,
             "explanation": explanation,
             "action": (
+                "INSPECTED" if inspected else
                 "HOLD" if risk >= alerts_mgmt.CONTAINMENT_HOLD_RISK else
                 "INSPECT" if risk >= alerts_mgmt.CONTAINMENT_INSPECT_RISK else
                 "MONITOR"
             ),
+            "inspection_outcome": p.get("actual_defect") if inspected else None,
+            "_rank": (inspected, -len(shared), delta_min),
         })
+    # Still-on-the-line vehicles first (the ones a decision can change), then by how much
+    # evidence ties them to the flagged unit, then by time closeness.
+    pool_size = len(at_risk)
+    at_risk.sort(key=lambda u: u["_rank"])
+    at_risk = [{k: v for k, v in u.items() if k != "_rank"} for u in at_risk[:12]]
 
     # A manual decision is deliberately an overlay, not a replacement for `action`.
     # Keeping both values lets a later validation job compare what the model suggested
@@ -929,7 +1040,7 @@ def containment(
         flagged_factors=[f["plain_language"] for f in factors],
         at_risk_units=at_risk,
         containment_window_min=window_min,
-        total_at_risk=len(at_risk),
+        total_at_risk=pool_size,
     )
 
 
@@ -956,6 +1067,10 @@ def record_containment_decision(
             f"unit '{req.target_unit_id}' is not in containment for "
             f"'{req.flagged_unit_id}'",
         )
+    if target.action == "INSPECTED":
+        raise HTTPException(
+            409, f"unit '{req.target_unit_id}' has already passed final inspection; "
+                 "its outcome is known, so there is nothing left to decide")
 
     # Collapse whitespace/control characters so the stored note is predictable and
     # useful in later review. The UI also tells users not to enter personal data.
@@ -1126,15 +1241,43 @@ def station_stats(plant_id: str = "plant_a") -> list[dict]:
     # sensor_tier config (offline/build_artifact.py) and is constant across every row of
     # that station, so grouping by it too changes nothing about which rows collapse
     # together on either backend.
-    return db.query_all(
+    #
+    # Contract #1 (ADR-060): an INFERRED row carries `<field>_ci_low`/`_ci_high` for every
+    # figure -- the 95% interval of its hourly mean. Without them an agent citing an
+    # unsensored station's loss was rejected (`missing_interval`), which threw away a live
+    # shift_intel run over a gap in THIS endpoint, not in the agent.
+    # Aggregated IN SQL (AVG, AVG of squares, COUNT -- SQLite has no STDDEV): pulling every
+    # hourly row into Python to do this cost ~1 s per call on Postgres, measured.
+    sums = ", ".join(f"AVG({col}) AS {f}, AVG({col}*{col}) AS {f}_sq"
+                     for f, col in _STATION_STAT_FIELDS)
+    rows = db.query_all(
         STATE["con"],
-        """SELECT station_id, provenance,
-                  AVG(utilisation) util, AVG(blocked_pct) blocked, AVG(starved_pct) starved,
-                  AVG(down_pct) down, AVG(lost_throughput_uph) lost_uph
-             FROM station_stats WHERE plant_id=?
-             GROUP BY station_id, provenance ORDER BY lost_uph DESC""",
+        f"""SELECT station_id, provenance, COUNT(*) AS n, {sums}
+              FROM station_stats WHERE plant_id=?
+             GROUP BY station_id, provenance""",
         (plant_id,),
     )
+    out = []
+    for r in rows:
+        n = int(r["n"])
+        row: dict = {"station_id": int(r["station_id"]), "provenance": r["provenance"]}
+        for field, _ in _STATION_STAT_FIELDS:
+            mean = None if r[field] is None else float(r[field])
+            row[field] = mean
+            if r["provenance"] == "inferred":
+                half = None
+                if mean is not None and n > 1:
+                    var = max(0.0, (float(r[f"{field}_sq"]) - mean * mean) * n / (n - 1))
+                    half = 1.96 * (var ** 0.5) / (n ** 0.5)
+                row[f"{field}_ci_low"] = None if half is None else mean - half
+                row[f"{field}_ci_high"] = None if half is None else mean + half
+        out.append(row)
+    return sorted(out, key=lambda r: -(r["lost_uph"] or 0.0))
+
+
+_STATION_STAT_FIELDS = (("util", "utilisation"), ("blocked", "blocked_pct"),
+                        ("starved", "starved_pct"), ("down", "down_pct"),
+                        ("lost_uph", "lost_throughput_uph"))
 
 
 # --------------------------------------------------------------------------- metrics
@@ -1371,17 +1514,3 @@ def instrumentation_plan(plant_id: str = "plant_a",
     }
 
 
-@app.post("/api/feedback")
-def feedback(req: FeedbackRequest, request: Request, role: str = Depends(get_role)) -> dict:
-    db.execute(
-        STATE["feedback"],
-        "INSERT INTO feedback (plant_id, unit_id, verdict, created_at) VALUES (?,?,?,?)",
-        (req.plant_id, req.unit_id, req.verdict, datetime.now(timezone.utc).isoformat()),
-    )
-    n = db.query_one(STATE["feedback"], "SELECT COUNT(*) c FROM feedback")
-    log_action(request, STATE["ops"], role, "feedback_submitted", "unit", req.unit_id,
-               {"plant_id": req.plant_id, "verdict": req.verdict})
-    # Postgres keeps feedback across restarts (migrations/016); the SQLite file used by
-    # local dev and tests lives in a tempdir and does not.
-    persistence = "durable" if STATE["backend"] == "postgresql" else "ephemeral"
-    return {"stored": True, "total": n["c"] if n else 0, "persistence": persistence}

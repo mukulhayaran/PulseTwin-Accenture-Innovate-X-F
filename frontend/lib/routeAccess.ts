@@ -27,6 +27,9 @@ export interface RoutePolicy {
   label: string;
   /** null = public, no session required. Otherwise the exact roles that may enter. */
   requires: Role[] | null;
+  /** Kept out of the left rail but still guarded. Deleting the row instead would make
+   *  the route "unknown", and canEnter treats unknown routes as PUBLIC. */
+  hideFromRail?: boolean;
 }
 
 export const ROUTE_POLICIES: RoutePolicy[] = [
@@ -38,7 +41,9 @@ export const ROUTE_POLICIES: RoutePolicy[] = [
   // The copilot's own endpoints start at `manager` (serve/routers/triage.py), so a
   // supervisor session could enter the page only to have every call 403. Listing the
   // three roles that can actually use it is more honest than a page that loads empty.
-  { href: "/copilot", label: "Copilot", requires: ["manager", "leadership", "system"] },
+  // Not in the rail: the copilot is reached from the dock and the top search bar.
+  { href: "/copilot", label: "Copilot", requires: ["manager", "leadership", "system"],
+    hideFromRail: true },
 ];
 
 /** Where each role goes after signing in, and where "back to your view" points. */

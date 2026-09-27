@@ -95,6 +95,23 @@ def test_station_stats_returns_one_row_per_station(client, plant):
         assert row["provenance"] in ("measured", "inferred")
         assert isinstance(row["station_id"], int)
         assert row["util"] is not None
+    losses = [r["lost_uph"] for r in body]
+    assert losses == sorted(losses, reverse=True)
+
+
+@pytest.mark.parametrize("plant", PLANTS)
+def test_every_inferred_station_stat_carries_its_interval(client, plant):
+    """Contract #1 (ADR-060). A live shift_intel run was rejected `missing_interval`
+    because this endpoint shipped inferred rows with no interval to cite."""
+    body = client.get(f"/api/stations/stats?plant_id={plant}").json()
+    inferred = [r for r in body if r["provenance"] == "inferred"]
+    assert inferred, "the plant config has manual (unsensored) stations"
+    for row in inferred:
+        for field in ("util", "blocked", "starved", "down", "lost_uph"):
+            assert row[f"{field}_ci_low"] <= row[field] <= row[f"{field}_ci_high"]
+    for row in body:
+        if row["provenance"] == "measured":
+            assert "lost_uph_ci_low" not in row  # measured values carry no interval
 
 
 # ---------------------------------------------------------------------------- units
@@ -140,7 +157,37 @@ def test_containment_never_exposes_operator_identity(client, plant):
     )
     assert "shift_a_op" not in blob
     for u in body["at_risk_units"]:
-        assert u["action"] in ("HOLD", "INSPECT", "MONITOR")
+        assert u["action"] in ("HOLD", "INSPECT", "MONITOR", "INSPECTED")
+
+
+def test_containment_ranks_on_evidence_and_reports_known_outcomes(client):
+    """Alerting units share one score, so risk cannot order containment. Vehicles still
+    on the line come first, by evidence; a vehicle already through final inspection
+    carries its outcome and no action."""
+    top = client.get("/api/units?plant_id=plant_a&alerts_only=true&limit=1").json()[0]
+    at = top["prediction_ts"].replace("+00:00", "")
+    units = client.get(f"/api/trace/containment/{top['unit_id']}?plant_id=plant_a"
+                       f"&at_ts={at}").json()["at_risk_units"]
+    assert units
+    done = [u["action"] == "INSPECTED" for u in units]
+    assert done == sorted(done), "an inspected vehicle ranked above one still on the line"
+    for u in units:
+        if u["action"] == "INSPECTED":
+            assert u["inspection_outcome"] in (0, 1)
+        else:
+            assert u["inspection_outcome"] is None      # truth not known yet: causal
+    pending = [len(u["shared_factors"]) for u in units if u["action"] != "INSPECTED"]
+    assert pending == sorted(pending, reverse=True)
+    # without a point in time there is no "already inspected": behaviour is unchanged
+    timeless = client.get(f"/api/trace/containment/{top['unit_id']}?plant_id=plant_a").json()
+    assert all(u["action"] != "INSPECTED" for u in timeless["at_risk_units"])
+    # an hour on, the whole window has left the line: outcomes known, decisions refused
+    from datetime import datetime, timedelta
+    later = (datetime.fromisoformat(at) + timedelta(hours=1)).isoformat()
+    after = client.get(f"/api/trace/containment/{top['unit_id']}?plant_id=plant_a"
+                       f"&at_ts={later}").json()["at_risk_units"]
+    assert after and all(u["action"] == "INSPECTED" for u in after)
+    assert sum(u["inspection_outcome"] for u in after) >= 0
 
 
 def test_containment_operator_group_overlap_uses_only_visible_journey(client):
@@ -442,22 +489,30 @@ def test_stream_emits_events_and_a_server_side_budget(client):
     assert any("alerts_budget" in p for p in payloads)
 
 
-# -------------------------------------------------------------------------- feedback
 
+def test_a_fresh_replay_can_start_just_before_the_first_alert(client):
+    """The committed shift opens with ~55 quiet minutes: at 10x the alert feed sat empty
+    for ~5.5 minutes after Start or restart, which read as broken. `start=first_alert`
+    seeks to FIRST_ALERT_LEAD_S before the first alert. (Streamed end to end against a
+    live server; the in-process TestClient blocks on a mid-file seek, so this pins the
+    seek itself.)"""
+    import json as _json
+    from datetime import datetime, timedelta
 
-def test_feedback_does_not_write_to_the_read_only_artifact(client):
-    """ADR-011. A write into the committed DB would break reproducibility."""
-    top = client.get("/api/units?plant_id=plant_a&alerts_only=true&limit=1").json()[0]
-    r = client.post("/api/feedback", json={
-        "plant_id": "plant_a", "unit_id": top["unit_id"], "verdict": "useful",
-    })
-    assert r.status_code == 200
-    assert r.json()["stored"] is True
-    assert r.json()["persistence"] == "ephemeral"
+    import serve.main as M
+    from serve import db
 
+    path = M.ARTIFACTS / "stream_plant_a.jsonl"
+    first = M._replay_first_alert("plant_a", path)
+    with path.open(encoding="utf-8") as fh:
+        truth = next(_json.loads(l)["ts"] for l in fh if _json.loads(l).get("alert"))
+    assert first == truth
 
-def test_feedback_rejects_an_invalid_verdict(client):
-    r = client.post("/api/feedback", json={
-        "plant_id": "plant_a", "unit_id": "U000001", "verdict": "maybe",
-    })
-    assert r.status_code == 422
+    target = (datetime.fromisoformat(first)
+              - timedelta(seconds=M.FIRST_ALERT_LEAD_S)).isoformat()
+    row = db.query_one(M.STATE["con"], "SELECT ts FROM stream_index WHERE plant_id=? "
+                       "AND ts>=? ORDER BY ts LIMIT 1", ("plant_a", target))
+    lead = (datetime.fromisoformat(first) - datetime.fromisoformat(row["ts"])).total_seconds()
+    assert 0 < lead <= M.FIRST_ALERT_LEAD_S  # starts before the alert, not at the shift top
+    assert client.get("/api/stream?plant_id=plant_a&start=nonsense").status_code == 422
+

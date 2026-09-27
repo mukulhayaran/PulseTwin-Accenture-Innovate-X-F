@@ -27,7 +27,7 @@ type Size = "xs" | "sm" | "md" | "lg";
 const VARIANTS: Record<Variant, string> = {
   // The single primary action colour. One of these per band, at most.
   primary:
-    "border-primary bg-primary text-on-primary hover:bg-primary-active hover:border-primary-active active:bg-primary-active",
+    "border-primary bg-primary text-on-primary hover:bg-primary-active hover:border-primary-active active:bg-primary-active motion-safe:hover:-translate-y-px hover:shadow-cta active:translate-y-0 active:shadow-none",
   default:
     "border-line-strong bg-canvas text-ink hover:bg-surface-2 hover:border-ink active:bg-surface-3",
   ghost:
@@ -72,7 +72,8 @@ export default function Button({
       {...rest}
       className={cn(
         "inline-flex shrink-0 select-none items-center justify-center border font-bold tracking-[0.03em]",
-        "transition-[background-color,border-color,color] duration-150 ease-soft",
+        "transition-[background-color,border-color,color,transform,box-shadow] duration-150 ease-soft",
+        "motion-safe:active:scale-[0.985]",
         "disabled:pointer-events-none disabled:border-line disabled:text-ink-disabled",
         "disabled:bg-transparent",
         VARIANTS[variant],

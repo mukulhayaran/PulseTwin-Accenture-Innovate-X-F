@@ -6,7 +6,7 @@ export OMP_NUM_THREADS = 1
 PY = python
 
 .PHONY: generate train build-artifact build-knowledge-index test dev-backend dev-frontend clean \
-        migrate load-data up up-mqtt down test-all drift-check
+        migrate load-data up up-mqtt down test-all drift-check xgb-challenger xgb-challenger-smoke
 
 generate:
 	$(PY) -m offline.simulator.generate --config configs/plant_a.yaml
@@ -15,6 +15,15 @@ generate:
 train:
 	$(PY) -m offline.ml.train --config configs/plant_a.yaml
 	$(PY) -m offline.ml.train --config configs/plant_b.yaml
+
+# ADR-061: tune, calibrate, threshold and test the XGBoost challenger; promotes it ONLY if
+# every gate passes on the untouched test set. Writes artifacts/xgb_challenger_<plant>.json,
+# artifacts/model_selection_<plant>.json and docs/XGB_CHALLENGER.md.
+xgb-challenger:
+	OMP_NUM_THREADS=1 $(PY) -m offline.ml.xgb_challenger --config configs/plant_a.yaml --trials 30 --n-jobs 4
+
+xgb-challenger-smoke:
+	OMP_NUM_THREADS=1 $(PY) -m offline.ml.xgb_challenger --config configs/plant_a.yaml --smoke
 
 build-artifact:
 	rm -f artifacts/pulsetwin.db

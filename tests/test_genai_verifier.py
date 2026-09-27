@@ -382,3 +382,87 @@ def test_reject_unparseable_serves_nothing() -> None:
     assert ver.status == V.REJECTED
     assert ver.reject_reason.startswith("unparseable_finding")
     assert served.claims == []
+
+
+# ------------------------------------------- measured live, 2026-09-26 (ADR-063 follow-up)
+def test_a_percentage_of_a_returned_ratio_verifies() -> None:
+    """The API returns confidence 0.86; "86.0%" is the same number. The live run's commonest
+    false rejection was exactly this (85.9 vs 0.8586)."""
+    c = _claim(text="Detector confidence is 86.0%", value=86.0, unit="percent",
+               citation=Citation(call_id="call_0002", pointer="/confidence"))
+    assert _verify(_finding([c]))[0].claims_verified == 1
+
+
+def test_a_wrong_percentage_is_still_caught() -> None:
+    c = _claim(text="Detector confidence is 91.0%", value=91.0, unit="percent",
+               citation=Citation(call_id="call_0002", pointer="/confidence"))
+    assert _verify(_finding([c]))[0].claims_verified == 0
+
+
+def test_prose_rounds_like_claims_do_but_integers_stay_exact() -> None:
+    ok = "S15 loses 21 UPH? No: it loses 21.4 UPH at 73% utilisation and 13.5% blocked."
+    assert V._sweep_prose(ok.split("? ")[1], set(), {21.4, 0.73, 0.135}, set())[0] == []
+    # 1 decimal printed -> +/-0.05; 21.5 is not 21.4
+    assert V._sweep_prose("It loses 21.5 UPH.", set(), {21.4}, set())[0]
+    # an integer never absorbs a neighbour: 21 is not 21.4
+    assert V._sweep_prose("It loses 21 UPH.", set(), {21.4}, set())[0]
+
+
+def test_a_numeric_range_is_not_a_negative_number() -> None:
+    issues, text, _ = V._sweep_prose("Cycle times ran 101-125s.", set(), {101.0, 125.0}, set())
+    assert issues == [] and "removed" not in text
+
+
+# ------------------------------------------------ ADR-064: experiment-shaped claims
+EXP = {"call_0009": {"ok": True, "data": {"seed_count": 5, "scenarios": [
+    {"vs_baseline": {"throughput_uph": {"mean": 1.2, "ci_low": 0.4, "ci_high": 2.0,
+                                        "provenance": "inferred"}}}]}}}
+
+
+def _exp_claim(**kw):
+    base = dict(id="c1", text="Paired throughput change 1.2 UPH", value=1.2, unit="uph",
+                provenance="inferred", ci_low=0.4, ci_high=2.0,
+                citation=Citation(call_id="call_0009",
+                                  pointer="/data/scenarios/0/vs_baseline/throughput_uph/mean"))
+    base.update(kw)
+    return Claim(**base)
+
+
+def test_an_experiment_claim_with_its_exact_interval_verifies():
+    ver, _ = V.verify(_finding([_exp_claim()]), EXP)
+    assert ver.claims_verified == 1
+
+
+def test_a_claimed_interval_that_is_not_the_result_interval_fails():
+    ver, _ = V.verify(_finding([_exp_claim(ci_low=0.9, ci_high=1.5)]), EXP)
+    assert ver.claims_verified == 0
+    assert ver.claim_verdicts[0].code == V.INTERVAL_MISMATCH
+
+
+def test_an_experiment_claim_labelled_measured_is_a_provenance_violation():
+    ver, _ = V.verify(_finding([_exp_claim(provenance="measured", ci_low=None, ci_high=None)]),
+                      EXP)
+    assert ver.status == V.REJECTED
+
+
+def test_hypotheses_are_swept_like_prose_and_decisions_pass_through():
+    from genai.finding import Hypothesis
+    f = Finding(question="q", summary="s", claims=[_exp_claim()], recommendation="r",
+                decision="recommend", hypotheses=[
+                    Hypothesis("h1", "Feed limits flow by 1.2 UPH.", "supported", ["c1"]),
+                    Hypothesis("h2", "Cycle time limits flow by 7.7 UPH.", "rejected", ["c9"])])
+    ver, served = V.verify(f, EXP)
+    assert served.decision == "recommend"
+    assert served.hypotheses[0].statement == "Feed limits flow by 1.2 UPH."
+    assert "removed" in served.hypotheses[1].statement        # 7.7 is cited by nothing
+    assert served.hypotheses[1].claim_ids == []               # c9 never verified
+
+
+def test_decision_and_hypotheses_parse_leniently():
+    from genai.finding import parse_finding
+    raw = json.dumps({"summary": "s", "recommendation": "r", "claims": [],
+                      "decision": "because I said so",
+                      "hypotheses": [{"statement": "x", "status": "maybe"}, "junk", {}]})
+    f = parse_finding(raw, question="q")
+    assert f.decision == ""
+    assert [(h.statement, h.status) for h in f.hypotheses] == [("x", "untested")]

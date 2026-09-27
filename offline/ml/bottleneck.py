@@ -76,7 +76,7 @@ def detect(active: np.ndarray, ids: list[int]) -> tuple[np.ndarray, np.ndarray]:
         col = active[:, b]
         if col.sum() <= 0:
             continue
-        order = np.argsort(-col)
+        order = np.argsort(-col, kind="stable")
         top = float(col[order[0]])
         second = float(col[order[1]]) if len(order) > 1 else 0.0
         detected[b] = ids[int(order[0])]

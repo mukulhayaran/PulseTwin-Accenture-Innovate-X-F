@@ -113,9 +113,11 @@ def test_an_instructed_tool_that_does_not_exist_cannot_be_called(
 def test_the_registry_contains_nothing_that_mutates_the_line(registry) -> None:
     """The strongest possible answer to "what if it follows the instruction": there is
     no function that does the thing."""
-    non_get = [s for s in registry.values() if s.method != "GET"]
-    assert [s.name for s in non_get] == ["simulate_whatif"]
-    assert non_get[0].path == "/api/whatif"      # a simulator, not the line
+    # ADR-064 widened this by exactly one: an ISOLATED-twin experiment. Both POSTs are
+    # simulators; neither reaches the line, a model, a config or a proposal decision.
+    non_get = {s.name: s.path for s in registry.values() if s.method != "GET"}
+    assert non_get == {"simulate_whatif": "/api/whatif",
+                       "run_simulation_experiment": "/api/simulation-experiments"}
 
 
 def test_an_injected_path_cannot_escape_the_allowlist(registry, api) -> None:

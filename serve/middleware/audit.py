@@ -2,7 +2,7 @@
 
 Every mutating endpoint calls `log_action()` directly, once, right after it succeeds --
 not sniffed out of a generic ASGI middleware by matching request paths against a route
-table. There are a handful of mutating routes in this API (feedback, what-if, alert
+table. There are a handful of mutating routes in this API (what-if, alert
 acknowledgement, proposal decisions); an explicit call at each site is easier
 to verify complete (grep for `log_action` and cross-check against the route list) than
 trusting path-template matching to catch every one, including path-parameterised routes

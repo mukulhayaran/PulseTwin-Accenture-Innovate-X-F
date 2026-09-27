@@ -107,3 +107,33 @@ alarm_budget:
                          only the in-app feed. Prevents alarm fatigue from becoming a
                          second, unbounded cost on top of the one already priced in
                          configs/economics.yaml's supervisor_response_cost_per_alarm."
+
+outcome_evaluation:
+  # ADR-064. How an APPROVED action applied to the simulated twin is judged afterwards.
+  # Deterministic: serve/outcomes.py computes the metric before and after and classifies
+  # it against these thresholds -- no model decides whether an action worked.
+  #
+  # The live twin replays the committed stream with scripted conditions, so LINE throughput
+  # cannot respond to an action there. What it can observe is station-level, one metric per
+  # watch detector (all three are lower-is-better):
+  #   starvation -> stalled_share         share of the station's events starved/blocked/down
+  #   paint_env  -> humidity_excess_pct   station humidity minus ambient, mean
+  #   tool_wear  -> signal_deviation_pct  mean |signal / per-variant baseline - 1|, in %
+  #
+  # Flat keys, because serve/policy.py reads scalars without a YAML parser (import wall).
+  outcome_window_s: 1800           # simulated seconds observed after the action
+  outcome_baseline_window_s: 1800  # simulated seconds before it, the pre-action baseline
+  outcome_min_events: 6            # station events needed on each side for any verdict
+  # relative improvement = (baseline - after) / baseline
+  stalled_share_success_rel: 0.50
+  stalled_share_partial_rel: 0.15
+  stalled_share_harm_rel: 0.15     # worse by this much -> harmful
+  stalled_share_min_baseline: 0.05 # below this there was nothing material to fix
+  humidity_excess_pct_success_rel: 0.50
+  humidity_excess_pct_partial_rel: 0.15
+  humidity_excess_pct_harm_rel: 0.15
+  humidity_excess_pct_min_baseline: 2.0
+  signal_deviation_pct_success_rel: 0.50
+  signal_deviation_pct_partial_rel: 0.15
+  signal_deviation_pct_harm_rel: 0.15
+  signal_deviation_pct_min_baseline: 2.0

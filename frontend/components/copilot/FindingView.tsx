@@ -10,7 +10,7 @@
 // takeaway is "nice LLM demo" this component has failed; the intended takeaway is "they
 // made the model prove every number and discarded the ones it could not".
 
-import { ActionType, ProposedAction, TriageClaim, TriageRun } from "@/lib/api";
+import { ActionType, FindingDecision, ProposedAction, TriageClaim, TriageRun } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { Badge, Tooltip } from "@/components/ui";
 
@@ -118,6 +118,35 @@ export function ClaimRow({ claim }: { claim: TriageClaim }) {
   );
 }
 
+const DECISION: Record<FindingDecision, { text: string; tone: "ok" | "warn" | "neutral" | "danger" }> = {
+  recommend: { text: "Recommends a change", tone: "ok" },
+  insufficient_evidence: { text: "Stopped: insufficient evidence", tone: "neutral" },
+  unsupported_intervention: { text: "Stopped: intervention not supported", tone: "neutral" },
+  simulator_unavailable: { text: "Stopped: simulator unavailable", tone: "warn" },
+  no_improvement: { text: "Stopped: nothing improved the objective", tone: "neutral" },
+  too_uncertain: { text: "Stopped: results too uncertain", tone: "warn" },
+  engineering_review: { text: "Needs engineering review", tone: "warn" },
+};
+
+// Which tool a claim's number came from decides which of the four kinds it is.
+const SIM_TOOLS = new Set(["run_simulation_experiment", "get_simulation_experiment",
+                           "compare_simulation_interventions"]);
+
+function claimKind(claim: TriageClaim, toolOf: Map<string, string>):
+  "observed" | "projection" | "grid" | "inferred" {
+  const tool = toolOf.get(claim.citation.call_id) ?? "";
+  if (SIM_TOOLS.has(tool)) return "projection";
+  if (tool === "simulate_whatif") return "grid";
+  return claim.provenance === "measured" ? "observed" : "inferred";
+}
+
+const KIND_LABEL = {
+  observed: "Observed facts · measured",
+  inferred: "Inferred relationships",
+  projection: "Simulation projections · fresh simulation",
+  grid: "Estimates · precomputed grid, interpolated",
+} as const;
+
 export function VerdictStrip({ run }: { run: TriageRun }) {
   const ver = run.verification;
   if (!ver) return null;
@@ -195,16 +224,49 @@ export default function FindingView({ run }: { run: TriageRun }) {
     <div className="space-y-4">
       <p className="text-xs leading-relaxed text-ink-dim">{run.finding.summary}</p>
 
-      {run.finding.claims.length > 0 && (
+      {run.finding.decision && DECISION[run.finding.decision] && (
+        <Badge variant={DECISION[run.finding.decision].tone}>
+          {DECISION[run.finding.decision].text}
+        </Badge>
+      )}
+
+      {(run.finding.hypotheses?.length ?? 0) > 0 && (
         <div>
-          <SectionLabel>Evidence</SectionLabel>
-          <ul className="space-y-1.5">
-            {run.finding.claims.map((c) => (
-              <ClaimRow key={c.id} claim={c} />
+          <SectionLabel>Hypotheses tested</SectionLabel>
+          <ul className="space-y-1">
+            {run.finding.hypotheses!.map((h) => (
+              <li key={h.id} className="flex items-start gap-2 text-xs text-ink">
+                <Badge variant={h.status === "supported" ? "ok" : h.status === "rejected" ? "neutral" : "warn"}>
+                  {h.status}
+                </Badge>
+                <span className="min-w-0">
+                  {h.statement}
+                  {h.claim_ids.length > 0 && (
+                    <span className="text-numeric ml-1 text-2xs text-ink-faint">({h.claim_ids.join(", ")})</span>
+                  )}
+                </span>
+              </li>
             ))}
           </ul>
         </div>
       )}
+
+      {run.finding.claims.length > 0 && (() => {
+        const toolOf = new Map((run.tool_ledger ?? []).map((t) => [t.call_id, t.tool_name]));
+        const groups = (["observed", "inferred", "projection", "grid"] as const)
+          .map((k) => [k, run.finding!.claims.filter((c) => claimKind(c, toolOf) === k)] as const)
+          .filter(([, cs]) => cs.length > 0);
+        return groups.map(([k, cs]) => (
+          <div key={k}>
+            <SectionLabel>{KIND_LABEL[k]}</SectionLabel>
+            <ul className="space-y-1.5">
+              {cs.map((c) => (
+                <ClaimRow key={c.id} claim={c} />
+              ))}
+            </ul>
+          </div>
+        ));
+      })()}
 
       {(run.finding.proposed_actions?.length ?? 0) > 0 && (
         <div>
@@ -234,7 +296,9 @@ export default function FindingView({ run }: { run: TriageRun }) {
       )}
 
       <div>
-        <SectionLabel>Recommendation</SectionLabel>
+        <SectionLabel>
+          {run.mode === "deterministic" ? "Recommendation · deterministic fallback" : "Recommendation · AI agent"}
+        </SectionLabel>
         <p className="text-xs leading-relaxed text-ink">{run.finding.recommendation}</p>
       </div>
 

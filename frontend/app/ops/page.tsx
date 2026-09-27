@@ -20,6 +20,7 @@ import AuditLogViewer from "@/components/ops/AuditLogViewer";
 import TriageConsole from "@/components/ops/TriageConsole";
 import AgentPanel from "@/components/copilot/AgentPanel";
 import ProposalInbox from "@/components/ops/ProposalInbox";
+import OutcomeLedger from "@/components/agents/OutcomeLedger";
 import { AppShell, Select, Tooltip } from "@/components/ui";
 
 const ROLES: Role[] = ["supervisor", "manager", "leadership", "system"];
@@ -163,6 +164,10 @@ export default function OpsPage() {
 
         <RoleGate allowed={["manager", "leadership", "system"]}>
           <ProposalInbox plant={plant} onAction={show} />
+        </RoleGate>
+
+        <RoleGate allowed={["manager", "leadership", "system"]}>
+          <OutcomeLedger plant={plant} />
         </RoleGate>
 
         <RoleGate allowed={["manager", "leadership", "system"]}>

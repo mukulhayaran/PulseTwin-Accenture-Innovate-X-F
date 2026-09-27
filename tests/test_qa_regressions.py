@@ -153,8 +153,9 @@ def test_audit_log_ignores_absent_filters(client):
     """The Ops AuditLogViewer sent `?role=undefined&action=undefined` (URLSearchParams
     stringifies undefined), which the backend matched as `user_role = 'undefined'`, so the
     panel rendered "No matching entries" against a populated table."""
-    client.post("/api/feedback", json={"plant_id": "plant_a", "unit_id": "U_QA_REGRESS",
-                                        "verdict": "useful"}, headers=SUPERVISOR)
+    sid = client.get("/api/whatif/stations?plant_id=plant_a").json()[0]["station_id"]
+    client.post("/api/whatif", json={"plant_id": "plant_a", "station_id": sid},
+                headers=SUPERVISOR)
     unfiltered = client.get("/api/audit/log?limit=50", headers=LEADERSHIP).json()
     assert unfiltered["count"] > 0
 

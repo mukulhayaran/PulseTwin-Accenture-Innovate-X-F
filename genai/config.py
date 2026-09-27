@@ -89,7 +89,31 @@ MAX_THREAD_TURNS = 4
 MAX_THREAD_CLAIMS_PER_TURN = 8
 
 REQUEST_TIMEOUT_S = 90.0
-RUN_WALLCLOCK_CAP_S = 300.0
+# 420 s since ADR-064: one smoke experiment (~40-60 s of simulation) plus ~10 reasoning
+# turns of ~10 s each did not fit in 300 s -- measured, a starvation run that followed the
+# method exactly died at the cap. Still well inside the 900 s stale-worker verdict.
+RUN_WALLCLOCK_CAP_S = 420.0
+
+# ADR-064: provider-AVAILABILITY failures after which a run that permits it falls back to
+# the deterministic plan (the same verifier grades it; the row and the finding say it is
+# the fallback). Deliberately not 401/403: a misconfigured credential must stay visible.
+# Measured 2026-09-26: the free tier's daily quota ran out mid-session and every watch
+# investigation simply failed while a verified deterministic plan was one call away.
+PROVIDER_UNAVAILABLE = frozenset({
+    "rate_limited", "rate_limited_wallclock", "provider_unreachable", "provider_timeout",
+    "provider_status_402", "provider_status_429", "provider_status_500",
+    "provider_status_502", "provider_status_503", "provider_status_504",
+})
+# The orchestrated `incident` run is four SEQUENTIAL stages, three specialists and a
+# synthesizer. Measured 2026-09-26 on Nemotron: 16 calls and 171k prompt tokens left the
+# synthesizer 60 s for the largest call of the run, and it timed out every time. 510 s =
+# specialists 60+90+90, the ADR-064 simulation planner 120 and a 150 s synthesis floor.
+# Still inside the 900 s stale-worker verdict in serve/routers/triage.py.
+INCIDENT_WALLCLOCK_CAP_S = 510.0
+# Seconds before the wall-clock cap at which the loop spends its closing turn: one request
+# with no tools, so a slow model answers from its evidence instead of timing out empty.
+# A reasoning-model turn was measured at 12-60 s on OpenRouter (2026-09-26).
+FINALIZE_RESERVE_S = 75.0
 
 # Rate-limit backoff.
 #
@@ -115,6 +139,19 @@ MAX_TOOL_CALL_RETRIES = 2
 MAX_RATE_LIMIT_RETRIES = 3
 RATE_LIMIT_BACKOFF_S = 5.0        # fallback when the provider gives no hint
 MAX_RATE_LIMIT_WAIT_S = 45.0      # never honour a hint longer than this
+
+# A dropped connection, a timeout or a gateway 5xx is the network, not the request. It
+# once ended a run outright: a shift_intel run was thrown away after six good tool calls
+# and 78 s because one OpenRouter response dropped (`provider_unreachable`, 2026-09-25).
+# The same request is retried a few times with a growing backoff, still inside
+# RUN_WALLCLOCK_CAP_S. A 4xx is never on this list: it is the request, not the network.
+TRANSIENT_ERRORS = frozenset({
+    "provider_unreachable", "provider_timeout",
+    "provider_status_500", "provider_status_502", "provider_status_503",
+    "provider_status_504",
+})
+MAX_TRANSIENT_RETRIES = 2
+TRANSIENT_BACKOFF_S = 2.0         # waits 2 s, then 4 s
 
 # temperature=0 and a fixed seed REDUCE variance; they do not make a hosted model
 # reproducible, and this package never claims they do. What IS deterministic, and is
@@ -151,8 +188,10 @@ __all__ = [
     "LEGACY_KEY_ENVS", "KEY_ENVS",
     "MAX_ITERATIONS", "MAX_TOOL_CALLS", "MAX_TOOL_RESULT_BYTES",
     "MAX_THREAD_TURNS", "MAX_THREAD_CLAIMS_PER_TURN",
-    "REQUEST_TIMEOUT_S", "RUN_WALLCLOCK_CAP_S", "TEMPERATURE", "SEED",
+    "REQUEST_TIMEOUT_S", "RUN_WALLCLOCK_CAP_S", "INCIDENT_WALLCLOCK_CAP_S",
+    "PROVIDER_UNAVAILABLE", "FINALIZE_RESERVE_S", "TEMPERATURE", "SEED",
     "MAX_TOOL_CALL_RETRIES", "MAX_RATE_LIMIT_RETRIES", "RATE_LIMIT_BACKOFF_S", "MAX_RATE_LIMIT_WAIT_S",
+    "TRANSIENT_ERRORS", "MAX_TRANSIENT_RETRIES", "TRANSIENT_BACKOFF_S",
     "MAX_REDACTED_CLAIM_RATIO",
     "ORCHESTRATION_ENABLED", "MAX_ORCHESTRATION_SPECIALISTS", "SYNTHESIS_EVIDENCE_BUDGET",
 ]

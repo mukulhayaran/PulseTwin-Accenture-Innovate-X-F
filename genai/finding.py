@@ -19,6 +19,14 @@ from typing import Any
 # a real station in the plant config.
 UNITS = ("uph", "pct", "usd", "count", "station_id", "minutes", "ratio", "seconds")
 
+# ADR-064: why an investigation stopped. `recommend` is ONE outcome among several -- an
+# agent that finds nothing it can support should say which of these it hit, not propose
+# something anyway. Unknown values degrade to "" rather than failing the parse.
+DECISIONS = ("recommend", "insufficient_evidence", "unsupported_intervention",
+             "simulator_unavailable", "no_improvement", "too_uncertain",
+             "engineering_review")
+HYPOTHESIS_STATUS = ("supported", "rejected", "untested")
+
 PROVENANCE = ("measured", "inferred")
 
 CONFIDENCE = ("low", "medium", "high")
@@ -106,6 +114,18 @@ class ProposedAction:
 
 
 @dataclass(frozen=True)
+class Hypothesis:
+    """A bounded explanation the agent considered (ADR-064). `statement` is prose and is
+    swept for uncited numbers like the summary; `claim_ids` name the evidence."""
+
+    id: str
+    statement: str
+    status: str
+    claim_ids: list[str] = field(default_factory=list)
+    experiment_id: str | None = None
+
+
+@dataclass(frozen=True)
 class Finding:
     question: str
     summary: str
@@ -124,6 +144,9 @@ class Finding:
     knowledge_citations: list[KnowledgeCitation] = field(default_factory=list)
     # ADR-051. Empty unless the agent proposed a corrective action.
     proposed_actions: list[ProposedAction] = field(default_factory=list)
+    # ADR-064. Optional; absent on every Finding written before experiments existed.
+    decision: str = ""
+    hypotheses: list[Hypothesis] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -270,6 +293,20 @@ def parse_finding(text: str, *, question: str) -> Finding:
             )
         )
 
+    # ADR-064, OPTIONAL and LENIENT: a hypothesis is context, not evidence -- one badly
+    # shaped entry costs that entry, never the investigation.
+    hypotheses: list[Hypothesis] = []
+    for idx, h in enumerate(raw.get("hypotheses") or []):
+        if not isinstance(h, dict) or not isinstance(h.get("statement"), str):
+            continue
+        status = h.get("status") if h.get("status") in HYPOTHESIS_STATUS else "untested"
+        hypotheses.append(Hypothesis(
+            id=str(h.get("id") or f"h{idx + 1}"), statement=h["statement"], status=status,
+            claim_ids=[str(c) for c in h.get("claim_ids") or [] if isinstance(c, (str, int))],
+            experiment_id=(h.get("experiment_id")
+                           if isinstance(h.get("experiment_id"), str) else None)))
+    decision = raw.get("decision") if raw.get("decision") in DECISIONS else ""
+
     return Finding(
         question=question,
         summary=_require(raw, "summary", str),
@@ -282,6 +319,8 @@ def parse_finding(text: str, *, question: str) -> Finding:
         ],
         confidence=confidence,
         unanswered=[str(u) for u in raw.get("unanswered", []) if isinstance(u, str)],
+        decision=decision,
+        hypotheses=hypotheses,
     )
 
 

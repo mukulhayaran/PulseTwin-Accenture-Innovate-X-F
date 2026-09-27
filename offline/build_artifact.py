@@ -156,6 +156,19 @@ def _plain(feature: str, value, cfg) -> str:
     return f"{feature.replace('_', ' ')} = {value:.2f}"
 
 
+def _risk_fields(r, pred_by_unit, risk_by_unit, alert_by_unit, unit_end) -> dict:
+    """The model's output for this event, or nulls before the unit was scored."""
+    pred = pred_by_unit.get(r.unit_seq)
+    if pred is None or float(r.entry_ts) < float(pred):
+        return {"calibrated_risk": None, "alert": 0, "prediction_ts": None,
+                "lead_time_min": None}
+    return {"calibrated_risk": round(float(risk_by_unit.get(r.unit_seq, 0.0)), 4),
+            "alert": int(alert_by_unit.get(r.unit_seq, 0)),
+            "prediction_ts": _ts(pred),
+            "lead_time_min": round(max(0.0, (float(unit_end.get(r.unit_seq, pred))
+                                             - float(pred)) / 60.0), 1)}
+
+
 def _ts(seconds) -> str:
     return (SIM_START + pd.to_timedelta(float(seconds), unit="s")).isoformat()
 
@@ -178,6 +191,13 @@ def build(config_path: str) -> dict:
         bundle = pickle.load(fh)
     model = bundle["model"]
 
+    # ADR-061/062: a PROMOTED XGBoost champion replaces the unit scores and alert flags
+    # below; while HGB is champion (the committed state) this is None and nothing changes.
+    from offline.champion import headline_metrics, promoted_xgb, rescore
+    xgb_champ = promoted_xgb(ARTIFACTS, pid)
+    if xgb_champ is not None:
+        scores = rescore(xgb_champ, scores, feats, metrics["thresholds"]["cost_optimal"])
+
     # ------------------------------------------------------- export model to numpy
     npz_path = ARTIFACTS / f"model_{pid}.npz"
     export(model, npz_path, bundle["feature_names"])
@@ -197,12 +217,16 @@ def build(config_path: str) -> dict:
     end_ts = float(tel["exit_ts"].max())
     peak_days = set(cfg.ambient.humidity_high_days)
     day_of = lambda s: ((SIM_START + pd.to_timedelta(s, unit="s")).weekday())
-    cand = end_ts - win_h * 3600.0
-    for back in range(0, 14):
-        start = end_ts - (win_h + back * 24) * 3600.0
-        if day_of(start) in peak_days or day_of(start + win_h * 1800) in peak_days:
-            cand = start
-            break
+    # ...and that contains at least one alert. Chosen on model OUTPUT, never on labels, so
+    # no metric moves (they are all computed on the full test split). Without it, plant B's
+    # validation-chosen threshold (ADR-062) left its demo day with nothing to show.
+    # Preference: peak day with an alert > latest day with an alert > peak day > last day.
+    alert_pts = scores.loc[scores["alert_fired"] == 1, "prediction_ts"].to_numpy()
+    starts = [end_ts - (win_h + back * 24) * 3600.0 for back in range(0, 14)]
+    peak = [s for s in starts if day_of(s) in peak_days or day_of(s + win_h * 1800) in peak_days]
+    alerting = [s for s in starts if ((alert_pts >= s) & (alert_pts <= s + win_h * 3600.0)).any()]
+    cand = next((s for s in peak if s in alerting), None)
+    cand = cand if cand is not None else (alerting or peak or starts)[0]
     replay_start, replay_end = cand, cand + win_h * 3600.0
 
     # ------------------------------------------------------------------- units
@@ -254,7 +278,7 @@ def build(config_path: str) -> dict:
     # library at request time.
     from serve.scorer import Scorer
 
-    scorer = Scorer(npz_path)
+    scorer = xgb_champ or Scorer(npz_path)   # explanations come from the champion
     alert_units = sc[sc["alert_fired"] == 1].index.tolist()
     frows = []
     Xv = feats.loc[feats.index.isin(alert_units)]
@@ -461,6 +485,13 @@ def build(config_path: str) -> dict:
         "instrumentation_total_value": float(sum(r["annual_value"] for r in plan)),
         "escape_rate": metrics["escape_rate"],
     }
+    budget_thr = thr["budget_constrained"]
+    if xgb_champ is not None:
+        # The promoted model's own measured test numbers, not the HGB's. The research
+        # analyses above (validate.run_all) remain studies of the HGB model -- ADR-061.
+        flat.update(headline_metrics(ARTIFACTS, pid))
+        budget_thr = flat["budget_threshold"] = xgb_champ.alert_threshold
+        flat["oracle_capture"] = flat["pr_auc"] / max(1e-9, flat["oracle_pr_auc"])
     con.executemany("INSERT OR REPLACE INTO metrics VALUES (?,?,?,?)",
                     [(pid, k, float(v), "test_set") for k, v in flat.items()])
     con.executemany("INSERT OR REPLACE INTO metrics_json VALUES (?,?,?)", [
@@ -480,6 +511,12 @@ def build(config_path: str) -> dict:
     idx_rows = []
     risk_by_unit = sc["calibrated_risk"].to_dict()
     alert_by_unit = sc["alert_fired"].to_dict()
+    # ADR-063: a unit's risk exists only from its prediction time -- when it leaves the
+    # prediction-cutoff station. Every event used to carry the unit's FINAL risk and
+    # alert, from S1 on, so the live views raised an alert ~20 stations before the model
+    # could have scored the unit (the containment endpoint refused those as 409 "unit risk
+    # was not available at the requested time"). Earlier events carry null risk, alert 0.
+    pred_by_unit = sc["prediction_ts"].to_dict()
     ck_by = {(r.unit_seq, r.station_id): r for r in ckw.itertuples()}
 
     # newline="" disables universal-newline translation. Without it, Windows writes
@@ -490,7 +527,7 @@ def build(config_path: str) -> dict:
     with stream_path.open("w", encoding="utf-8", newline="") as fh:
         offset = 0
         last_key = None
-        for r in win.sort_values("entry_ts").itertuples():
+        for r in win.sort_values("entry_ts", kind="stable").itertuples():
             st = cfg.station(int(r.station_id))
             prov = {}
             vals = {}
@@ -512,8 +549,7 @@ def build(config_path: str) -> dict:
                 "ambient_temperature_c": round(float(r.ambient_temperature_c), 3),
                 "ambient_humidity_pct": round(float(r.ambient_humidity_pct), 3),
                 "sensor_tier": st.sensor_tier,
-                "calibrated_risk": round(float(risk_by_unit.get(r.unit_seq, 0.0)), 4),
-                "alert": int(alert_by_unit.get(r.unit_seq, 0)),
+                **_risk_fields(r, pred_by_unit, risk_by_unit, alert_by_unit, unit_end),
                 "provenance": prov,
                 **vals,
             }
@@ -549,7 +585,7 @@ def build(config_path: str) -> dict:
     con.execute("INSERT OR REPLACE INTO plant_meta VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
         pid, cfg.plant["name"], len(cfg.stations), cfg.units_per_hour_target, achieved,
         _ts(replay_start), _ts(replay_end), time.strftime("%Y-%m-%dT%H:%M:%S"),
-        econ.max_alerts_per_shift, thr["cost_optimal"], thr["budget_constrained"],
+        econ.max_alerts_per_shift, thr["cost_optimal"], budget_thr,
     ))
 
     con.commit()

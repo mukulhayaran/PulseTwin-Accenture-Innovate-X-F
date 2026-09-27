@@ -32,23 +32,6 @@ def test_audit_log_requires_leadership(client):
     assert client.get("/api/audit/log", headers=SUPERVISOR).status_code == 403
 
 
-def test_feedback_creates_an_audit_entry(client):
-    top = client.get("/api/units?plant_id=plant_a&alerts_only=true&limit=1").json()[0]
-    r = client.post("/api/feedback",
-                     json={"plant_id": "plant_a", "unit_id": top["unit_id"], "verdict": "useful"},
-                     headers=SUPERVISOR)
-    assert r.status_code == 200
-
-    body = client.get("/api/audit/log?action=feedback_submitted&limit=20").json()
-    assert body["count"] > 0
-    entry = next(e for e in body["entries"] if e["resource_id"] == top["unit_id"])
-    assert entry["user_role"] == "supervisor"
-    assert entry["payload"]["verdict"] == "useful"
-    # Operator privacy / sourced-economics contracts extend to the audit trail: no raw
-    # sensor reading or operator id belongs in a feedback payload.
-    assert "operator" not in str(entry["payload"]).lower()
-
-
 def test_containment_decision_creates_a_privacy_safe_audit_entry(client):
     top = client.get("/api/units?plant_id=plant_a&alerts_only=true&limit=1").json()[0]
     containment = client.get(

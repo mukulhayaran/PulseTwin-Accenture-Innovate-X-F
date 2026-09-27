@@ -51,8 +51,10 @@ def _prune(now: float) -> None:
         del _SESSIONS[token]
 
 
-def issue(role: str, user: str) -> dict[str, Any]:
-    """Mint a session for an already-authenticated role. Returns the public fields."""
+def issue(role: str, user: str, ttl_s: float = TTL_SECONDS) -> dict[str, Any]:
+    """Mint a session for an already-authenticated role. Returns the public fields.
+    `ttl_s` is shorter for machine sessions (an agent run's own token, ADR-063) so a burst
+    of runs expires on its own instead of evicting people's 8-hour sessions."""
     now = time.time()
     token = secrets.token_urlsafe(32)
     with _LOCK:
@@ -67,9 +69,9 @@ def issue(role: str, user: str) -> dict[str, Any]:
             "role": role,
             "user": user,
             "issued_at": now,
-            "expires_at": now + TTL_SECONDS,
+            "expires_at": now + ttl_s,
         }
-    return {"token": token, "role": role, "user": user, "expires_at": now + TTL_SECONDS}
+    return {"token": token, "role": role, "user": user, "expires_at": now + ttl_s}
 
 
 def resolve(token: str) -> dict[str, Any] | None:

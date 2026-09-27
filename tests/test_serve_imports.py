@@ -109,3 +109,10 @@ def test_scorer_imports_are_minimal() -> None:
     """The scorer is the piece most likely to drift back toward sklearn."""
     used = _top_level_imports(SERVE / "scorer.py")
     assert used <= {"numpy", "pathlib", "__future__"}, f"scorer.py imports {sorted(used)}"
+
+
+def test_xgb_scorer_walks_trees_without_xgboost() -> None:
+    """ADR-061: the XGBoost champion path reads XGBoost's JSON with numpy -- xgboost itself
+    must never become importable from serve/."""
+    used = _top_level_imports(SERVE / "xgb_scorer.py")
+    assert used <= {"numpy", "pathlib", "json", "__future__"}, f"xgb_scorer.py imports {sorted(used)}"

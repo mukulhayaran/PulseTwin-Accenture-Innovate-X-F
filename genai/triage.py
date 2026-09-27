@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import traceback
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +115,7 @@ def run(
     acting_role: str, requested_by: str, mode: str = "auto",
     intent: str = "ask", station_id: int | None = None,
     thread_id: str | None = None, turn_index: int = 0,
+    allow_fallback: bool = False,
 ) -> dict[str, Any]:
     started = time.monotonic()
     api = PulseTwinAPI(api_base, acting_role, run_id)
@@ -225,6 +227,22 @@ def run(
                 return _persist(con, run_id, result, ver, served, None, started,
                                 thread_id=thread_id, carried=carried,
                                 raw_text=result.content)
+        elif ((allow_fallback or mode == "auto")
+              and result.error in config.PROVIDER_UNAVAILABLE):
+            # ADR-064: the provider is unavailable, not wrong. Fall back to the verified
+            # deterministic plan and say so on the row and in the finding.
+            fell_back = result.error
+            store.mark_fallback(con, run_id)
+            mode_label = "deterministic"
+            result, raw_finding = offline_triage.run_plan(
+                intents.plan(intent), registry, api,
+                plant_id=plant_id, question=task, station_id=station_id)
+            raw_finding = replace(raw_finding, unanswered=[
+                f"The AI provider was unavailable ({fell_back}); this is the "
+                f"DETERMINISTIC FALLBACK, not a model's answer."] + raw_finding.unanswered)
+            beat(phase=T.PHASE_COMPOSE, phase_index=T.phase_index(T.PHASE_COMPOSE),
+                 iteration=1, elapsed_s=time.monotonic() - started,
+                 tools=[_tool_row(r) for r in result.records])
         else:
             ver, served = V.reject_unparseable(question, result.error or result.status)
             ver.reject_reason = result.error or result.status
@@ -320,6 +338,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="role the tools act AS (capped by the caller's own role)")
     p.add_argument("--requested-by", default="cli")
     p.add_argument("--mode", default="auto", choices=("auto", "agent", "deterministic"))
+    p.add_argument("--allow-fallback", action="store_true",
+                   help="fall back to the deterministic plan if the provider is unavailable")
     args = p.parse_args(argv)
 
     # `ask` is the only intent that needs the operator's own words; a named action
@@ -355,7 +375,8 @@ def main(argv: list[str] | None = None) -> int:
                   api_base=args.api_base, acting_role=args.role,
                   requested_by=args.requested_by, mode=args.mode,
                   intent=args.intent, station_id=args.station_id,
-                  thread_id=args.thread_id, turn_index=args.turn_index)
+                  thread_id=args.thread_id, turn_index=args.turn_index,
+                  allow_fallback=args.allow_fallback)
     except Exception as exc:
         # Anything that escapes run() -- a missing `openai` package, a provider SDK
         # change, a bug -- would otherwise kill this process with the row still at

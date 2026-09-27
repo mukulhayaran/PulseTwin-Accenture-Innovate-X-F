@@ -23,6 +23,8 @@ services:
         sync: false          # Neon direct connection string, pasted in the dashboard
       - key: PULSETWIN_REQUIRE_POSTGRES
         value: "1"
+      - key: PULSETWIN_AUTH_MODE   # ADR-063: sessions grant roles; a bare header cannot
+        value: session
       - key: PULSETWIN_PG_POOL_MAX
         value: "5"
       - key: PULSETWIN_CORS_ORIGINS

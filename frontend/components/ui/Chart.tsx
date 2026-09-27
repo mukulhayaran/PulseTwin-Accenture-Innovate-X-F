@@ -20,7 +20,7 @@ export function ChartFrame({
   className?: string;
 }) {
   return (
-    <div className={cn("w-full", className)} style={{ height }}>
+    <div className={cn("chart-in w-full", className)} style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
         {children}
       </ResponsiveContainer>
@@ -61,7 +61,7 @@ export function ChartTooltip({
   if (!active || !payload?.length) return null;
 
   return (
-    <div className="pointer-events-none min-w-36 max-w-72 border border-surface-dark bg-surface-dark px-3 py-2 shadow-pop">
+    <div className="tip-in pointer-events-none min-w-36 max-w-72 border border-line-on-dark bg-surface-dark px-3 py-2 shadow-pop">
       <div className="mb-1.5 text-2xs font-bold uppercase tracking-[0.115em] text-on-dark-soft">
         {title ? title(label, payload) : label}
       </div>

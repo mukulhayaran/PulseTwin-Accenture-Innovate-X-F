@@ -148,6 +148,11 @@ def run(cfg: PlantConfig, out_root: Path = DATA_ROOT) -> dict:
     inspections["plant_id"] = cfg.plant_id
     inspections.to_parquet(out / "inspections.parquet", index=False)
 
+    # Observable failure conditions per unit (no latent terms). Read only by
+    # offline/experiments/p75_prototype.py; nothing in the artifact build touches it.
+    signals[["unit_seq", "obs_mode_a", "signal_mode_b", "signal_mode_c"]].to_parquet(
+        out / "risk_conditions.parquet", index=False)
+
     np.savez_compressed(
         out / "state_buckets.npz",
         bucket_s=STATE_BUCKET_S,
@@ -173,7 +178,7 @@ def _diagnostics(cfg, result, telemetry, checklists, insp, causal, elapsed) -> d
     for sig, st in (("torque_nm", dp.mode_c.contributing_stations[0]),
                     ("vibration_mm_s", dp.mode_c.contributing_stations[1]),
                     ("temperature_c", dp.mode_a.contributing_stations[0])):
-        col = telemetry.loc[telemetry["station_id"] == st].sort_values("entry_ts")[sig]
+        col = telemetry.loc[telemetry["station_id"] == st].sort_values("entry_ts", kind="stable")[sig]
         acs[sig] = autocorrelation(col.to_numpy())
 
     truth = ground_truth_bottleneck(result, cfg)

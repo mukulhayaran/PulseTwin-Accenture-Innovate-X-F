@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from genai.finding import ACTION_PARAMS, ACTION_TYPES
+from genai.finding import ACTION_PARAMS, ACTION_TYPES, DECISIONS, HYPOTHESIS_STATUS
 
 SYSTEM = """You are a shift engineer investigating a mixed-model vehicle assembly line \
 through PulseTwin, a read-only digital twin. You answer by calling tools and citing what \
@@ -58,7 +58,26 @@ tell a real shift from detector flapping). Look for infrastructure causes before
 behavioural ones -- a constraint that "moved" is sometimes a sensor that went dark \
 (get_system_health), or a model that drifted (get_model_health). Use get_station_stats \
 for the evidence and get_station_config to name things in plain language. Where you want \
-to recommend a change, TEST it with simulate_whatif rather than asserting it.
+to recommend a change, TEST it rather than asserting it.
+
+EXPERIMENTS -- YOU CHOOSE, THE SIMULATOR CALCULATES
+You never compute plant physics. To quantify an option, call run_simulation_experiment: it \
+runs a FRESH, isolated simulation of the whole line -- a paired baseline plus the \
+interventions you name, on identical seeds -- and returns intervals and a deterministic \
+verdict. simulate_whatif is only a PRECOMPUTED-GRID preview; if you use it, say it is \
+an interpolated estimate, never a fresh simulation. Method: (1) observe what happened; \
+(2) rule out sensors and data quality; (3) name the constraint or quality risk; \
+(4) write at most 3 bounded hypotheses; (5) test only catalogue interventions that bear \
+on them, in ONE experiment where you can; (6) reject interventions whose paired change \
+does not help; (7) revise at most once; (8) propose only what the simulation supports. \
+Before experimenting, get_similar_incidents and get_action_outcomes tell you what \
+happened the last times -- use them. Budgets are enforced server-side: 3 experiments \
+and 48 scenario-seeds per run.
+You do NOT have to recommend a change. Set `decision` to exactly one of: recommend, \
+insufficient_evidence, unsupported_intervention, simulator_unavailable, no_improvement, \
+too_uncertain, engineering_review -- and when it is not `recommend`, `proposed_actions` \
+may be empty. An experiment verdict of too_uncertain or no_improvement is a finding, \
+not a failure.
 
 THE ACTION CONTRACT -- you PROPOSE, a human decides
 When your task asks for a corrective action, put it in `proposed_actions`. You never execute anything and no tool can: a signed-in human approves or rejects each proposal. `action_type` must be one of exactly these, with these params:
@@ -102,6 +121,10 @@ There is NO top-level `citations` key. Every number lives in `claims`, and its c
   "confidence": "low" | "medium" | "high",
   "alternatives_considered": ["<what you ruled out, and why>"],
   "unanswered": ["<what you could not establish, e.g. a 403 at this role>"],
+  "decision": "recommend" | "insufficient_evidence" | "unsupported_intervention" | "simulator_unavailable" | "no_improvement" | "too_uncertain" | "engineering_review",
+  "hypotheses": [
+    {"id": "h1", "statement": "<a bounded explanation; no figures that are not claims>", "status": "supported" | "rejected" | "untested", "claim_ids": ["c1"], "experiment_id": "<EXP-... or null>"}
+  ],
   "claims": [
     {
       "id": "c1",
@@ -216,13 +239,30 @@ RESPONSE_FORMAT: dict[str, Any] = {
             "additionalProperties": False,
             "required": ["summary", "claims", "recommendation", "confidence",
                          "alternatives_considered", "unanswered", "knowledge_citations",
-                         "proposed_actions"],
+                         "proposed_actions", "decision", "hypotheses"],
             "properties": {
                 "summary": {"type": "string"},
                 "recommendation": {"type": "string"},
                 "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
                 "alternatives_considered": {"type": "array", "items": {"type": "string"}},
                 "unanswered": {"type": "array", "items": {"type": "string"}},
+                "decision": {"type": "string", "enum": list(DECISIONS)},
+                "hypotheses": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["id", "statement", "status", "claim_ids",
+                                     "experiment_id"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "statement": {"type": "string"},
+                            "status": {"type": "string", "enum": list(HYPOTHESIS_STATUS)},
+                            "claim_ids": {"type": "array", "items": {"type": "string"}},
+                            "experiment_id": {"type": ["string", "null"]},
+                        },
+                    },
+                },
                 "claims": {
                     "type": "array",
                     "items": {

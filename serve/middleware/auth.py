@@ -20,7 +20,7 @@ header seam docs/SECURITY.md documents honest rather than pretending to be close
 
 Role permissions (finals brief SS4), as a strict hierarchy -- each role can do everything
 the one before it can:
-    supervisor  -- stream, predict, trace/containment, feedback, bottleneck (read)
+    supervisor  -- stream, predict, trace/containment, bottleneck (read)
     manager     -- + whatif, bottleneck (full), station stats, trends
     leadership  -- + economics, instrumentation plan, model health
     system      -- + everything below; no endpoint requires it alone since ADR-053
@@ -93,6 +93,13 @@ def get_role(request: Request) -> str:
         request.state.session_user = session["user"]
     else:
         role = declared
+        if not jwt_auth.header_grants_role() and _HIERARCHY[declared] > 0:
+            # ADR-063 (session mode): with no session the header cannot claim more than
+            # the anonymous floor view. It used to be that `-H "X-PulseTwin-Role: system"`
+            # passed every role check in the running demo.
+            raise HTTPException(
+                401, f"role '{declared}' requires signing in: POST /api/auth/login and "
+                     "send the session token as X-PulseTwin-Token")
 
     request.state.role = role
     return role

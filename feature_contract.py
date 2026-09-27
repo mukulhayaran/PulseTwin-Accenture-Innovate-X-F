@@ -22,6 +22,19 @@ LOT_TRAILING_UNITS = 100
 NOTE_CODES = ("OK", "MINOR_ADJ", "TOOL_SWAP", "REWORK_FLAG", "MATERIAL_VAR")
 
 
+def _mean(xs: list[float]) -> float:
+    return math.fsum(xs) / len(xs)
+
+
+def _stdev(xs: list[float]) -> float:
+    """Sample standard deviation in float arithmetic, as pandas' rolling std computes it.
+
+    `statistics.stdev` is exact-rational (Fraction per element): profiled, it was the
+    single largest cost of a live-twin replica. fsum keeps the two-pass sum accurate."""
+    m = _mean(xs)
+    return math.sqrt(math.fsum((x - m) * (x - m) for x in xs) / (len(xs) - 1))
+
+
 def _finite(values: Iterable[float]) -> list[float]:
     return [float(value) for value in values if value is not None and math.isfinite(float(value))]
 
@@ -44,15 +57,15 @@ def signal_features(
 
     z_window = history[-TRAILING_Z_UNITS:]
     if len(z_window) >= 20:
-        sd = statistics.stdev(z_window)
+        sd = _stdev(z_window)
         if sd > 0:
-            result[f"{prefix}_z"] = (current - statistics.mean(z_window)) / sd
+            result[f"{prefix}_z"] = (current - _mean(z_window)) / sd
 
     if len(history) >= RATE_OF_CHANGE_LAG:
         result[f"{prefix}_roc"] = current - history[-RATE_OF_CHANGE_LAG]
 
     std_window = history[-ROLLING_STD_UNITS:]
     if len(std_window) >= 4:
-        result[f"{prefix}_roll_std"] = statistics.stdev(std_window)
+        result[f"{prefix}_roll_std"] = _stdev(std_window)
 
     return result

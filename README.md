@@ -290,7 +290,8 @@ banned outright, and the test fails the build if one appears.
 
 - **PR-AUC 0.256 is low in absolute terms** and we do not dress it up. It is 53% of a
   measured ceiling of 0.481. The remaining gap is real headroom, not noise.
-- **Plant B performs materially worse** (recall 6% at budget vs 28%). Its Mode B fires on
+- **Plant B performs materially worse** (recall 3.4% at budget vs 27.6%, at a
+  validation-chosen threshold that alerts 1.2/shift on test — ADR-062). Its Mode B fires on
   13.6% of visits rather than 4.5%, so the operating threshold lands differently. Reported
   as measured; not tuned to match plant A.
 - **Feedback is durable only on Postgres** — which every deployment now is. Local dev on

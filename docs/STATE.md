@@ -3,6 +3,101 @@
 > **READ THIS FIRST, EVERY SESSION.** Then `docs/SPEC.md` for the build target.
 > Update the ledger and the "next action" line at the end of every phase.
 
+## Final application audit — 2026-09-26 (ADR-063)
+
+Full run-it audit of the Postgres stack. The report is `docs/FINAL_APPLICATION_AUDIT.md`,
+and machine-readable results are in `artifacts/final_application_audit.json`. Fixed:
+- dev-mode role escalation, closed by session auth;
+- non-causal replay alerts;
+- float4 risk columns: every alert read "Monitor";
+- a missing `triage_run_id` column, which caused a 500;
+- mixed-clock ack times;
+- uncapped twin forecast jobs, which starved the host;
+- an empty plant B demo day;
+- a "100% agreement" on a steady shift;
+- a manager-gated fetch on /overview;
+- mobile KPI truncation and axis collisions.
+
+Full suite: 811 passed, 10 failed, all 10 from plant B's empty window. After the fix, the
+affected files pass (122), and so do the touched files (131). **Next action:** redeploy the frontend (the value-bridge
+label fix is built but not deployed), retire the stray `reliability_test` registry
+champion (SQL in the audit, section 15), and run the 6 incident scenarios not yet run.
+
+## Evidence-driven agents — 2026-09-26 (ADR-064)
+
+Two shared capabilities were added under the existing agents; no new agent cards.
+
+- **Dynamic simulation experiments** (migration 020). A paired baseline plus catalogue
+  interventions, run on identical seeds against isolated copies of the physical twin. It
+  has an API, limits and budgets, cancellation, reaping, and results that persist.
+- **Outcome learning** (migration 021). Approval applies an action to the simulated twin
+  and opens a monitoring window, which is classified deterministically from config.
+  Learning records connect trigger, run, proposal, decision, experiment and outcome, and
+  structured similar-incident search reads them back.
+- **Agent tier**:
+  - 7 new tools;
+  - the verifier now checks interval matches;
+  - findings carry a `decision` stop reason and `hypotheses`;
+  - a simulation-planner stage sits in `incident`;
+  - the deterministic plans are experiment-first and propose only what the paired
+    interval supports;
+  - an unavailable provider falls back to the deterministic plan, labelled as such.
+- **UI**: a lifecycle strip, an experiment comparison table and an outcome card
+  (manager and ops), plus an outcome ledger on ops.
+
+Verified live on the Postgres stack:
+- **An AI-agent starvation run** followed the method: 8 tools, one experiment,
+  4 hypotheses, `no_improvement`, no action proposed, 8/8 claims verified.
+- **A deterministic-fallback paint run** went through approval, application to the twin,
+  monitoring, and evaluation as `successful` (humidity excess 16.7 → 0.1 points, 25
+  events each side).
+
+Defects found by running it:
+- the experiment worker read a SQLite artifact the production image does not ship;
+- the agent picked the 219 s `standard` profile and died at the cap;
+- the deterministic plans passed an argument the tool schema had dropped, so every
+  experiment silently fell back;
+- the proposal view blanked every outcome field;
+- a watch investigation failed outright when the provider quota ran out.
+
+All five are fixed and pinned by tests.
+
+**Next action:** once the free-tier quota resets, re-run the AI-agent watch path through
+approval, to exercise a live projection error.
+
+## Coupling audit + live agent pass — 2026-09-26 (ADR-063 §10-16)
+
+The codebase was traced producer → consumer, and every agent intent was run live on
+OpenRouter.
+
+- **Removed as unused:**
+  - `POST /api/feedback`
+  - `GET /api/triage/intents`
+  - `GET /api/simulations/scenarios`
+  - two components that were never rendered
+  - three dead client functions
+- **Pinned by tests:** the scenario and alert-policy mirrors.
+- **Fixed in containment:** it ranks on evidence, and knows which vehicles are already
+  inspected.
+- **Fixed in the agents:**
+  - an incident crash on Postgres;
+  - provider hangs, now given a total per-call deadline;
+  - toolless answers, which degrade or get re-asked;
+  - dead workers locking threads;
+  - prose rounding, percent and ranges in the verifier;
+  - the incident budget;
+  - dropped synthesis evidence.
+- **Live results, sequential:**
+  - shift_intel 11/12
+  - handover 12/13
+  - starvation 8/8
+  - paint_env 4/4
+  - tool_wear 3/4
+  - whatif 9/9
+  - Copilot ask 5/6 and 6/6
+- **Correct rejections that remain:** a model labelling an inferred value as measured,
+  and a missing interval. Both are contract #1, working as designed.
+
 ## Homepage photo update — 2026-09-25
 
 - Replaced the landing chassis illustration with the user's BMW photograph,
@@ -661,6 +756,35 @@ loaded, `/api/health` = `postgresql`, feedback persisted across `restart backend
 `/supervisor` and `/ops` loaded in Playwright with no page errors or 5xx, backend ~82 MB
 RSS. Not yet done: the Neon/Render/Vercel accounts themselves (owner action).
 
+### Thresholds on validation, trailing-window budget, plant B challenger (2026-09-26) — ADR-062
+
+- `train.py` now chooses the budget threshold on validation. Plant A is unchanged (same
+  plateau). Plant B moves from 6.00 to 1.19 alerts/shift (precision 0.240, recall 0.034),
+  and the docs are updated.
+- Both plants were retrained (identical models) and the artifacts rebuilt, which also
+  rewrote the streams with LF line endings (the drifted `stream_index` offsets are fixed).
+- The fallback `.npz` files rebuild byte-identical.
+- The trailing-window alert policy ships inside the XGBoost artifact.
+- Plant A run 3 is NOT promoted (recall 0.254 < 0.276 at 7.33 alerts/shift). Plant B is
+  NOT promoted (worse outright).
+- Promotion would now reach the baked artifacts and the live twin (`offline/champion.py`).
+
+### XGBoost defect-risk challenger (2026-09-25) — ADR-061, NOT promoted
+
+`python -m offline.ml.xgb_challenger --config configs/plant_a.yaml --trials 30 --n-jobs 4`
+(~15 min; `--smoke` for 3 trials). It is a deterministic seeded search, calibrated and
+thresholded on validation, and scored once on test. On test it beats the champion on
+precision (0.368 vs 0.354), recall (0.298 vs 0.276) and PR-AUC (0.278 vs 0.256), and fixes
+the one-score alert cohort (185 unique of 185). It **fails the alert-budget gate**: 8.81
+alerts/shift on test from a threshold that gave 6.00 on validation. The HGB champion keeps
+serving; the challenger is in `model_registry` as `challenger`.
+
+Found on the way: the champion's published budget threshold is chosen ON TEST
+(`offline/ml/train.py`), and honestly thresholded on validation it alerts on nothing. The
+selection rule was amended once (run 1 picked a degenerate 10-tree model); both runs are
+disclosed. xgboost is in the `ml` dependency group only; serve walks the Booster JSON with
+numpy.
+
 ### Integration contract written (2026-09-25) — ADR-058, docs/INTEGRATION.md
 
 ADR-058 states the six operations a real twin must provide (snapshot, fork with common
@@ -830,9 +954,9 @@ drifted apart, see the correction note below the table.
 | Defect rate (test split) | 2.52% | 2.35% |
 | PR-AUC | 0.256 [0.207-0.308] | 0.052 [0.039-0.076] |
 | Oracle ceiling | 0.481 (53% captured) | 0.075 (70% captured) |
-| Recall @ operating threshold | 27.6% | 5.6% |
-| Precision @ operating threshold | 35.4% | 7.9% |
-| Alerts per shift (budget 6) | 8.5 | 6.0 |
+| Recall @ operating threshold | 27.6% | 3.4% (was 5.6%, see ADR-062) |
+| Precision @ operating threshold | 35.4% | 24.0% (was 7.9%) |
+| Alerts per shift (budget 6) | 8.5 | 1.2 (was 6.0: that threshold was chosen on test) |
 | Bottleneck accuracy | 85.9% | 90.2% |
 | Bottleneck shift | S12 -> S19 | S16 -> S31 |
 | Fallback shadow precision / recall | 3.0% / 100% | 2.9% / 100% |

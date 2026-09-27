@@ -27,7 +27,7 @@ T0 = datetime(2026, 1, 5, 8, 0)
 @pytest.fixture()
 def mqtt_run(monkeypatch):
     monkeypatch.setenv("PULSETWIN_JOBS_ENABLED", "0")  # record proposals, spawn nothing
-    with TestClient(app) as client:
+    with TestClient(app):  # the lifespan builds app.state
         manager, ops = app.state.live_simulation, app.state.ops
         run_id = f"MQTT-test-{secrets.token_hex(4)}"
         db.execute(ops, """INSERT INTO simulation_runs

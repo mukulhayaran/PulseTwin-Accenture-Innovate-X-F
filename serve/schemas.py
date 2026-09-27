@@ -63,6 +63,16 @@ class PredictResponse(BaseModel):
     features_missing: int
     data_completeness_pct: float
     source: Literal["replay", "live_synthetic", "real", "manual"]
+    # ADR-061. Added, never replacing: `probability` stays the calibrated risk every client
+    # already reads. `calibrated_risk` is the same number, named for what it is; the
+    # supervisor-facing risk. `raw_model_score` is the uncalibrated model output -- a
+    # diagnostic ranking signal, NOT a probability of defect, and never shown as the risk.
+    calibrated_risk: float | None = None
+    raw_model_score: float | None = None
+    alert_threshold: float | None = None
+    risk_band: Literal["high", "at_risk", "monitor"] | None = None
+    model_type: str | None = None
+    calibration_method: str | None = None
 
 
 class AtRiskUnit(BaseModel):
@@ -71,7 +81,9 @@ class AtRiskUnit(BaseModel):
     risk: float
     shared_factors: list[str]
     explanation: str
-    action: Literal["HOLD", "INSPECT", "MONITOR"]
+    # INSPECTED: already through final inspection, so no action applies; see the outcome.
+    action: Literal["HOLD", "INSPECT", "MONITOR", "INSPECTED"]
+    inspection_outcome: int | None = None
     manual_action: Literal["HOLD", "INSPECT", "MONITOR"] | None = None
     decision_recorded_at: str | None = None
     decision_status: str | None = None
@@ -164,7 +176,3 @@ class WhatIfResponse(BaseModel):
     assumptions: str
 
 
-class FeedbackRequest(BaseModel):
-    plant_id: str = "plant_a"
-    unit_id: str
-    verdict: Literal["useful", "false_alarm", "missed"]
