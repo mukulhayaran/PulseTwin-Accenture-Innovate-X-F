@@ -199,9 +199,9 @@ export default function ManagerPage() {
           semantics and arrow keys; SegmentedControl stays for value filters. */}
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
       <TabsList aria-label="Manager view" className="mb-4">
+        <TabsTrigger value="analytics">Line analytics</TabsTrigger>
         <TabsTrigger value="queue">Decision Queue</TabsTrigger>
         <TabsTrigger value="history">Decision History</TabsTrigger>
-        <TabsTrigger value="analytics">Line analytics</TabsTrigger>
       </TabsList>
       <TabsContent value="queue"><DecisionQueue plant={plant} onAction={show} /></TabsContent>
       <TabsContent value="history"><DecisionHistory plant={plant} /></TabsContent>
