@@ -119,9 +119,6 @@ class Scenario:
 # scenarios below do not invent a bottleneck out of nothing; they strengthen one of the
 # line's OWN constraints so a single station dominates unambiguously, plus one scenario
 # that deliberately makes two stations near-equal.
-#
-# Plant B's body-zone constraint is S16 "Body Completion" (70.0s); S34 sits in late final
-# assembly. Those give the upstream/downstream pair the brief asks for.
 
 SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
@@ -160,30 +157,6 @@ SCENARIOS: tuple[Scenario, ...] = (
             "detector that is confidently wrong is worse than one that is uncertain."
         ),
         deltas={12: 0.14, 19: 0.12},
-    ),
-    Scenario(
-        key="baseline",
-        plant_id="plant_b",
-        description="Config as shipped.",
-        deltas={},
-    ),
-    Scenario(
-        key="s16_upstream",
-        plant_id="plant_b",
-        description=(
-            "S16 Body Completion slowed 15% -- an UPSTREAM constraint, with the whole "
-            "paint shop and final assembly downstream of it."
-        ),
-        deltas={16: 0.15},
-    ),
-    Scenario(
-        key="s34_downstream",
-        plant_id="plant_b",
-        description=(
-            "A late final-assembly station slowed 15% -- a DOWNSTREAM constraint, which "
-            "starves nothing and blocks almost everything upstream of it."
-        ),
-        deltas={34: 0.15},
     ),
 )
 

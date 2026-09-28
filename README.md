@@ -129,7 +129,7 @@ simulator. It cannot promote a model, change a config, or touch the line.
 | 3 | Cannot modify live systems | Read-only passive tap; the API opens the artifact DB `mode=ro` so a write raises; **instrumentation planner** ranks retrofit by measured value per dollar — and says "you already have this signal" where a sensor would be wasted | `serve/db.py`, `offline/ml/scenarios.py`, `docs/ARCHITECTURE.md` |
 | 4 | Delayed defect surfacing | Containment tracing finds in-flight units sharing production context; lead time is measured from genealogy, not assumed | `serve/main.py::containment`, ContainmentPanel |
 | 5 | Different stakeholders | Four persona views: **Supervisor** (line map, alerts, containment), **Manager** (constraint migration, league table, Pareto, what-if console), **Leadership** (value bridge, threshold trade-off, instrumentation planner, rollout), and **Ops** (model health, drift, ingestion lag, audit log — the team that runs the twin itself) | `frontend/app/{supervisor,manager,leadership,ops}` |
-| 6 | Multi-site scaling | Same pipeline, different YAML: 30 stations → 42, EV → TRUCK, and the bottleneck-shift mechanism **generalises** (S12→S19, S16→S31). Per-plant models, because the feature spaces genuinely differ | `configs/plant_b.yaml`, ADR-006 |
+| 6 | Multi-site scaling | Config-driven: a new plant is a new `configs/<plant>.yaml` with no code edit, and models are per plant because feature spaces differ. One plant ships (plant B was removed, ADR-068) | `offline/config_schema.py`, ADR-006 |
 | 7 | False alarms erode trust | **Two thresholds that disagree, both published.** Cost-optimal says p ≥ 0.0065; human capacity says p ≥ 0.41. We operate on the budget and price the gap | `offline/ml/thresholds.py`, AlertBudgetCounter |
 
 ---
@@ -148,8 +148,8 @@ Plant A, held-out test week (7 days, 9,046 units, 228 positives, 2.5% base rate)
 | Precision at operating threshold | 35% <!--metric:plant_a.precision_at_budget:.0%--> |
 | Recall at operating threshold | 28% <!--metric:plant_a.recall_at_budget:.0%--> |
 | Alerts per shift | 8.5 <!--metric:plant_a.alerts_per_shift:.1f--> (budget 6) |
-| Bottleneck detection accuracy (self-consistency, NOT independent — see below) | 85.9% <!--metric:plant_a.bottleneck_detection_accuracy:.1%--> (plant A), 90.2% <!--metric:plant_b.bottleneck_detection_accuracy:.1%--> (plant B) |
-| Bottleneck forecast skill vs persistence | +0.136 <!--metric:plant_a.forecast_skill_vs_persistence:.3f--> / +0.205 <!--metric:plant_b.forecast_skill_vs_persistence:.3f--> |
+| Bottleneck detection accuracy (self-consistency, NOT independent — see below) | 85.9% <!--metric:plant_a.bottleneck_detection_accuracy:.1%--> |
+| Bottleneck forecast skill vs persistence | +0.136 <!--metric:plant_a.forecast_skill_vs_persistence:.3f--> |
 | Soft sensor, ambient-driven signals | **R² 0.965–0.996** |
 | Soft sensor, tool-wear-driven signals | **R² −0.55 to −0.07** (unrecoverable — see below) |
 | Value of unsensored-station evidence | **+0.060 <!--metric:plant_a.soft_sensor_ablation_delta:.3f--> PR-AUC** (23% relative) — but the confidence intervals overlap, so the artifact itself records it as "improvement is within confidence intervals, reported as measured" |
@@ -193,8 +193,8 @@ limitations — including the six scenarios still **NOT RUN** — in
 
 Plant A's 113 alerts share **one** score. Unique ratio 0.9%, normalised entropy 0.000,
 within-cohort ranking AUC **0.500** — literally random ordering. The model identifies the
-at-risk set and cannot rank it. Plant B does not collapse (28 alerts, 28 unique scores,
-AUC 0.788), so the pathology is plant-A-specific rather than inherent.
+at-risk set and cannot rank it. Whether this is specific to plant A or inherent to the
+architecture is not established: with one plant there is nothing to compare against.
 
 Measured by `python -m offline.benchmarks.score_diversity` →
 `artifacts/benchmarks/score_diversity.json`. **Not fixed** — see `docs/REQUIREMENTS.md`.
@@ -230,6 +230,26 @@ A model that hit 0.85 here would have had to delete the latent confounders to ge
 The full arithmetic is in `docs/AUDIT.md` §B34.
 
 ---
+
+## The Incident Commander (ADR-067)
+
+PulseTwin does not stop at "something is wrong". The **Incident Commander**:
+- decides which evidence would best separate competing root causes, and gathers it from
+  whichever specialist can supply it: reliability, production, quality or genealogy, data
+  quality, or memory;
+- scores the hypotheses with a published rule, capped by how well the station is sensed;
+- tests the fitting intervention in the digital twin;
+- abstains when the evidence, the data or the model cannot support a decision;
+- routes every action through an autonomy governor (L0–L4, never OT) to a manager;
+- coordinates approved work through CMMS/MES/QMS adapters, idempotently;
+- measures whether the action worked, and remembers the case across plants.
+
+The LLM is optional. When present it only proposes the next step as JSON, which the server
+validates like its own. On **/supervisor**, pick a demo preset (or report an issue) and watch
+the investigation; decide it on **/manager** under Decisions;
+`docs/GRAND_FINALE_DEMO.md` is the script, `docs/AGENT_ARCHITECTURE.md` the design,
+`docs/AUTONOMY_AND_SAFETY.md` the safety model, and `docs/AI_EVALUATION.md` what was
+measured and what it got wrong.
 
 ## Architecture
 
@@ -290,10 +310,8 @@ banned outright, and the test fails the build if one appears.
 
 - **PR-AUC 0.256 is low in absolute terms** and we do not dress it up. It is 53% of a
   measured ceiling of 0.481. The remaining gap is real headroom, not noise.
-- **Plant B performs materially worse** (recall 3.4% at budget vs 27.6%, at a
-  validation-chosen threshold that alerts 1.2/shift on test — ADR-062). Its Mode B fires on
-  13.6% of visits rather than 4.5%, so the operating threshold lands differently. Reported
-  as measured; not tuned to match plant A.
+- **One plant.** Every figure is measured on plant A alone; nothing here shows how the
+  models transfer to a second line (plant B was removed, ADR-068).
 - **Feedback is durable only on Postgres** — which every deployment now is. Local dev on
   the SQLite build artifact keeps it in a tempdir file that does not survive a restart.
 - **There is no authentication, only authorisation.** The finals upgrade added real RBAC
@@ -356,6 +374,12 @@ Finals upgrade — production readiness:
 | `docs/SCALING_COST_MODEL.md` | 1 / 5 / 20 plants, priced off the *harder* plant's measured economics |
 | `docs/INCIDENT_RUNBOOK.md` | Five concrete procedures: drift, dropout, DB failure, outage, false-alarm spike |
 | `docs/FINALS_DEMO_SCRIPT.md` | The 7-minute finals arc, including live sensor-dropout injection |
+| `docs/GRAND_FINALE_DEMO.md` | The Incident Commander demo: five live scenarios, approval to outcome |
+| `docs/AGENT_ARCHITECTURE.md` | Commander state machine, planner, scoring rule, tracing (Mermaid) |
+| `docs/AUTONOMY_AND_SAFETY.md` | Autonomy levels, governor, OT prohibition, prompt-injection posture |
+| `docs/INCIDENT_LIFECYCLE.md` | Sense to learn, with the table that persists each stage |
+| `docs/ENTERPRISE_INTEGRATION.md` | Adapter interface and where SAP PM / Maximo / MES / QMS / Teams connect |
+| `docs/AI_EVALUATION.md` | Scenario results, defects found by running it, limitations |
 
 Six of the audit findings were build-blockers: a label-noise rate 14× the stated figure,
 a throughput target no station layout could reach, a demo unit whose alert cited features

@@ -134,9 +134,7 @@ Raises test positives from ~130 to ~200 and tightens the CI. Nearly free under A
 artifacts/
 ├── pulsetwin.db
 ├── model_plant_a.npz        # ADR-006 — per plant, not one shared model
-├── model_plant_b.npz
 ├── stream_plant_a.jsonl
-├── stream_plant_b.jsonl
 └── metrics.json
 
 frontend/public/config.json  # ADR-028 — runtime API base
@@ -216,8 +214,7 @@ finance:
            250-day 3-shift year. Stated explicitly in ASSUMPTIONS.md."
 ```
 
-`configs/plant_b.yaml` — 42 stations, 8 manual, body S1–S16 / paint S17–S24 /
-final S25–S42, TRUCK variant instead of EV. Same schema, same 45–62 s cycle discipline.
+Plant B (`configs/plant_b.yaml`) was removed from the project (ADR-068).
 
 **Acceptance:** a Pydantic schema validates all three configs. A validator asserts
 `max(nominal_cycle_s) <= 3600 / units_per_hour_target` so ADR-002 cannot silently regress.
@@ -372,7 +369,7 @@ CREATE TABLE stream_index (
 history is ~3.6 M rows and 220 MB+, against a 50 MB cap. Full-history views read the hourly
 `station_stats` rollups.
 
-**Model export — per plant (ADR-006):** `model_plant_a.npz`, `model_plant_b.npz`. Flat
+**Model export — per plant (ADR-006):** `model_<plant>.npz` (one plant ships: `model_plant_a.npz`). Flat
 numpy arrays (`feature_indices`, `thresholds`, `left_children`, `right_children`,
 `leaf_values`, `tree_offsets`) plus Platt `A`, `B`.
 

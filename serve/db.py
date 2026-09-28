@@ -435,6 +435,14 @@ def _ensure_columns(con: sqlite3.Connection) -> None:
             pass
 
 
+def _sqlite_from_migration(name: str) -> str:
+    """ADR-067: the SQLite dialect of a Postgres migration, derived rather than
+    hand-copied (the 020/021 copies above are the drift this avoids). Only the two type
+    names the migration uses differ; every statement is `IF NOT EXISTS`."""
+    sql = (Path(__file__).resolve().parents[1] / "migrations" / name).read_text(encoding="utf-8")
+    return sql.replace("JSONB", "TEXT").replace("DOUBLE PRECISION", "REAL")
+
+
 def open_ops_db() -> sqlite3.Connection:
     """Writable store for the new operational tables when there is no Postgres.
 
@@ -469,6 +477,7 @@ def open_ops_db() -> sqlite3.Connection:
             # default journal mode -- slower under contention, not broken.
             pass
     con.executescript(_OPS_SCHEMA_SQLITE)
+    con.executescript(_sqlite_from_migration("022_incident_commander.sql"))
     _ensure_columns(con)
     con.commit()
     return con

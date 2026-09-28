@@ -15,7 +15,7 @@ The division of labour, which ADR-038 states in full:
 Every threshold below is a named constant with the reasoning beside it, and every
 plant-specific number (`budget_threshold`, `alert_budget`) is read from `plant_meta`
 rather than written here -- CLAUDE.md §1 bans plant and station literals outside
-`configs/*.yaml`, and `plant_b` must work with no edit to this file.
+`configs/*.yaml`, and a new plant config must work with no edit to this file.
 """
 
 from __future__ import annotations
@@ -721,7 +721,7 @@ def shift_summary(
             "opened_at_station": windows[0]["bottleneck_station"] if windows else None,
             "closed_at_station": windows[-1]["bottleneck_station"] if windows else None,
             # A shift with no bottleneck move is ONE station held all shift: agreement
-            # there is n=1, not an accuracy (it read 100% on plant B's steady shift).
+            # there is n=1, not an accuracy (it read 100% on a steady shift).
             "detector_agreement": (
                 _round(sum(1 for w in correct if w["correct"]) / len(correct), 3)
                 if correct and shifts else None

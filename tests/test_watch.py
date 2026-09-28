@@ -22,7 +22,7 @@ from serve.watch import PAINT_ENV, STARVATION, TOOL_WEAR, LineWatch, load_rules
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "artifacts"
-PLANTS = ["plant_a", "plant_b"]
+PLANTS = ["plant_a"]
 
 
 def _events(plant: str, scenario: str, station: int | None, limit: int,

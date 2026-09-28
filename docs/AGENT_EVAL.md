@@ -9,14 +9,10 @@
 
 ## Short answer
 
-**On plant A, yes, clearly. On plant B, mostly, with one fault class it loses.**
-- **Plant A:** the watch catches **13/13** faults that cost real output against 4/13 for
-  thresholds. Its root cause is right in 100%, it raises about 3 false alarms per shift
-  against 320, and its placebo rate is 7% against 41%.
-- **Plant B:** it catches **8/11** against thresholds' **9/11**. Thresholds catch a
-  *partial* congestion (S21, 84–86% of output lost) within about a minute, and the watch
-  misses all three. The watch still wins on false alarms (5.5 against 190 per shift),
-  placebo (11% against 33%) and root cause (100% against 67%).
+**Yes, clearly.** The watch catches **13/13** faults that cost real output against 4/13
+for thresholds. Its root cause is right in 100%, it raises about 3 false alarms per shift
+against 320, and its placebo rate is 7% against 41%. (Measured on plant A, the one plant
+the project ships; plant B was removed, ADR-068.)
 - The watch is still **not faster** than raw thresholds on the faults both catch.
 
 ## How we got here: three rounds, each re-measured
@@ -28,12 +24,12 @@
 | 3 (`0daa04d`) | + real breakdown physics and PLC down-state events (ADR-059) | **13/13** |
 
 The impactful-run count grows between rounds because round 3 made breakdown severity
-physical. Breakdowns now cost 11% (plant A) and 14% (plant B) of output, where before
+physical. Breakdowns now cost 11% of output, where before
 it was 3%. The denominators differ, so compare within a row, not across rows.
 
 **Tried in round 3 and reverted:** judging starvation on *pace* (cycle + time held
-blocked) instead of cycle, to catch plant B's partial congestion. It raised the watch's
-false alarms from 3 to **59 per shift** and still missed S21 (ADR-059).
+blocked) instead of cycle, to catch partial congestion. It raised the watch's
+false alarms from 3 to **59 per shift** (ADR-059).
 
 ## Method
 
@@ -43,7 +39,7 @@ profiled on, and grading the watch there would be grading it on its own training
 Each seed warms one engine and forks it per scenario: a clean run, and 9 faults. The
 faults are torque at both Mode C stations, zone humidity, and a breakdown and a
 congestion at three stations picked by quartile from the config. Each run has 2 h clean,
-then the onset, then a 3 h horizon, so 27 fault runs per plant. Every station event and
+then the onset, then a 3 h horizon, so 27 fault runs. Every station event and
 PLC state event goes, identically, to:
 
 | System | What it is |
@@ -60,45 +56,40 @@ Two controls that a naive eval would skip:
 
 ## Results (`0daa04d`)
 
-| | A: watch | A: threshold | A: deadband | B: watch | B: threshold | B: deadband |
-|---|---|---|---|---|---|---|
-| Faults detected (of 27) | **20** | 11 | 11 | 16 | 18 | 17 |
-| **Placebo recall** | **7%** | 41% | 41% | **11%** | 33% | 26% |
-| **Impactful faults caught** | **13/13** | 4/13 | 4/13 | 8/11 | **9/11** | **9/11** |
-| Median detection delay | 13.2 min | 12.6 min | 36.2 min | 19.9 min | 22.8 min | 21.9 min |
-| **False alarms per 8 h shift** | **3.0** | 320 | 54 | **5.5** | 190 | 38 |
-| Root cause from the alert's evidence | **100%** | 64% | 64% | **100%** | 67% | 65% |
-| Alert at the exact faulted station | 85% | 64% | – | 100% | 61% | – |
+| | A: watch | A: threshold | A: deadband |
+|---|---|---|---|
+| Faults detected (of 27) | **20** | 11 | 11 |
+| **Placebo recall** | **7%** | 41% | 41% |
+| **Impactful faults caught** | **13/13** | 4/13 | 4/13 |
+| Median detection delay | 13.2 min | 12.6 min | 36.2 min |
+| **False alarms per 8 h shift** | **3.0** | 320 | 54 |
+| Root cause from the alert's evidence | **100%** | 64% | 64% |
+| Alert at the exact faulted station | 85% | 64% | – |
 
 By fault (detected of runs, placebo in brackets, median delay):
 
-| Fault | A loss | A: watch | A: threshold | B loss | B: watch | B: threshold |
-|---|---|---|---|---|---|---|
-| station_breakdown | 11.0% | **8/9 (0), 12.7 min, cause 8/8** | 4/9 (3), 107 min, cause 0/4 | 13.9% | **9/9 (1), 19.5 min, cause 9/9** | 6/9 (3), 53 min, cause 0/6 |
-| buffer_congestion | 77.9% | **6/9 (0), 13.4 min** | 1/9 (3) | 0.0%* | 1/9 (1), 94 min | **6/9 (3), 1.2 min** |
-| torque_degradation | 0% | 6/6 (2), 19.5 min | 6/6 (5), 4.4 min | 0% | 6/6 (1), 27.1 min | 6/6 (3), 21.2 min |
-| high_humidity | 0% | 0/3 | 0/3 | 0% | 0/3 | 0/3 |
+| Fault | A loss | A: watch | A: threshold |
+|---|---|---|---|
+| station_breakdown | 11.0% | **8/9 (0), 12.7 min, cause 8/8** | 4/9 (3), 107 min, cause 0/4 |
+| buffer_congestion | 77.9% | **6/9 (0), 13.4 min** | 1/9 (3) |
+| torque_degradation | 0% | 6/6 (2), 19.5 min | 6/6 (5), 4.4 min |
+| high_humidity | 0% | 0/3 | 0/3 |
 
-\* Median over the three stations. Plant B's S21 congestion loses 84–86%, and S11/S31 lose
-nothing.
 
 ## What this says, plainly
 
-1. **Most of the threshold baseline's detections are chance.** Placebo is 41% (A) and 33%
-   (B). It "detects" torque faults on the clean line 5 times in 6 on plant A. Its
-   breakdown diagnoses are all wrong (0/10). At 190–320 false alarms a shift, an operator
-   stops reading it.
-2. **Breakdowns are now caught and correctly diagnosed**: 17/18 across both plants, cause
-   right in all 17. A down station completes no units, so its own events never said DOWN,
+1. **Most of the threshold baseline's detections are chance.** Placebo is 41%. It
+   "detects" torque faults on the clean line 5 times in 6. Its breakdown diagnoses are all
+   wrong. At 320 false alarms a shift, an operator stops reading it.
+2. **Breakdowns are now caught and correctly diagnosed**: 8/9, cause right in all 8. A down station completes no units, so its own events never said DOWN,
    and its blocked neighbours read as congestion (0/3 before ADR-059). The twin now emits
    the PLC state change, and the watch uses it.
-3. **Deadlock-level congestion is caught by silence** (plant A, 6/6 at about 13 min).
-   **Partial congestion is not** (plant B S21, 0/3). A line trickling at 14% never goes
-   silent, and a blocked station's work cycle stays under takt. Thresholds catch it in
-   about a minute, genuinely: its placebo at S21 is 0. Pace was the obvious fix, and it
-   failed (see above). This is the watch's largest remaining gap.
+3. **Deadlock-level congestion is caught by silence** (6/6 at about 13 min). **Partial
+   congestion that only slows the line is a known gap**: a line trickling at a fraction of
+   its rate never goes silent, and a blocked station's work cycle stays under takt. Pace
+   was the obvious fix, and it failed (see above).
 4. **The watch is not faster.** Its 8-event window buys the false-alarm rate. On the faults
-   both catch it is about as fast (A) or slower on torque (both plants).
+   both catch it is about as fast, or slower on torque.
 5. **Humidity faults are not detected by any system, by design.** The twin's incident
    raises *ambient* humidity, and the paint rule fires only on zone humidity *in excess
    of* ambient. That is correct for its job (zone climate faults): zone humidity sits

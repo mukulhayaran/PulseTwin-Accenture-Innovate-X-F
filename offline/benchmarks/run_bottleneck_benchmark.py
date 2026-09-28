@@ -1,7 +1,7 @@
 """Score every bottleneck detector against throughput-sensitivity ground truth.
 
     python -m offline.benchmarks.run_bottleneck_benchmark --plant plant_a
-    python -m offline.benchmarks.run_bottleneck_benchmark --plant plant_b --profile full
+    python -m offline.benchmarks.run_bottleneck_benchmark --plant plant_a --profile full
 
 Writes three machine-readable artifacts (merged across invocations, so the two plants can
 be run separately):
@@ -163,7 +163,7 @@ def run_scenario(
 def _merge_csv(path: Path, rows: list[dict], keys: tuple[str, ...]) -> list[dict]:
     """Replace rows matching the incoming (plant, scenario, ...) keys; keep the rest.
 
-    Lets `--plant plant_a` and `--plant plant_b` be run as separate jobs -- or a single
+    Lets each `--plant` be run as a separate job -- or a single
     scenario be re-run after a fix -- without discarding the other results.
     """
     existing: list[dict] = []
@@ -287,7 +287,7 @@ def write_artifacts(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--plant", default="plant_a", choices=("plant_a", "plant_b"))
+    parser.add_argument("--plant", default="plant_a", choices=("plant_a",))
     parser.add_argument("--profile", default="dev", choices=tuple(PROFILES))
     parser.add_argument("--scenario", default=None, help="run only this scenario key")
     parser.add_argument("--relative", type=float, default=gt.DEFAULT_RELATIVE,
@@ -325,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
         truths.append(truth)
         gt_rows.extend(g_rows)
         det_rows.extend(d_rows)
-        # Checkpoint after every scenario: a full-profile plant B run is over an hour and
+        # Checkpoint after every scenario: a full-profile run can take over an hour and
         # losing all of it to a failure in the last scenario would be its own bug.
         write_artifacts(
             args.plant, truths, g_rows, d_rows, args.profile, args.relative,

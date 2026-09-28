@@ -14,7 +14,10 @@ multi-turn threads, five named actions, eighteen tools, four new deterministic
 decision-intelligence endpoints, and a `/copilot` route plus a dock on every persona view.
 
 Read `docs/STATE.md` first — it has the ledger, every bug found, and the verify-next
-list. `docs/AUDIT.md` covers why the build deviates from `pulsetwin_final_prompt.md`.
+list. **Grand-Finale engineering loop:** `LOOP.md` (process), `.loop/goal.json` (criteria A–W),
+`docs/ENGINEERING_LOOP_STATUS.md` (ledger); run or resume it with the `pulsetwin-loop` skill.
+Its checks: `scripts/verify.py [--full]`, `scripts/verify_demo_flow.py [--replay]`,
+`scripts/verify_ui_flow.py` (need `PULSETWIN_DEMO_MODE=1` on the stack). `docs/AUDIT.md` covers why the build deviates from `pulsetwin_final_prompt.md`.
 
 **Do not re-read the whole codebase to get oriented.** §4 below maps every subsystem to
 its file and its governing doc. `docs/STATE.md`'s ledger is the change history.
@@ -36,7 +39,7 @@ standing gotchas that have each cost a debugging session.
    stronger claim. Tuning happens ONLY as a gated challenger
    (`offline/ml/xgb_challenger.py`, ADR-061): tuned on train/validate, scored once on test,
    promoted only if every gate passes. It was NOT promoted on either plant (plant A fails
-   recall under its trailing-window alert policy, ADR-062; plant B is worse outright).
+   recall under its trailing-window alert policy, ADR-062).
    Plant A's test set has been looked at three times, every run is disclosed, and each
    further run is one more look, so do not re-run it to shop for a pass. Budget
    thresholds are chosen on VALIDATION (`train.py`, ADR-062), never on test.
@@ -68,7 +71,8 @@ standing gotchas that have each cost a debugging session.
 - **No placeholders.** No `# TODO`, no bare `pass` as a function body, no `...` as an
   implementation, no stub components. Every file runs. Every component renders real data.
 - **Config-driven.** No hardcoded station IDs (10, 15, 22, 27...) anywhere outside
-  `configs/*.yaml`. Swapping `plant_a.yaml` → `plant_b.yaml` must work end to end.
+  `configs/*.yaml`. Adding another `configs/<plant>.yaml` must work end to end with no code edit. The
+  project ships ONE plant (`plant_a`); plant B was removed (ADR-068).
 - **Deterministic.** Seed 42 everywhere. Set `OMP_NUM_THREADS=1` before training or
   reproducibility claims are false.
 
@@ -155,7 +159,7 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 | Simulator | `offline/simulator/generate.py` | `docs/SPEC.md` §Phase 2 |
 | Features / model | `offline/ml/{featurize,train,thresholds}.py` | `docs/MODEL_CARD.md` |
 | Artifact build | `offline/build_artifact.py` (16 tables) | ADR-027, ADR-032 |
-| Runtime API | `serve/main.py` (+ 9 routers) — 37 endpoints | `docs/ARCHITECTURE.md` |
+| Runtime API | `serve/main.py` (+ 13 routers) — 91 endpoints | `docs/ARCHITECTURE.md` |
 | Numpy scorer | `serve/scorer.py` — decision-path, NOT SHAP | ADR-015 |
 | XGBoost challenger | `offline/ml/xgb_challenger.py` → `serve/xgb_scorer.py` (numpy walk of Booster JSON) · `serve/model_loader.py` picks the champion from `artifacts/model_selection_<plant>.json` · `serve/rolling_threshold.py` trailing-window alert budget · `offline/champion.py` applies a promotion to baked artifacts + live twin | **ADR-061, ADR-062**, `docs/XGB_CHALLENGER.md` |
 | MQTT ingestion | `ingestion/` — separate deployable | `docs/PRODUCTION_ARCHITECTURE.md` |
@@ -163,10 +167,11 @@ emit `"operator_group_B"`, never a real or stable operator ID.
 | **GenAI triage** | `genai/` — separate deployable, never imported by `serve/` | **ADR-037** |
 | Multi-agent orchestration | `genai/orchestrator.py` — `incident` only, 3 specialists + synthesizer | **ADR-045** |
 | Knowledge retrieval | `offline/build_knowledge_index.py` + `serve/knowledge_index.py` — lexical TF-IDF, no embeddings | **ADR-046** |
-| Proactive watch + proposals | `serve/watch.py` (detectors) · `serve/routers/proposals.py` (human approve/reject) · `offline/build_watch_rules.py` (YAML → `artifacts/watch_rules_<plant>.json`) | **ADR-051** |
+| Proactive watch | `serve/watch.py` (detectors; each firing opens an Incident Commander incident) · `offline/build_watch_rules.py` (YAML → `artifacts/watch_rules_<plant>.json`). The ADR-051 proposal inbox + watch intents were retired | **ADR-051**, **ADR-073** |
 | Dynamic simulation experiments | `serve/experiment_catalog.py` (the ONLY allowed interventions + limits) · `serve/routers/experiments.py` (API, budgets, reaping) · `offline/sim_experiment.py` (detached worker: paired seeds on isolated twin copies) | **ADR-064** |
 | Outcome learning | `serve/outcomes.py` (deterministic monitoring + classification, thresholds in `configs/alert_policies.yaml outcome_evaluation:`) · `serve/routers/learning.py` (outcomes, structured similar-incident search) | **ADR-064** |
-| Frontend | `frontend/app/{overview,supervisor,manager,leadership,ops,copilot}` + `components/ui/` | §7 below, **ADR-047** |
+| **Incident Commander** | `serve/commander.py` (state machine, planner, plan validation) · `serve/incident_evidence.py` (probes, baselines, genealogy trace) · `serve/hypotheses.py` · `serve/governor.py` · `serve/action_gateway.py` · `serve/case_memory.py` · `serve/routers/incidents.py` · `genai/commander.py` (optional LLM planner) · `configs/agentic.yaml` ↔ `serve/agentic_config.py` (pinned equal by a test) | **ADR-067**, `docs/AGENT_ARCHITECTURE.md` |
+| Frontend | `frontend/app/{overview,supervisor,manager,leadership,ops,copilot}` + `components/ui/` · read-only incident UI in `components/incidents/` (/supervisor) · Vehicle Timeline in `components/vehicles/` · Decision Queue in `components/decisions/` (/manager; API `serve/routers/operations.py`) | §7 below, **ADR-047**, **ADR-069**, **ADR-071** |
 
 **`genai/` file roles** (all provider-independent except `client.py`):
 `config.py` model ID + caps · `client.py` the ONLY `openai` import · `api_client.py`
@@ -205,7 +210,7 @@ it in both. `configs/alert_policies.yaml`'s escalation levels and
 ## 5. COMMANDS
 
 ```bash
-make generate            # simulate both plants
+make generate            # simulate the plant
 make train               # train models (per-plant)
 make build-artifact      # bake SQLite + model_<plant>.npz + stream JSONL
 python -m offline.ml.xgb_challenger --config configs/plant_a.yaml [--smoke]  # ADR-061 gated challenger
@@ -308,11 +313,14 @@ stale, not the code.
 Each signal has a **darkened** `-fg` variant for text on white (`--color-ok-fg` etc.).
 Note this INVERTED with the palette: `-fg` used to mean "brightened for black".
 
-**The dark surface is one band, not a theme.** `--color-surface-dark` (`#1a2129`, warm
-navy) carries the sidebar rail, the landing hero and CTA bands, the tooltip and the chart
-tip. Inside it, use `text-on-dark` / `text-on-dark-soft` and the `-on-dark` signal set
-(`--color-ok-on-dark` etc.) — the darkened `-fg` values go muddy on navy. BMW's rhythm
-rule holds: **no two consecutive bands share a surface mode.**
+**Light theme only — there is no dark surface (ADR-074).** The old navy band (`#1a2129`)
+made selected text invisible and read as a second theme, so it was removed. The token
+NAMES survive so no call site changed, but `--color-surface-dark` is now a light
+cool blue-grey tint (`#f3f6fb`), `text-on-dark`/`-soft` are ink/ink-dim, and the
+`-on-dark` signal set equals the `-fg` values. `band-dark` is a light blue-grey gradient
+with hairlines. It still carries the sidebar rail, the landing principles and CTA bands,
+the tooltip and the chart tip. Consequence: **white text on a blue or ink fill must use
+`text-on-primary` / `text-canvas`, never `text-on-dark`**, which is now ink.
 
 **`label-upper`** is the "LEARN MORE ›" inline link (13px / 700 / 0.115em); `Button`'s
 `link` variant is its button form. **`m-stripe`** is the M tricolor — divider and badge
@@ -320,8 +328,15 @@ role only, never a CTA fill.
 
 **Use `components/ui/` — do not hand-roll.** `Panel` was once reimplemented 8 times.
 Available: `Panel Badge Button Select Slider SegmentedControl Tooltip DataTable
-AnimatedNumber AppShell Kpi/Stat/Fact Skeleton ChartFrame/ChartTooltip/ChartLegend`
-plus `components/ui/icons.tsx` (inline stroke icons — do NOT add lucide for twelve paths).
+AnimatedNumber AppShell Kpi/Stat/Fact Skeleton ChartFrame/ChartTooltip/ChartLegend EmptyState`
+plus the shadcn primitives reworked onto the kit (ADR-075): `Sheet Dialog Popover
+DropdownMenu Tabs`. `Tabs` switches panels; `SegmentedControl` filters a value.
+Also `components/ui/icons.tsx` (inline stroke icons — do NOT add lucide for twelve paths).
+`components.json` exists for `npx shadcn add`, but the CLI misreads the `@/lib/cn` alias,
+imports `cn` from an npm package called `cn` (and installs it), pulls the umbrella
+`radix-ui` package and lucide. Treat its output as a draft to rewrite, never a finished
+file. Magic UI pieces live in `components/magicui/`, adapted to the tokens, with a
+reduced-motion path each.
 Type sizes come from the scale (`text-2xs`…`text-4xl`), never `text-[11px]`. Radius comes
 from `rounded-none` or `rounded-full` and nothing between; the four `--radius-*` steps all
 resolve to 0 and exist only so no call site had to be edited.

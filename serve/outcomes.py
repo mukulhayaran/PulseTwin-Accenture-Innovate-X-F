@@ -274,14 +274,6 @@ def open_outcome(ops: Any, proposal: dict[str, Any], action_type: str, *, run_id
     return outcome_id
 
 
-def due(ops: Any, run_id: str, event_ts: str) -> list[dict[str, Any]]:
-    """Observing windows of this run whose simulated end has passed."""
-    rows = db.query_all(ops, "SELECT * FROM action_outcomes WHERE sim_run_id=? AND "
-                             "status='observing'", (run_id,))
-    now = _ts(event_ts)
-    return [r for r in rows if _ts(r["window_ends_at"]) <= now]
-
-
 def evaluate(ops: Any, outcome: dict[str, Any], current_seq: int,
              baselines: dict[str, float] | None = None) -> dict[str, Any]:
     """Close a window: measure after, classify, compare with the projection."""

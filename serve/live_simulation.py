@@ -10,16 +10,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from serve import db, outcomes
 from serve.watch import PAINT_ENV, Firing, LineWatch, _epoch, load_rules
 
+
+# LOOP criterion D: a scenario's effect BUILDS UP over this many simulated seconds after its
+# onset (0 -> full severity), so congestion shows as a blocked share that grows, not as a
+# station that flips to 100 % blocked on one event. Sensor dropout and a bad lot stay step
+# changes: a sensor does not half-fail and a lot is either the bad one or not. 600 s, not
+# longer: the commander waits 600 s of post-detection telemetry, so the effect is at full
+# strength before any recommendation exists and an outcome is never judged mid-ramp (at
+# 1200 s one was: baseline 0.52 mid-build -> 0.62, "harmful").
+SCENARIO_RAMP_S = 600.0
+# How long an unattended triage may hold the single auto-triage slot (see
+# _trigger_auto_investigation) before a dead worker's row stops counting.
+AUTO_TRIAGE_WINDOW_S = 600.0
 
 SCENARIOS = (
     "normal",
@@ -117,6 +130,8 @@ class LiveSimulationManager:
         affected_lot: str | None,
         max_events: int,
         incident_start_s: float = 0,
+        commander: bool = False,
+        start_line: int | None = None,
     ) -> dict[str, Any]:
         if plant_id not in self.plants:
             raise ValueError(f"unknown plant '{plant_id}'")
@@ -175,6 +190,14 @@ class LiveSimulationManager:
             "mitigations": [],          # approved actions, read by _transform
             "applied": {},              # proposal_id -> (detector, station) awaiting recovery
             "outcomes": [],             # ADR-064: (outcome_id, window end) being observed
+            # ADR-067: watch firings open Incident Commander investigations instead of
+            # ADR-051 proposals; the defect-escape detector reads `inspections`.
+            "commander": bool(commander),
+            "inspections": [],
+            "exposed": {},              # unit -> exposure to a torque fault (induced defects)
+            # Where in the recorded stream this run begins (serve/demo_session.py picks a
+            # quiet point for demos); None keeps the historical seed-derived offset.
+            "start_line": start_line,
         }
         control["running"].set()
         with self._lock:
@@ -291,6 +314,15 @@ class LiveSimulationManager:
             control["stop"].set()
             control["running"].set()
         self._mqtt_stop.set()
+        # Wait for the producers before the caller closes the database: a producer still
+        # mid-query on a closed SQLite handle segfaulted the process at shutdown (found by
+        # the loop's verifier as a flaky test teardown, rc 139). Each producer checks the
+        # stop flag at least every 0.5 s, so this returns quickly; bounded regardless.
+        me = threading.current_thread()
+        for control in controls:
+            worker = control.get("thread")
+            if worker is not None and worker is not me and worker.is_alive():
+                worker.join(timeout=5.0)
 
     # ------------------------------------------------ ADR-059: watching an MQTT feed
 
@@ -371,7 +403,8 @@ class LiveSimulationManager:
         previous_ts: str | None = None
         try:
             with path.open("r", encoding="utf-8") as stream:
-                start_offset = abs(seed) % 50
+                first = self._controls.get(run_id, {}).get("start_line")
+                start_offset = abs(seed) % 50 if first is None else int(first)
                 for raw_index, line in enumerate(stream):
                     if raw_index < start_offset:
                         continue
@@ -417,6 +450,8 @@ class LiveSimulationManager:
                     self._watch(run_id, plant_id, event, control)
                     if event.get("alert"):
                         self._open_alert(run_id, plant_id, event)
+                        # Per-UNIT explanation on /supervisor's alert feed; station-level
+                        # incidents are the commander's job (a different question).
                         if is_new_alert:
                             self._trigger_auto_investigation(run_id, plant_id, event)
                     if self._is_inspection(plant_id, int(event["station_id"])):
@@ -454,7 +489,9 @@ class LiveSimulationManager:
             datetime.fromisoformat(event["ts"])
             - datetime.fromisoformat(control["first_event_ts"])
         ).total_seconds())
-        incident_active = elapsed_s >= float(control.get("incident_start_s") or 0)
+        onset = float(control.get("incident_start_s") or 0)
+        incident_active = elapsed_s >= onset
+        ramp = min(1.0, (elapsed_s - onset) / SCENARIO_RAMP_S) if incident_active else 0.0
         visible_scenario = control["scenario"] if incident_active else "normal"
         event.update({
             "run_id": run_id,
@@ -468,7 +505,7 @@ class LiveSimulationManager:
             1.0, float(event.get("cycle_time_s") or 1.0) * (1.0 + 0.015 * _noise(seed, seq, "cycle"))
         ), 3)
         scenario = visible_scenario
-        severity = float(control["severity"])
+        severity = float(control["severity"]) * ramp
         affected = int(event["station_id"]) == int(control["affected_station"])
         lot_match = not control.get("affected_lot") or event.get("lot_id") == control["affected_lot"]
         triggered = affected and lot_match
@@ -481,8 +518,12 @@ class LiveSimulationManager:
                 event["torque_nm"] = round(
                     float(event["torque_nm"]) + 8.0 * severity * keep, 3)
             self._raise_risk(event, severity * keep_risk)
+            # ADR-067: an under/over-torqued joint escapes as a defect found much later at
+            # the gate. Remembered per unit, never written into the event: the commander
+            # must find the cause by tracing, not by reading it.
+            control.setdefault("exposed", {})[event["unit_id"]] = severity * keep
         elif scenario == "bad_material_lot" and lot_match:
-            self._raise_risk(event, severity * 0.8)
+            self._raise_risk(event, float(control["severity"]) * 0.8)
         elif scenario == "high_humidity" and "humidity_pct" in event:
             event["humidity_pct"] = round(
                 min(100.0, float(event["humidity_pct"]) + 20.0 * severity * keep), 3)
@@ -500,11 +541,15 @@ class LiveSimulationManager:
             # A partial mitigation relieves the stall on that share of events, picked by
             # stable noise so a replay of the same seed stays reproducible. With nothing
             # applied `keep` is 1.0 and every triggered event stalls, exactly as before.
-            if (_noise(seed, seq, "mitigate") + 1.0) / 2.0 < keep:
-                down = scenario == "station_breakdown"
+            # Congestion's stall share grows with the ramp (the buffer fills, then the
+            # station blocks); a breakdown is a step -- the station is down or it is not.
+            # An approved mitigation relieves `1 - keep` of either.
+            down = scenario == "station_breakdown"
+            build = 1.0 if down else ramp
+            if (_noise(seed, seq, "mitigate") + 1.0) / 2.0 < keep * build:
                 event["station_state"] = "down" if down else "blocked"
                 event["cycle_time_s"] = round(
-                    event["cycle_time_s"] * (1 + (1.0 if down else 0.6) * severity), 3)
+                    event["cycle_time_s"] * (1 + (1.0 if down else 0.6) * float(control["severity"]) * build), 3)
         return event
 
     # ------------------------------------------------------------ ADR-051: the watch
@@ -532,78 +577,113 @@ class LiveSimulationManager:
             print(f"[watch] {run_id} {proposal_id} EFFECTIVE: {detector} at S{station} "
                   f"back within threshold after mitigation")
 
+    # ------------------------------------------------ ADR-067: the Incident Commander
+    def commander_deps(self) -> Any:
+        from serve.commander import Deps
+        return Deps(self.ops, self.main_con, self.artifacts, self.plants,
+                    getattr(self, "scorers", {}) or {}, self)
+
+    def _open_commander_incident(self, run_id: str, plant_id: str, *, kind: str,
+                                 station_id: int | None, title: str, source: str,
+                                 source_ref: str, symptom: dict[str, Any], seq: int,
+                                 ts: str) -> str | None:
+        """One open incident per run, kind and station; the advancer investigates it."""
+        from serve import commander
+        # Paint climate is ZONE-wide: whichever paint station tripped it, it is one
+        # condition, so the station does not distinguish environment incidents.
+        if kind == "environment":
+            last = db.query_one(self.ops, "SELECT incident_id, status, trigger_ts FROM "
+                                          "incidents WHERE sim_run_id=? AND kind=? "
+                                          "ORDER BY created_at DESC LIMIT 1", (run_id, kind))
+        else:
+            same = ("station_id IS NOT DISTINCT FROM ?"
+                    if db.backend_name(self.ops) == "postgresql" else "station_id IS ?")
+            last = db.query_one(self.ops, "SELECT incident_id, status, trigger_ts FROM incidents "
+                                          f"WHERE sim_run_id=? AND kind=? AND {same} "
+                                          "ORDER BY created_at DESC LIMIT 1",
+                                (run_id, kind, station_id))
+        # One incident per condition: never while one is open, and not again within the
+        # watch cooldown (simulated seconds) of the last -- units already exposed keep
+        # arriving at the gate after a fix (measured: a resolved scenario-B incident
+        # re-opened on the very next defect).
+        cooldown = float((self._watch_rules.get(plant_id) or {}).get("cooldown_s", 3600))
+        if last and (last["status"] not in ("resolved", "closed") or (
+                _epoch(ts) - _epoch(str(last["trigger_ts"]))) < cooldown):
+            return None
+        deps = self.commander_deps()
+        incident = commander.open_incident(
+            deps, plant_id=plant_id, kind=kind, station_id=station_id, title=title,
+            source=source, source_ref=source_ref, symptom=symptom, sim_run_id=run_id,
+            trigger_seq=seq, trigger_ts=ts, opened_by="auto-monitor", severity="high")
+        commander.launch(deps, incident["incident_id"], "auto-monitor")
+        print(f"[commander] {run_id} opened {incident['incident_id']} ({kind} at S{station_id})")
+        return incident["incident_id"]
+
+    def _defect_escape_watch(self, run_id: str, plant_id: str, control: dict[str, Any],
+                             outcome_event: dict[str, Any], seq: int) -> None:
+        """Defects at the gate above the configured count in the trailing window open a
+        quality incident (configs/agentic.yaml `quality_watch:`)."""
+        from serve.agentic_config import CONFIG
+        from serve.incident_evidence import defect_base_rate
+        qw = CONFIG["quality_watch"]
+        window = control.setdefault("inspections", [])
+        window.append(int(outcome_event["actual_defect"]))
+        n = int(qw["window_inspections"])
+        del window[:-n]
+        if len(window) < n:
+            return
+        if "defect_k" not in control:
+            # Fire only on a defect count the recorded gate rate makes improbable: the
+            # smallest k with P(X >= k | n, p) <= alpha. A fixed count fired on this plant's
+            # ordinary 8% background (measured, the first scenario-B run).
+            p = defect_base_rate(self.main_con, plant_id)
+            tail, k = 1.0, 0
+            while k <= n and tail > float(qw["alpha"]):
+                tail -= math.comb(n, k) * p ** k * (1 - p) ** (n - k)
+                k += 1
+            control["defect_k"] = max(k, int(qw["min_defects"]))
+        if sum(window) < control["defect_k"]:
+            return
+        try:
+            self._open_commander_incident(
+                run_id, plant_id, kind="quality", station_id=int(outcome_event["station_id"]),
+                title=f"Defect escape: {sum(window)} defects in the last {len(window)} "
+                      f"inspections at S{outcome_event['station_id']}",
+                source="quality_detector", source_ref=f"{run_id}:{seq}",
+                symptom={"defects": sum(window), "inspections": len(window),
+                         "station_id": int(outcome_event["station_id"])},
+                seq=seq, ts=outcome_event["ts"])
+        except Exception as exc:  # noqa: BLE001 - never take down the producer
+            print(f"[commander] quality incident failed: {exc}")
+
     def _on_firing(self, run_id: str, plant_id: str, firing: Firing) -> None:
-        """Record the firing as a proposal row and start the matching agent.
+        """Open an Incident Commander investigation for the firing (ADR-069).
 
-        Same path as _trigger_auto_investigation: `start_triage_run`, best-effort, never
-        allowed to take down the producer thread. One open proposal per detector and
-        station, and at most `max_open_investigations` per run -- each agent run spends
-        7-12 provider requests, and a free tier allows a fixed number per day.
-        """
-        open_rows = db.query_all(
-            self.ops,
-            "SELECT detector, station_id FROM action_proposals WHERE sim_run_id=? "
-            "AND status IN ('OPEN','APPROVED','APPLIED')",
-            (run_id,),
-        )
-        # paint_env is ZONE-wide: whichever paint station tripped it, it is one condition,
-        # so it must not open a second proposal just because another station reported it.
-        if any(r["detector"] == firing.detector
-               and (firing.detector == PAINT_ENV or int(r["station_id"]) == firing.station_id)
-               for r in open_rows):
-            return
-        cap = int((self._watch_rules.get(plant_id) or {}).get("max_open_investigations", 1))
-        if len(open_rows) >= cap:
-            print(f"[watch] {run_id} {firing.detector} at S{firing.station_id} fired, but "
-                  f"{len(open_rows)} proposals are already open (cap {cap}); not investigated")
-            return
-
-        proposal_id = f"P-{secrets.token_hex(5)}"
-        db.execute(
-            self.ops,
-            """INSERT INTO action_proposals (proposal_id, sim_run_id, plant_id, detector,
-                   station_id, fired_at, trigger_evidence, status)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (proposal_id, run_id, plant_id, firing.detector, firing.station_id, firing.ts,
-             json.dumps(firing.evidence, separators=(",", ":")), "OPEN"),
-        )
-        print(f"[watch] {run_id} FIRED {firing.detector} at S{firing.station_id} -> "
-              f"{proposal_id} evidence={json.dumps(firing.evidence)}")
-        if os.environ.get("PULSETWIN_JOBS_ENABLED", "1") == "0":
-            return
+        Every run -- backend-produced or MQTT-followed -- routes here; the ADR-051
+        proposal/agent/counterfactual path was retired in favour of one approval flow.
+        Best-effort: an incident failure must never take down the producer thread. The
+        commander is deterministic by default, so there is no provider quota to protect
+        and no per-run investigation cap."""
+        from serve.commander import DETECTOR_KIND
+        control = self._controls.get(run_id)
+        if control is not None:
+            seq = int(control["event_seq"])
+        else:  # an MQTT-followed run: this process holds no control for it
+            row = db.query_one(self.ops, "SELECT MAX(seq) AS s FROM simulation_events "
+                                         "WHERE run_id=?", (run_id,))
+            seq = int((row or {}).get("s") or 0)
+        name = firing.evidence.get("station_name") or f"S{firing.station_id}"
         try:
-            # ADR-055: the counterfactual runs beside the agent, not after it -- both take
-            # about a minute and a half, and the proposal waits for both.
-            from serve.routers.proposals import start_counterfactual
-            start_counterfactual(proposal_id, plant_id, firing.detector, firing.station_id,
-                                 firing.evidence,
-                                 float(self.plants[plant_id]["budget_threshold"]))
-        except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
-            print(f"[watch] counterfactual spawn failed for {proposal_id}: {exc}")
-        try:
-            from serve.routers.triage import _credential_present, start_triage_run
-            name = firing.evidence.get("station_name") or f"S{firing.station_id}"
-            result = start_triage_run(
-                self.ops,
-                plant_id=plant_id,
-                question=(f"Watch: {firing.detector.replace('_', ' ')} fired at station "
-                          f"{firing.station_id} ({name})."),
-                intent=firing.detector,
-                role="auto-monitor",
-                acting_role="system",
-                # Resolved here, as the router does: "auto" stored on the row would tell
-                # the proposals inbox nothing about whether a model was involved.
-                mode="agent" if _credential_present() else "deterministic",
-                api_base=os.environ.get("PULSETWIN_API_BASE", "http://127.0.0.1:7860"),
+            self._open_commander_incident(
+                run_id, plant_id, kind=DETECTOR_KIND[firing.detector],
                 station_id=firing.station_id,
-                allow_fallback=True,   # ADR-064: a watch investigation must not just die
-            )
-            db.execute(self.ops,
-                       "UPDATE action_proposals SET triage_run_id=? WHERE proposal_id=?",
-                       (result["run_id"], proposal_id))
-            print(f"[watch] {proposal_id} -> {firing.detector} agent run {result['run_id']}")
+                title=(f"paint-zone climate, first seen at S{firing.station_id} ({name})"
+                       if firing.detector == PAINT_ENV else
+                       f"{firing.detector.replace('_', ' ')} at S{firing.station_id} ({name})"),
+                source="watch", source_ref=firing.detector, symptom=firing.evidence,
+                seq=seq, ts=firing.ts)
         except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
-            print(f"[watch] agent trigger failed for {proposal_id}: {exc}")
+            print(f"[commander] incident from firing failed: {exc}")
 
     def apply_mitigation(self, run_id: str, proposal_id: str, detector: str,
                          station_id: int, action_type: str) -> bool:
@@ -674,6 +754,11 @@ class LiveSimulationManager:
             verdict = outcomes.evaluate(self.ops, row, int(control["event_seq"]),
                                         self._tool_baselines(plant_id))
             _audit(self.ops, "outcome_evaluated", outcome_id, verdict)
+            try:
+                from serve.commander import on_outcome_evaluated
+                on_outcome_evaluated(self.ops, outcome_id)
+            except Exception as exc:  # noqa: BLE001 - memory update must not stop the run
+                print(f"[commander] outcome hook failed for {outcome_id}: {exc}")
             print(f"[outcome] {run_id} {outcome_id} {verdict['status']}: {verdict['reason']}")
 
     def _raise_risk(self, event: dict[str, Any], severity: float) -> None:
@@ -763,6 +848,17 @@ class LiveSimulationManager:
         """
         if os.environ.get("PULSETWIN_JOBS_ENABLED", "1") == "0":
             return
+        # At most ONE unattended triage in flight. Unbounded, a run's ~14 alerts each started
+        # a multi-agent triage with its own twin experiments: the backend sat at 300 % CPU
+        # and 1.2 GB on an idle normal run, the twin slots were never free for the Incident
+        # Commander's station-level test, and the host ran out of memory (LOOP 2026-09-28).
+        # A later alert keeps its manual "Investigate" button. The window stops a worker
+        # that died mid-run from blocking this forever.
+        since = (datetime.now(timezone.utc) - timedelta(seconds=AUTO_TRIAGE_WINDOW_S)
+                 ).strftime("%Y-%m-%d %H:%M:%S")
+        if db.query_one(self.ops, "SELECT 1 AS x FROM triage_runs WHERE requested_by='auto-monitor' "
+                                  "AND status IN ('queued','running') AND created_at >= ?", (since,)):
+            return
         try:
             from serve.routers.triage import start_triage_run
             api_base = os.environ.get("PULSETWIN_API_BASE", "http://127.0.0.1:7860")
@@ -802,6 +898,13 @@ class LiveSimulationManager:
         if not unit:
             return
         outcome = int(unit.get("actual_defect") or 0)
+        control = self._controls.get(run_id) or {}
+        exposure = (control.get("exposed") or {}).pop(event["unit_id"], 0.0)
+        # A scenario-INDUCED defect (docs/ASSUMPTIONS.md, "Induced defects"): probability
+        # 0.9 x exposure, drawn from stable noise so a replay reproduces it exactly.
+        if not outcome and exposure and (_noise(0, 0, f"{run_id}:{event['unit_id']}:defect")
+                                         + 1.0) / 2.0 < min(0.9, 0.9 * exposure):
+            outcome = 1
         now = event["ts"]
         db.execute(
             self.ops,
@@ -840,7 +943,9 @@ class LiveSimulationManager:
             "unit_id": event["unit_id"], "station_id": event["station_id"],
             "actual_defect": outcome,
         }
-        self._append_event(run_id, outcome_event)
+        seq = self._append_event(run_id, outcome_event)
+        if control:
+            self._defect_escape_watch(run_id, plant_id, control, outcome_event, seq)
 
 
 def _mitigated(control: dict[str, Any], scenario: str, station_id: int, part: str) -> float:

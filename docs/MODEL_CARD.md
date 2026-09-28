@@ -19,14 +19,14 @@ or an inspection, and a human decides.
 
 ## Training data
 
-Simulated, 28 days per plant, seed 42, `OMP_NUM_THREADS=1` for reproducibility.
+Simulated, 28 days, seed 42, `OMP_NUM_THREADS=1` for reproducibility.
 
-| | plant_a | plant_b |
-|---|---|---|
-| Stations | 30 (4 manual) | 42 (8 manual) |
-| Units | 35,939 | 30,238 |
-| Features | 253 | 320 |
-| Achieved throughput | 53.7 UPH (97.7% of a 55 UPH target) | 45.3 UPH (94.4% of a 48 UPH target) |
+| | plant_a |
+|---|---|
+| Stations | 30 (4 manual) |
+| Units | 35,939 |
+| Features | 253 |
+| Achieved throughput | 53.7 UPH (97.7% of a 55 UPH target) |
 
 **Temporal split, never random.** Days 1–14 train / 15–21 validate / 22–28 test — three
 whole weeks, each containing exactly one Tuesday/Wednesday peak pair. An earlier 21-day
@@ -46,10 +46,6 @@ evaluate the scenario the model exists for.
 | Precision @ operating threshold | 35% |
 | Recall @ operating threshold | 28% |
 | Bottleneck detection accuracy | 85.9% |
-
-Plant B: PR-AUC 0.052 [0.039–0.076],
-oracle 0.075 (70% captured),
-recall 6%, bottleneck accuracy 90.2%.
 
 ### The oracle, and why we report it
 
@@ -131,7 +127,7 @@ condition on there, so neither its point estimate nor its interval means much.
 ## Bottleneck forecasting
 
 15-minute-ahead forecast of each station's active share, ridge regression on lagged
-values, temporal split. **Skill vs persistence: +0.136 (plant A), +0.205 (plant B)** —
+values, temporal split. **Skill vs persistence: +0.136** —
 the model beats "assume nothing changes", modestly. Reported either way; a forecast that
 cannot beat persistence has no business shipping.
 
@@ -150,10 +146,8 @@ cannot beat persistence has no business shipping.
   About 7% of defects are attributed to it and are genuinely unpredictable.
 - **Low-humidity weeks contain few Mode A examples**, so the model is less reliable in
   dry periods. Drift monitoring should segment by ambient humidity.
-- **Plant B underperforms plant A** (recall 3.4% vs 27.6% at budget; plant B's threshold,
-  now chosen on validation per ADR-062, alerts only 1.2/shift on test).
-  Its Mode B fires on 13.6% of visits rather than 4.5%, so the budget threshold lands
-  differently. Reported as measured, not tuned to match.
+- **One plant.** How the model transfers to a differently configured line is not measured
+  (plant B was removed, ADR-068).
 - **The alarm budget forces misses by construction.** Six alerts per shift is fewer
   alerts than there are defects. That is a deliberate human-factors constraint, and its
   cost is quantified rather than hidden.
@@ -186,8 +180,7 @@ cannot beat persistence has no business shipping.
   a rounding artifact: the defect-bearing population in the test week is denser than in
   the fitting window. A production deployment should re-fit the threshold on a rolling
   window rather than freezing it at build time — the alarm budget is a human constraint,
-  so exceeding it by 40% is a real cost, not a metric footnote. Plant B, by contrast,
-  lands exactly on 6.0.
+  so exceeding it by 40% is a real cost, not a metric footnote.
 
 ## Fallback model
 
@@ -195,8 +188,7 @@ A Statistical Process Control scorer runs alongside the primary model and is sur
 when the primary fails to score (a corrupt or incompatible `.npz`), labelled `FALLBACK
 MODE` in the response so a fallback number is never presented as the real model speaking.
 
-**Measured shadow performance: precision 3.0%, recall 100%** (plant A; 2.9% / 100% on
-plant B). That is barely above the base rate — as a standalone detector it is not usable,
+**Measured shadow performance: precision 3.0%, recall 100%** (plant A). That is barely above the base rate — as a standalone detector it is not usable,
 and the number is published rather than softened. `docs/DECISIONS.md` ADR-035 has the
 reason: the textbook 8-rule Nelson battery assumes a stable i.i.d. process, and this line
 is deliberately simulated with autocorrelated physics, so the trend rules fire constantly
@@ -231,7 +223,7 @@ Still plan, not built:
 
 ## Reproducibility
 
-Seed 42 (plant A) / 43 (plant B). `OMP_NUM_THREADS=1` is exported by the Makefile before
+Seed 42. `OMP_NUM_THREADS=1` is exported by the Makefile before
 any sklearn import: OpenMP reduction order is not deterministic and without it the
 byte-for-byte claim would be false.
 
@@ -249,8 +241,6 @@ Measured by `python -m offline.benchmarks.score_diversity` →
 |---|---|---|---|---|---|---|---|
 | **plant A** — all scored units | 1,423 | 1,293 | 90.9% | 0.945 | 0.1286 | 0.0699 | 0.888 |
 | **plant A** — alerted only | 113 | **1** | **0.9%** | **0.000** | **0.0000** | **0.0000** | **0.500** |
-| **plant B** — all scored units | 1,205 | 1,204 | 99.9% | 1.000 | 0.0229 | 0.0215 | 0.617 |
-| **plant B** — alerted only | 28 | 28 | 100.0% | 1.000 | 0.0120 | 0.0126 | 0.788 |
 
 **Plant A's entire alert cohort carries one score** — calibrated 0.406079, raw 0.880117 —
 and its within-cohort ranking AUC is exactly 0.500, which is what random ordering scores.
@@ -261,10 +251,8 @@ Cause, measured rather than guessed: every tree in the ensemble splits on
 checklist threshold, no later split discriminates, so every such unit reaches the same leaf
 in every tree and the ensemble sum is identical.
 
-**Plant B does not collapse.** Its 28 alerts carry 28 distinct scores and rank at AUC 0.788.
-The pathology is plant-A-specific, not inherent to the architecture — which is new
-information: previous documentation described it only for plant A and did not establish
-whether it generalised.
+Whether the collapse is specific to plant A or inherent to the architecture is not
+established: with one plant there is nothing to compare against.
 
 This is **not fixed**. Fixing it means richer features (temporal, local station-context,
 lot-level, upstream-trajectory) and a retrain, which was not undertaken. It must never be
@@ -277,7 +265,7 @@ Collapse thresholds that trip the warning: `unique_ratio < 0.25`, normalised ent
 
 ## Bottleneck detection — independent validation
 
-The 85.9% (plant A) / 90.2% (plant B) figure elsewhere in this card is a **self-consistency**
+The 85.9% figure elsewhere in this card is a **self-consistency**
 measure: its reference is the same active-share matrix the detector consumes, smoothed over
 eight buckets. It is retained, relabelled.
 
@@ -301,7 +289,7 @@ stations sit at ≈ −0.15 with CIs straddling zero, which is the sanity check 
 to pass.
 
 Plain utilisation **ties** the shipped detector on this scenario; this evidence does not
-justify preferring active share. Six of seven planned scenarios and all of plant B are
+justify preferring active share. Six of seven planned scenarios are
 **NOT RUN**.
 
 ## Live-simulation behaviour
@@ -339,7 +327,7 @@ on nothing.
 
 ## XGBoost challenger (ADR-061, ADR-062) — evaluated, not promoted
 
-Reports: `docs/XGB_CHALLENGER_plant_a.md`, `docs/XGB_CHALLENGER_plant_b.md`. There is a
+Report: `docs/XGB_CHALLENGER_plant_a.md`. There is a
 deterministic 30-trial search, calibrated and thresholded on validation only, and scored
 once per run on the untouched test days. Its operating policy is a trailing-window alert
 budget (ADR-062).
@@ -355,8 +343,7 @@ budget (ADR-062).
 
 **Not promoted on plant A.** It fails recall: holding the alert rate near budget costs
 recall the champion only has because it runs 41% over budget. The challenger does fix the
-single-score collapse, so every alert can be ranked. **Not promoted on plant B:** it is
-worse than the champion on precision, recall and PR-AUC. Plant A's test set has been
+single-score collapse, so every alert can be ranked. Plant A's test set has been
 looked at three times (a rule amendment after run 1, then a new threshold policy in run
 3), and every run is disclosed in its report.
 

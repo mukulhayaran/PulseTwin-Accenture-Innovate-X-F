@@ -18,12 +18,13 @@ export const theme = {
   line: "#e6e6e6",
   lineStrong: "#cccccc",
 
-  // The one dark surface: hero bands, the sidebar rail, the pre-footer CTA.
-  surfaceDark: "#1a2129",
-  surfaceDark2: "#262e38",
-  onDark: "#ffffff",
-  onDarkSoft: "#bbbbbb",
-  lineOnDark: "#39424e",
+  // The accent band (rail, landing bands, tooltips, chart tips). Light since
+  // ADR-074; names kept so no call site changed. Mirrors globals.css.
+  surfaceDark: "#f3f6fb",
+  surfaceDark2: "#e9eef6",
+  onDark: "#262626",
+  onDarkSoft: "#4a4a4a",
+  lineOnDark: "#dbe3ee",
 
   ink: "#262626",
   inkDim: "#4a4a4a",
@@ -49,13 +50,12 @@ export const theme = {
   ai: "#7c3aed",
   aiFg: "#6d28d9",
 
-  // Signal text inside a dark band (sidebar rail, hero, tooltip, chart tip),
-  // where the darkened `-fg` pair above goes muddy.
-  okOnDark: "#4ade80",
-  dangerOnDark: "#f87171",
-  warnOnDark: "#fbbf24",
-  infoOnDark: "#8ab4f0",
-  aiOnDark: "#b69dfa",
+  // Signal text inside the accent band -- equal to the `-fg` values since ADR-074.
+  okOnDark: "#166534",
+  dangerOnDark: "#b91c1c",
+  warnOnDark: "#92400e",
+  infoOnDark: "#0653b6",
+  aiOnDark: "#6d28d9",
 
   // Divider / badge role only. Never a CTA fill.
   mBlueLight: "#0066b1",

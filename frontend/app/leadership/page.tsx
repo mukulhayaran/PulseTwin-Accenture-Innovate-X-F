@@ -7,6 +7,8 @@ import { cn } from "@/lib/cn";
 import { axisProps, gridProps, theme } from "@/lib/theme";
 import { usePersonaAccess } from "@/lib/usePersonaAccess";
 import SignInGate from "@/components/shared/SignInGate";
+import AiScorecard from "@/components/incidents/AiScorecard";
+import BusinessImpact from "@/components/incidents/BusinessImpact";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import {
   AnimatedNumber, AppShell, Badge, ChartFrame, ChartTooltip, DataTable, Fact, Kpi, Panel,
@@ -370,7 +372,7 @@ export default function LeadershipPage() {
                   { p: "Phase 1", w: "8 weeks", t: "Shadow mode", items: ["Predict silently", "Measure precision vs real inspection", "Zero operator exposure", "Tune the alarm budget"] },
                   { p: "Phase 2", w: "12 weeks", t: "Advisory alerts", items: ["One line", "Supervisor UI live", "Feedback loop on", "Containment trialled"] },
                   { p: "Phase 3", w: "16 weeks", t: "MES integration", items: ["Quality holds", "Auto-containment lists", "Manager + Leadership views", "Phase 1 retrofit"] },
-                  { p: "Phase 4", w: "ongoing", t: "Multi-plant", items: ["Plant B onboard", "Config-only adaptation", "Per-site models", "Central dashboard"] },
+                  { p: "Phase 4", w: "ongoing", t: "Multi-plant", items: ["Second plant onboard", "Config-only adaptation", "Per-site models", "Central dashboard"] },
                 ].map((ph, i) => (
                   <div
                     key={ph.p}
@@ -449,6 +451,10 @@ export default function LeadershipPage() {
             </Panel>
           </>
         )}
+        <div className="mt-4 space-y-4">
+          <BusinessImpact plant={plant} />
+          <AiScorecard plant={plant} />
+        </div>
       </div>
     </AppShell>
   );

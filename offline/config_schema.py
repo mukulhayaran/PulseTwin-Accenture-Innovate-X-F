@@ -401,8 +401,8 @@ class PlantConfig(StrictModel):
     def prediction_cutoff_station(self) -> int:
         """Last station whose data may be used for prediction.
 
-        Config-derived rather than the hardcoded "S20" of the original spec, so plant B's
-        42-station line gets a proportionate cutoff (S28) with no code change. Two thirds
+        Config-derived rather than the hardcoded "S20" of the original spec, so a longer
+        line gets a proportionate cutoff with no code change. Two thirds
         along the line: late enough that the paint-zone evidence exists, early enough to
         leave real lead time before the end-of-line gate.
         """

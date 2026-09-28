@@ -47,7 +47,7 @@ export default function SegmentedControl<T extends string | number>({
             className={cn(
               "relative px-3 py-1.5 text-2xs font-bold uppercase tracking-[0.08em]",
               "transition-colors duration-150",
-              active ? "text-on-dark" : "text-ink-faint hover:text-ink"
+              active ? "text-canvas" : "text-ink-faint hover:text-ink"
             )}
           >
             {active && (

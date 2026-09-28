@@ -48,7 +48,7 @@ from feature_contract import (
 )
 from offline.config_schema import PlantConfig
 from offline.live_twin.causal import LiveCausal
-from offline.live_twin.incidents import Incident, IncidentState
+from offline.live_twin.incidents import CONGESTION_SLOWDOWN, Incident, IncidentState
 from offline.live_twin.signals import LiveSignalGenerator
 from offline.simulator.line_model import SIM_START, LineSimulator
 from offline.simulator.operators import OperatorPool
@@ -141,6 +141,7 @@ class LiveTwinEngine:
 
         self._stations = {s.id: s for s in cfg.stations}
         self._base_capacity = {s.id: s.buffer_capacity_after for s in cfg.stations}
+        self._base_cycle = {s.id: s.nominal_cycle_s for s in cfg.stations}
         self._base_checklist = {
             s.id: s.checklist_nominal_s for s in cfg.stations if s.checklist_nominal_s
         }
@@ -264,6 +265,7 @@ class LiveTwinEngine:
         exactly as they do for a spontaneous failure.
         """
         now = self.now
+        self.apply_congestion_pull(now)
         for rt in self.sim.stations:
             sid = rt.cfg.id
             rt.capacity = self.incidents.buffer_capacity(sid, self._base_capacity[sid], now)
@@ -273,6 +275,16 @@ class LiveTwinEngine:
                 )
             if self.incidents.forces_breakdown(sid, now) and rt.state != "down":
                 self.sim._on_failure(rt, now)
+
+    def apply_congestion_pull(self, now: float) -> None:
+        """A congested station's NEXT station pulls slower, which is what makes the
+        congested station block (incidents.CONGESTION_SLOWDOWN). Recomputed from the base
+        cycle, so a mitigation that lowers the severity lowers the slowdown with it."""
+        stations = self.sim.stations
+        for i in range(1, len(stations)):
+            sev = self.incidents.congestion_severity(stations[i - 1].cfg.id, now)
+            sid = stations[i].cfg.id
+            stations[i].cfg.nominal_cycle_s = self._base_cycle[sid] * (1.0 + CONGESTION_SLOWDOWN * sev)
 
     # ---------------------------------------------------------------------- events
 

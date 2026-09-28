@@ -31,7 +31,7 @@ from typing import Any
 from genai import tools as T
 from genai.api_client import PulseTwinAPI
 from genai.finding import (
-    Citation, Claim, Finding, Hypothesis, KnowledgeCitation, ProposedAction,
+    Citation, Claim, Finding, Hypothesis, KnowledgeCitation,
 )
 from genai.loop import LoopResult, ToolRecord, truncate
 
@@ -317,40 +317,10 @@ def _operations_memory(records: list[ToolRecord], registry: dict[str, T.ToolSpec
                        api: PulseTwinAPI, plant_id: str, claims: list[Claim],
                        notes: list[str], watch: list[str], unanswered: list[str],
                        first_id: int) -> None:
-    """ADR-064: what the proposal inbox, the outcome memory and the experiment log say --
-    counts the APIs return, never counted in prose."""
+    """ADR-064: what the outcome memory and the experiment log say -- counts the APIs
+    return, never counted in prose. (Pending decisions live in the Incident Commander's
+    Decision Queue, ADR-069; the ADR-051 proposal inbox was retired, ADR-073.)"""
     n = first_id
-    pr_id, pr = _call(records, registry, api, "get_proposals", {"plant_id": plant_id,
-                                                                 "limit": 20})
-    prd = _ok(pr)
-    if prd:
-        for key, text in (("PROPOSED", "Actions awaiting a human decision"),
-                          ("APPLIED", "Actions approved and applied to the simulated twin"),
-                          ("REJECTED", "Recommendations a person rejected")):
-            if _count_claim(claims, f"c{n}", text, (prd.get("by_status") or {}).get(key),
-                            pr_id, f"/data/by_status/{key}"):
-                n += 1
-        for key, text in (("observing", "Applied actions still inside their outcome window"),
-                          ("harmful", "Applied actions evaluated as harmful"),
-                          ("no_material_effect", "Applied actions with no material effect")):
-            if _count_claim(claims, f"c{n}", text,
-                            (prd.get("outcomes_by_status") or {}).get(key), pr_id,
-                            f"/data/outcomes_by_status/{key}"):
-                n += 1
-        for p in prd.get("proposals") or []:
-            if p.get("status") == "PROPOSED":
-                watch.append(f"S{p['station_id']}, where a {p['detector'].replace('_', ' ')} "
-                             f"proposal awaits a decision")
-            outcome = p.get("outcome") or {}
-            if outcome.get("status") == "observing":
-                watch.append(f"S{p['station_id']}, whose applied action is still being "
-                             f"observed -- its result is not yet mature")
-            elif outcome.get("status") in ("harmful", "no_material_effect"):
-                notes.append(f"The action applied at S{p['station_id']} "
-                             f"({outcome.get('intervention_type')}) did not achieve its "
-                             f"expected result ({outcome['status'].replace('_', ' ')}).")
-    else:
-        _fail(unanswered, "get_proposals", pr)
     ex_id, ex = _call(records, registry, api, "list_simulation_experiments",
                       {"plant_id": plant_id, "limit": 20})
     exd = _ok(ex)
@@ -368,6 +338,20 @@ def _operations_memory(records: list[ToolRecord], registry: dict[str, T.ToolSpec
         if _count_claim(claims, f"c{n}", "Action outcomes evaluated so far",
                         acc.get("evaluated"), oc_id, "/data/accuracy/evaluated"):
             n += 1
+        for key, text in (("observing", "Applied actions still inside their outcome window"),
+                          ("harmful", "Applied actions evaluated as harmful"),
+                          ("no_material_effect", "Applied actions with no material effect")):
+            if _count_claim(claims, f"c{n}", text, (acc.get("by_status") or {}).get(key),
+                            oc_id, f"/data/accuracy/by_status/{key}"):
+                n += 1
+        for o in ocd.get("outcomes") or []:
+            if o.get("status") == "observing":
+                watch.append(f"S{o['station_id']}, whose applied action is still being "
+                             f"observed -- its result is not yet mature")
+            elif o.get("status") in ("harmful", "no_material_effect"):
+                notes.append(f"The action applied at S{o['station_id']} "
+                             f"({o.get('intervention_type')}) did not achieve its "
+                             f"expected result ({o['status'].replace('_', ' ')}).")
         if acc.get("mean_abs_projection_error") is not None:
             notes.append("Where a simulation projected an action's effect, the observed "
                          "change is compared with it in the outcome record.")
@@ -833,63 +817,6 @@ def run_incident(
     )
 
 
-# ------------------------------------------------------------ ADR-051: watch agents
-#
-# Each plan starts from the watch's own measured evidence (get_watch_firings), claims it,
-# and PROPOSES actions from genai/finding.py::ACTION_TYPES whose `claim_ids` name those
-# claims -- so an action is served only when the evidence it rests on verified. Nothing
-# here executes anything: a human approves, and the twin applies.
-
-
-def _watch_firing(
-    records: list[ToolRecord], registry: dict[str, T.ToolSpec], api: PulseTwinAPI,
-    plant_id: str, detector: str, station_id: int | None, unanswered: list[str],
-) -> tuple[str, str, dict[str, Any]] | None:
-    """(call_id, pointer to the firing's evidence, evidence) for the newest firing of
-    `detector` -- at `station_id` when one was given -- or None, recorded in unanswered."""
-    fw_id, fw = _call(records, registry, api, "get_watch_firings",
-                      {"plant_id": plant_id, "detector": detector, "limit": 10})
-    data = _ok(fw)
-    if data is None:
-        _fail(unanswered, "get_watch_firings", fw)
-        return None
-    for i, f in enumerate(data.get("firings") or []):
-        if station_id is None or int(f.get("station_id", -1)) == int(station_id):
-            return fw_id, f"/data/firings/{i}/evidence", f.get("evidence") or {}
-    unanswered.append(
-        f"get_watch_firings: no {detector.replace('_', ' ')} firing"
-        + (f" at station {station_id}" if station_id is not None else "")
-        + " -- the watch has not seen this risk, so no action is proposed.")
-    return None
-
-
-def _line_context(records: list[ToolRecord], registry: dict[str, T.ToolSpec],
-                  api: PulseTwinAPI, plant_id: str, claims: list[Claim],
-                  unanswered: list[str]) -> None:
-    """One claim that always exists, so a plan with no firing still verifies."""
-    bn_id, bn = _call(records, registry, api, "get_bottleneck_current",
-                      {"plant_id": plant_id})
-    bnd = _ok(bn)
-    if bnd and isinstance(bnd.get("current_station"), int):
-        claims.append(Claim(
-            id="c0", text=f"The line's current constraint is station S{bnd['current_station']}",
-            value=float(bnd["current_station"]), unit="station_id", provenance="measured",
-            citation=Citation(bn_id, "/data/current_station")))
-    else:
-        _fail(unanswered, "get_bottleneck_current", bn)
-
-
-def _evidence_claim(claims: list[Claim], cid: str, text: str, evidence: dict[str, Any],
-                    field_name: str, unit: str, call_id: str, base: str) -> bool:
-    value = evidence.get(field_name)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    claims.append(Claim(id=cid, text=text, value=float(value), unit=unit,
-                        provenance="measured",
-                        citation=Citation(call_id, f"{base}/{field_name}")))
-    return True
-
-
 # ------------------------------------------------------------------ ADR-064 experiments
 EXPERIMENT_BANNER = ("FRESH SIMULATION: isolated copies of the physical twin, a paired "
                      "baseline on identical seeds; every figure below is simulated.")
@@ -999,382 +926,11 @@ def _scenario(data: dict[str, Any], kind: str, action_type: str | None = None,
     return None
 
 
-def _refused(data: dict[str, Any]) -> list[str]:
-    return [f"{s['label']}: {s['reason']}" for s in data.get("scenarios") or []
-            if not s.get("supported")]
-
-
-def _finish(question: str, claims: list[Claim], notes: list[str], recommendation: str,
-            unanswered: list[str], actions: list[ProposedAction],
-            knowledge: list[KnowledgeCitation], records: list[ToolRecord],
-            alternatives: list[str], decision: str = "",
-            hypotheses: list[Hypothesis] | None = None) -> tuple[LoopResult, Finding]:
-    loop = LoopResult(status="finished", content="", records=records, iterations=0)
-    return loop, Finding(
-        decision=decision or ("recommend" if actions else "insufficient_evidence"),
-        hypotheses=hypotheses or [],
-        question=question,
-        summary=f"{BANNER} " + (" ".join(notes) if notes else
-                                "The watch evidence was read directly."),
-        claims=claims, recommendation=f"{BANNER} {recommendation}",
-        alternatives_considered=alternatives,
-        confidence="medium" if actions else "low",
-        unanswered=unanswered, knowledge_citations=knowledge, proposed_actions=actions,
-    )
-
-
-def run_starvation(
-    registry: dict[str, T.ToolSpec], api: PulseTwinAPI, *, plant_id: str, question: str,
-    station_id: int | None = None,
-) -> tuple[LoopResult, Finding]:
-    """A stalled station will starve the next one: evidence, a tested buffer, a ticket."""
-    records: list[ToolRecord] = []
-    claims: list[Claim] = []
-    unanswered: list[str] = []
-    notes: list[str] = []
-    actions: list[ProposedAction] = []
-    hypotheses: list[Hypothesis] = []
-    decision = ""
-    _line_context(records, registry, api, plant_id, claims, unanswered)
-    hit = _watch_firing(records, registry, api, plant_id, "starvation", station_id,
-                        unanswered)
-    if hit:
-        fw_id, base, ev = hit
-        sid = int(ev.get("station_id") or station_id or 0)
-        down = ev.get("downstream_station")
-        _evidence_claim(claims, "c1", f"Share of recent cycles S{sid} spent stalled",
-                        ev, "stalled_share", "ratio", fw_id, base)
-        _evidence_claim(claims, "c2", f"Mean recent cycle time at S{sid}", ev,
-                        "mean_cycle_time_s", "seconds", fw_id, base)
-        _evidence_claim(claims, "c3", "The line's takt time", ev, "takt_s", "seconds",
-                        fw_id, base)
-        stall_ids = [c.id for c in claims if c.id in ("c1", "c2")]
-        stalled_state = str(ev.get("stalled_state") or "unknown").lower()
-        if stalled_state == "blocked":
-            notes.append(
-                f"S{sid} is blocked and cycling slower than takt. It cannot release work "
-                "downstream, so the investigation should focus on downstream capacity or "
-                "flow rather than assuming missing upstream feed."
-            )
-        elif stalled_state == "starved":
-            notes.append(
-                f"S{sid} is starved and cycling slower than takt, which indicates that "
-                "upstream feed is not reaching the station consistently."
-            )
-        elif stalled_state == "down":
-            notes.append(
-                f"S{sid} is down and cannot sustain takt, which points to a local station "
-                "fault rather than an upstream buffer shortage."
-            )
-        else:
-            notes.append(
-                f"S{sid} is stalled ({stalled_state}) and cycling slower than takt; the "
-                "available evidence does not yet identify whether the cause is local, "
-                "upstream or downstream."
-            )
-        # ADR-064: test the candidate remedies on a FRESH simulation of this condition
-        # and propose only what the paired interval says helps.
-        exp_id, data = _experiment(
-            records, registry, api, unanswered, plant_id=plant_id, station_id=sid,
-            objective="throughput", incident={"detector": "starvation", "evidence": ev},
-            interventions=[
-                {"type": "mitigation", "params": {"action_type": "increase_feed_buffer"}},
-                {"type": "mitigation", "params": {"action_type": "maintenance_ticket"}},
-                {"type": "cycle_time_pct", "params": {"pct": -10}}])
-        if data is None:
-            decision = "simulator_unavailable"
-            notes.append("The simulator could not test a remedy, so no buffer change is "
-                         "proposed on assertion alone.")
-            if ev.get("stalled_state") == "down" and stall_ids:
-                actions.append(ProposedAction(
-                    id="a1", action_type="maintenance_ticket", params={"station_id": sid},
-                    rationale=f"S{sid} reports DOWN; a repair ticket needs no simulation to "
-                              f"justify, but its throughput effect is untested.",
-                    claim_ids=stall_ids))
-        else:
-            by = _experiment_claims(claims, exp_id, data, ("throughput_uph", "starved_pct"),
-                                    first_id=4)
-            refused = _refused(data)
-            if refused:
-                unanswered.extend(f"not simulated -- {r}" for r in refused)
-            buf = _scenario(data, "mitigation", "increase_feed_buffer")
-            fix = _scenario(data, "mitigation", "maintenance_ticket")
-            cyc = _scenario(data, "cycle_time_pct")
-            for hit_s, htext in ((fix, "the stall is a fault at the station itself"),
-                                 (buf, "the station runs short of feed from upstream"),
-                                 (cyc, "the station's own cycle time cannot keep pace")):
-                if hit_s:
-                    hypotheses.append(Hypothesis(
-                        id=f"h{len(hypotheses) + 1}", statement=f"Starvation because {htext}.",
-                        status="supported" if _improves(hit_s[1], "throughput_uph") else "rejected",
-                        claim_ids=by.get(hit_s[0], []),
-                        experiment_id=data.get("experiment_id")))
-            if fix and _improves(fix[1], "throughput_uph") and stall_ids:
-                actions.append(ProposedAction(
-                    id="a1", action_type="maintenance_ticket", params={"station_id": sid},
-                    rationale=f"Restoring S{sid} raised simulated throughput with an "
-                              f"interval clear of zero.",
-                    claim_ids=stall_ids + by[fix[0]]))
-            if buf and _improves(buf[1], "throughput_uph") and isinstance(down, int) and stall_ids:
-                actions.append(ProposedAction(
-                    id="a2", action_type="increase_feed_buffer",
-                    params={"station_id": down, "buffer_delta": 4},
-                    rationale=f"Extra feed slots ahead of S{down} raised simulated "
-                              f"throughput with an interval clear of zero.",
-                    claim_ids=stall_ids + by[buf[0]]))
-            if cyc and _improves(cyc[1], "throughput_uph") and stall_ids:
-                actions.append(ProposedAction(
-                    id="a3", action_type="rebalance_cycle",
-                    params={"station_id": sid, "cycle_delta_pct": -10.0},
-                    rationale=f"A 10% shorter cycle at S{sid} raised simulated throughput "
-                              f"with an interval clear of zero.",
-                    claim_ids=stall_ids + by[cyc[0]]))
-            if buf and not _improves(buf[1], "throughput_uph"):
-                notes.append("A buffer change was simulated and did not raise throughput "
-                             "distinguishably, so it is not proposed.")
-            decision = ("recommend" if actions else
-                        "too_uncertain" if data.get("verdict") == "too_uncertain"
-                        else "no_improvement")
-    return _finish(
-        question, claims, notes,
-        "Approve the ticket first if the station is down; the buffer change buys time, "
-        "it does not remove the cause." if actions else
-        "No starvation risk was established, so nothing is proposed.",
-        unanswered, actions, [], records,
-        ["Rerouting units around the stalled station (not proposed: the line model has "
-         "no parallel path to route through)."], decision, hypotheses)
-
-
-def run_paint_env(
-    registry: dict[str, T.ToolSpec], api: PulseTwinAPI, *, plant_id: str, question: str,
-    station_id: int | None = None,
-) -> tuple[LoopResult, Finding]:
-    """Zone humidity the ambient does not explain: evidence, the SOP, HVAC + resequence."""
-    records: list[ToolRecord] = []
-    claims: list[Claim] = []
-    unanswered: list[str] = []
-    notes: list[str] = []
-    actions: list[ProposedAction] = []
-    _line_context(records, registry, api, plant_id, claims, unanswered)
-    hit = _watch_firing(records, registry, api, plant_id, "paint_env", None, unanswered)
-    knowledge: list[KnowledgeCitation] = []
-    hypotheses: list[Hypothesis] = []
-    decision = ""
-    if hit:
-        fw_id, base, ev = hit
-        _evidence_claim(claims, "c1", "Mean paint-zone humidity over the watch window",
-                        ev, "zone_humidity_mean_pct", "pct", fw_id, base)
-        _evidence_claim(claims, "c2", "Paint-zone humidity in excess of ambient",
-                        ev, "humidity_excess_over_ambient_pct", "pct", fw_id, base)
-        _evidence_claim(claims, "c3", "The plant's paint humidity threshold",
-                        ev, "humidity_threshold_pct", "pct", fw_id, base)
-        evidence_ids = [c.id for c in claims if c.id in ("c1", "c2")]
-        knowledge, passages = _retrieve_knowledge(
-            records, registry, api, "paint humidity dwell blistering procedure")
-        notes.append("The paint zone is holding more moisture than ambient explains, "
-                     "above the plant's humidity threshold for paint defects.")
-        if passages:
-            notes.append(f"The relevant procedure is {passages[0].get('doc_title')}, "
-                         f"quoted below.")
-        threshold = ev.get("humidity_threshold_pct")
-        fsid = int(ev.get("station_id") or station_id or 0)
-        exp_id, data = _experiment(
-            records, registry, api, unanswered, plant_id=plant_id, station_id=fsid,
-            objective="quality", incident={"detector": "paint_env", "evidence": ev},
-            interventions=[{"type": "mitigation", "params": {"action_type": "hvac_setpoint"}}])
-        hvac_ok, hvac_ids = False, []
-        if data is not None:
-            by = _experiment_claims(claims, exp_id, data,
-                                    ("expected_defects", "throughput_uph"), first_id=4)
-            hv = _scenario(data, "mitigation", "hvac_setpoint")
-            if hv:
-                hvac_ok, hvac_ids = _improves(hv[1], "expected_defects"), by.get(hv[0], [])
-                hypotheses.append(Hypothesis(
-                    id="h1", statement="Excess paint-zone humidity is raising the defect risk "
-                                       "of units curing now.",
-                    status="supported" if hvac_ok else "rejected", claim_ids=hvac_ids,
-                    experiment_id=data.get("experiment_id")))
-                notes.append("Correcting the zone climate was simulated: "
-                             + ("it lowers expected defects distinguishably."
-                                if hvac_ok else "the change in expected defects is not "
-                                                "distinguishable from zero."))
-        else:
-            notes.append("The quality effect could not be simulated this time.")
-        if evidence_ids and isinstance(threshold, (int, float)) and (hvac_ok or data is None):
-            actions.append(ProposedAction(
-                id="a1", action_type="hvac_setpoint",
-                params={"target_humidity_pct": float(threshold)},
-                rationale="Bring the paint zone back to the humidity threshold. "
-                          + ("Simulated: fewer expected defects." if hvac_ok else
-                             "Its defect effect is untested (simulator unavailable)."),
-                claim_ids=evidence_ids + hvac_ids
-                + (["c3"] if any(c.id == "c3" for c in claims) else [])))
-        if evidence_ids and actions:
-            actions.append(ProposedAction(
-                id="a2", action_type="resequence_paint_queue", params={},
-                rationale="Hold units with long paint-buffer dwell until the zone "
-                          "recovers. The twin cannot simulate this: it changes scoring "
-                          "priority, not a physical condition.",
-                claim_ids=evidence_ids))
-        decision = ("recommend" if actions else
-                    "simulator_unavailable" if data is None else "no_improvement")
-    return _finish(
-        question, claims, notes,
-        "Correct the zone climate first; resequencing limits exposure while it recovers."
-        if actions else "No paint environment risk was established, so nothing is proposed.",
-        unanswered, actions, knowledge, records,
-        ["Stopping the paint line (not proposed: the humidity excess is recoverable "
-         "without losing throughput)."], decision, hypotheses)
-
-
-def run_tool_wear(
-    registry: dict[str, T.ToolSpec], api: PulseTwinAPI, *, plant_id: str, question: str,
-    station_id: int | None = None,
-) -> tuple[LoopResult, Finding]:
-    """Torque / weld current drifting: evidence, the SOP, a ticket, and a load shift."""
-    records: list[ToolRecord] = []
-    claims: list[Claim] = []
-    unanswered: list[str] = []
-    notes: list[str] = []
-    actions: list[ProposedAction] = []
-    knowledge: list[KnowledgeCitation] = []
-    hypotheses: list[Hypothesis] = []
-    decision = ""
-    _line_context(records, registry, api, plant_id, claims, unanswered)
-    hit = _watch_firing(records, registry, api, plant_id, "tool_wear", station_id,
-                        unanswered)
-    if hit:
-        fw_id, base, ev = hit
-        sid = int(ev.get("station_id") or station_id or 0)
-        signal = str(ev.get("signal") or "torque_nm")
-        _evidence_claim(claims, "c1", f"Drift of {signal} at S{sid} from its baseline",
-                        ev, "deviation_pct", "pct", fw_id, base)
-        _evidence_claim(claims, "c2", "The plant's tool-wear deviation threshold",
-                        ev, "deviation_threshold_pct", "pct", fw_id, base)
-        drift_ids = [c.id for c in claims if c.id == "c1"]
-        # Is the SENSOR healthy? A dark or dropping sensor explains drift without a
-        # worn tool, so check before blaming the tool.
-        sd_id, sd = _call(records, registry, api, "get_sensor_dropouts",
-                          {"plant_id": plant_id})
-        sdd = _ok(sd)
-        if sdd is not None and isinstance(sdd.get("sensor_dropouts_active"), int):
-            claims.append(Claim(
-                id="c9", text="Sensor dropouts active on the plant right now",
-                value=float(sdd["sensor_dropouts_active"]), unit="count",
-                provenance="measured", citation=Citation(sd_id, "/data/sensor_dropouts_active")))
-            if any(int(d.get("station_id", -1)) == sid for d in sdd.get("dropout_details") or []):
-                unanswered.append(f"S{sid} has an active sensor dropout: the drift may be "
-                                  f"the sensor, not the tool -- engineering review first.")
-                drift_ids = []
-                decision = "engineering_review"
-        else:
-            _fail(unanswered, "get_sensor_dropouts", sd)
-        exp_id, data = (None, None)
-        if drift_ids:
-            exp_id, data = _experiment(
-                records, registry, api, unanswered, plant_id=plant_id, station_id=sid,
-                objective="quality", incident={"detector": "tool_wear", "evidence": ev},
-                interventions=[{"type": "maintenance", "params": {"delay_min": 0}},
-                               {"type": "maintenance", "params": {"delay_min": 120}},
-                               {"type": "mitigation", "params": {"action_type": "shift_weld_load"}}])
-        maint_ids: list[str] = []
-        shift_ok, shift_ids = False, []
-        if data is not None:
-            by = _experiment_claims(claims, exp_id, data,
-                                    ("expected_defects", "throughput_uph", "down_pct"),
-                                    first_id=10)
-            now = _scenario(data, "maintenance", delay_min=0)
-            later = _scenario(data, "maintenance", delay_min=120)
-            shift = _scenario(data, "mitigation", "shift_weld_load")
-            for label, hit_s in (("now", now), ("at the planned stop", later)):
-                if hit_s and _improves(hit_s[1], "expected_defects"):
-                    maint_ids = maint_ids or by.get(hit_s[0], [])
-                if hit_s:
-                    notes.append(f"Maintenance {label} was simulated "
-                                 + ("and lowers expected defects distinguishably"
-                                    if _improves(hit_s[1], "expected_defects")
-                                    else "without a distinguishable quality gain")
-                                 + ("; it costs throughput while the station is down."
-                                    if (hit_s[1].get("vs_baseline") or {}).get(
-                                        "throughput_uph", {}).get("ci_high", 0) < 0 else "."))
-            if shift:
-                shift_ok, shift_ids = _improves(shift[1], "expected_defects"), by.get(shift[0], [])
-            hypotheses.append(Hypothesis(
-                id="h1", statement=f"The tool at S{sid} is degrading, not its sensor.",
-                status="supported" if maint_ids else "untested", claim_ids=drift_ids + maint_ids,
-                experiment_id=data.get("experiment_id")))
-            notes.append("No remaining-useful-life estimate is given: no model here "
-                         "calculates one.")
-        elif drift_ids:
-            notes.append("The maintenance trade-off could not be simulated this time.")
-        knowledge, passages = _retrieve_knowledge(
-            records, registry, api, f"{signal} drift tool wear verification procedure")
-        notes.append(f"S{sid}'s {signal} has drifted from its normal level by more than "
-                     f"the plant's tool-wear threshold. There is no electrode-force "
-                     f"signal, so tip wear is inferred from this drift, not measured.")
-        if drift_ids and (maint_ids or data is None):
-            actions.append(ProposedAction(
-                id="a1", action_type="maintenance_ticket",
-                params={"station_id": sid, "signal": signal},
-                rationale=f"Inspect and service the tool at S{sid} before its drift "
-                          f"becomes a fastening or weld defect. "
-                          + ("Simulated: fewer expected defects." if maint_ids else
-                             "Its effect is untested (simulator unavailable)."),
-                claim_ids=drift_ids + maint_ids))
-            cfg_id, cfg = _call(records, registry, api, "get_station_config",
-                                {"plant_id": plant_id})
-            st_id, st = _call(records, registry, api, "get_station_stats",
-                              {"plant_id": plant_id})
-            peers = {s["station_id"] for s in (_ok(cfg) or {}).get("stations", [])
-                     if signal in (s.get("sensors") or [])
-                     and s["station_id"] != sid and abs(s["station_id"] - sid) <= 2}
-            rows = _ok(st) if isinstance(_ok(st), list) else []
-            ranked = sorted(
-                (i for i, r in enumerate(rows) if r.get("station_id") in peers
-                 and r.get("provenance", "measured") == "measured"
-                 and isinstance(r.get("util"), (int, float))),
-                key=lambda i: rows[i]["util"])
-            if ranked and (shift_ok or data is None):
-                i = ranked[0]
-                target = int(rows[i]["station_id"])
-                claims.append(Claim(
-                    id="c3", text=f"Measured utilisation of adjacent station S{target}",
-                    value=float(rows[i]["util"]), unit="ratio", provenance="measured",
-                    citation=Citation(st_id, f"/data/{i}/util")))
-                actions.append(ProposedAction(
-                    id="a2", action_type="shift_weld_load",
-                    params={"from_station": sid, "to_station": target},
-                    rationale=f"S{target} carries the same {signal} capability and is the "
-                              f"least utilised adjacent station, so it can absorb the "
-                              f"work while S{sid} is serviced.",
-                    claim_ids=drift_ids + ["c3"] + shift_ids))
-            elif ranked:
-                notes.append("A load shift was simulated without a distinguishable quality "
-                             "gain, so it is not proposed.")
-            else:
-                unanswered.append(f"No adjacent station with measured statistics carries "
-                                  f"{signal}, so no load shift is proposed.")
-    return _finish(
-        question, claims, notes,
-        "Raise the ticket; shift the load only for as long as the station is out."
-        if actions else "No tool degradation was established, so nothing is proposed.",
-        unanswered, actions, knowledge, records,
-        ["Recalibrating the sensor instead of the tool (not proposed: a drift confined "
-         "to one station's signal is the tool's signature, not the sensor's)."],
-        decision or ("recommend" if actions else
-                     "simulator_unavailable" if hit and data is None and drift_ids
-                     else "no_improvement" if hit else "insufficient_evidence"),
-        hypotheses)
-
-
 PLANS = {
     "general": run,
     "handover": run_handover,
     "whatif": run_whatif,
     "incident": run_incident,
-    "starvation": run_starvation,
-    "paint_env": run_paint_env,
-    "tool_wear": run_tool_wear,
 }
 
 

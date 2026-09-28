@@ -114,12 +114,11 @@ class ExperimentRequest(BaseModel):
     wait_s: float = Field(default=0.0, ge=0.0, le=MAX_WAIT_S)
 
 
-def _validate(req: ExperimentRequest, request: Request) -> tuple[list[int], float]:
-    plants = request.app.state.plants
+def _validate(req: ExperimentRequest, plants: dict, main_con: Any) -> tuple[list[int], float]:
     if req.plant_id not in plants:
         raise HTTPException(404, f"unknown plant '{req.plant_id}'")
     stations = {r["station_id"] for r in db.query_all(
-        request.app.state.main_con,
+        main_con,
         "SELECT station_id FROM station_config WHERE plant_id=?", (req.plant_id,))}
     if req.station_id not in stations:
         raise HTTPException(422, f"station {req.station_id} is not in {req.plant_id}")
@@ -194,8 +193,21 @@ async def create_experiment(req: ExperimentRequest, request: Request,
 
 
 def _create(req: ExperimentRequest, request: Request, role: str) -> dict[str, Any]:
-    ops = request.app.state.ops
-    seeds, horizon = _validate(req, request)
+    state = request.app.state
+    view = create_experiment_for(state.ops, state.main_con, state.plants, req, role)
+    log_action(request, state.ops, role, "simulation_experiment_started", "simulation_experiment",
+               view["experiment_id"], {"plant_id": req.plant_id, "station_id": req.station_id,
+                                       "interventions": [i.get("type") for i in req.interventions],
+                                       "seeds": view["seed_count"],
+                                       "origin_run_id": req.origin_run_id})
+    return view
+
+
+def create_experiment_for(ops: Any, main_con: Any, plants: dict, req: ExperimentRequest,
+                          role: str) -> dict[str, Any]:
+    """Validate, enforce budgets, write the rows and spawn the worker. The HTTP handler and
+    the Incident Commander (ADR-067) both come through here: one set of limits."""
+    seeds, horizon = _validate(req, plants, main_con)
     reap_abandoned(ops)
     supported_items = [i for i in req.interventions if validate_intervention(i) is None]
     _enforce_budgets(ops, req, len(seeds) * (len(supported_items) + 1))
@@ -235,16 +247,11 @@ def _create(req: ExperimentRequest, request: Request, role: str) -> dict[str, An
     subprocess.Popen(
         [sys.executable, "-m", "offline.sim_experiment", "--experiment-id", experiment_id,
          "--budget-threshold",
-         str(float(request.app.state.plants[req.plant_id]["budget_threshold"]))],
+         str(float(plants[req.plant_id]["budget_threshold"]))],
         cwd=str(ROOT),
         env={**os.environ, "OMP_NUM_THREADS": "1", "PYTHONPATH": str(ROOT)},
         stdout=log, stderr=subprocess.STDOUT,
     )
-    log_action(request, ops, role, "simulation_experiment_started", "simulation_experiment",
-               experiment_id, {"plant_id": req.plant_id, "station_id": req.station_id,
-                               "interventions": [i.get("type") for i in req.interventions],
-                               "seeds": len(seeds), "origin_run_id": req.origin_run_id})
-
     return _view(ops, experiment_id)
 
 

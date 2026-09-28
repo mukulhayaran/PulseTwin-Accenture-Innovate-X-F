@@ -72,7 +72,7 @@ class FakeRedis:
         self.lists.pop(str(name), None)
 
 
-@pytest.mark.parametrize("plant", ["plant_a", "plant_b"])
+@pytest.mark.parametrize("plant", ["plant_a"])
 def test_live_signal_features_and_prediction_match_offline_golden_history(plant: str):
     cfg = load_plant_config(f"configs/{plant}.yaml")
     telemetry = pd.read_parquet(ROOT / "data" / plant / "telemetry.parquet")
@@ -118,7 +118,7 @@ def test_live_signal_features_and_prediction_match_offline_golden_history(plant:
     assert np.isclose(p_live, p_offline, rtol=1e-6, atol=1e-6)
 
 
-@pytest.mark.parametrize("plant", ["plant_a", "plant_b"])
+@pytest.mark.parametrize("plant", ["plant_a"])
 def test_complete_online_feature_vector_matches_offline_contract(plant: str):
     """Exercise the actual Redis-backed assembler, not a parallel feature reimplementation."""
     cfg = load_plant_config(f"configs/{plant}.yaml")

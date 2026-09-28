@@ -43,7 +43,7 @@ SCHEMA_VERSION = 1
 # groups it depends on. Keeping them named means a new artifact reuses a group rather than
 # restating a file list that then drifts.
 SOURCE_GROUPS: dict[str, list[str]] = {
-    "config": ["configs/plant_a.yaml", "configs/plant_b.yaml", "offline/config_schema.py"],
+    "config": ["configs/plant_a.yaml", "offline/config_schema.py"],
     "economics": ["configs/economics.yaml"],
     "simulator": ["offline/simulator/*.py"],
     "features": ["offline/ml/featurize.py"],
@@ -95,13 +95,6 @@ ARTIFACTS: tuple[ArtifactSpec, ...] = (
         seed_source="configs/plant_a.yaml :: simulation.seed",
     ),
     ArtifactSpec(
-        path="artifacts/model_plant_b.npz",
-        producer="offline/ml/train.py",
-        command="python -m offline.ml.train --config configs/plant_b.yaml",
-        groups=("config", "simulator", "features", "labels", "model", "soft_sensor"),
-        seed_source="configs/plant_b.yaml :: simulation.seed",
-    ),
-    ArtifactSpec(
         path="artifacts/stream_plant_a.jsonl",
         producer="offline/build_artifact.py",
         command="python -m offline.build_artifact --config configs/plant_a.yaml",
@@ -109,25 +102,11 @@ ARTIFACTS: tuple[ArtifactSpec, ...] = (
         seed_source="configs/plant_a.yaml :: simulation.seed",
     ),
     ArtifactSpec(
-        path="artifacts/stream_plant_b.jsonl",
-        producer="offline/build_artifact.py",
-        command="python -m offline.build_artifact --config configs/plant_b.yaml",
-        groups=("config", "simulator", "features", "labels", "model", "artifact_builder"),
-        seed_source="configs/plant_b.yaml :: simulation.seed",
-    ),
-    ArtifactSpec(
         path="artifacts/fallback_plant_a.npz",
         producer="mlops/fallback.py",
         command="python -m mlops.fallback --config configs/plant_a.yaml",
         groups=("config", "simulator", "features", "fallback"),
         seed_source="configs/plant_a.yaml :: simulation.seed",
-    ),
-    ArtifactSpec(
-        path="artifacts/fallback_plant_b.npz",
-        producer="mlops/fallback.py",
-        command="python -m mlops.fallback --config configs/plant_b.yaml",
-        groups=("config", "simulator", "features", "fallback"),
-        seed_source="configs/plant_b.yaml :: simulation.seed",
     ),
     ArtifactSpec(
         path="artifacts/knowledge_index.npz",

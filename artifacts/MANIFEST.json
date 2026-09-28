@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "written_at": "2026-09-26T11:19:07.932072+00:00",
-  "git_sha": "06080a725fd754a082cddacdf5d103bd3d1322d8",
+  "written_at": "2026-09-27T16:56:40.332098+00:00",
+  "git_sha": "c2b61e034571baab361e718c744e414dd698affc",
   "environment": {
     "python": "3.11.15",
     "platform": "Windows-10-10.0.26200-SP0",
@@ -20,9 +20,9 @@
       "command": "python -m offline.build_artifact --config configs/<plant>.yaml",
       "seed_source": "configs/<plant>.yaml :: simulation.seed",
       "note": "16 tables. Every metric quoted in README.md and MODEL_CARD.md reads from here.",
-      "artifact_sha256": "9efd5861c0285040b81138fcebf43157fedfde2c533f85e5f2df2fa880c4df54",
-      "size_bytes": 41930752,
-      "generated_at": "2026-09-26T07:32:32.712474+00:00",
+      "artifact_sha256": "b87de867ead59f862f79bcbfeedd2643b4653dcafea7134b4052be4fed3b7c0a",
+      "size_bytes": 18223104,
+      "generated_at": "2026-09-27T16:55:11.970484+00:00",
       "source_groups": [
         "config",
         "economics",
@@ -37,24 +37,23 @@
       "source_sha256": {
         "configs/economics.yaml": "d0d633f1edcc7e19d326fafb72d00774a119c80309360633fd1322453e7913a6",
         "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
-        "offline/build_artifact.py": "69d85a2fad20dd219a304e207665534b385b123a7f906e1a8869d10cb67669ec",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
-        "offline/ml/bottleneck.py": "8e57abd2332cf2a90629dab929877a9d9d4200822a41f03aeb263ed8ec3f4179",
+        "offline/build_artifact.py": "e03cc57187d1ce33294a518e7348e9698318b7b5669d717832ed8b479578d0bf",
+        "offline/config_schema.py": "c8d8a4aa203711dce7b2eee41766c66ccb968d151e3598d4520849532864e9c8",
+        "offline/ml/bottleneck.py": "80258aab6316b350efd063baef76b2b88cc11dfa04d0924a24b48ac329c22b70",
         "offline/ml/defect_model.py": "6df9124f793fbfcbcc862cb305ca01d25f7e299e217a5da4d9ba01498372899f",
-        "offline/ml/featurize.py": "eaff0c775fa0a57f5671385198d5e2efa426187f2f1d808ab382824b2ab729f3",
-        "offline/ml/scenarios.py": "cdea85969f360aaf0ac73ebaf3c1c56c0746a6ea1ea29f566ea3bba910d2461e",
+        "offline/ml/featurize.py": "48dca4137e361a405d40e852aa597c39ec6c9e8278303fef6169a6f46e789431",
+        "offline/ml/scenarios.py": "b8e3bd993dd72f9201689ef29a0e2214b546dc7752fec5546671a61906b8d708",
         "offline/ml/soft_sensor.py": "3e6bbba9d54b26aedb28433b4fb8ef99eb65b7512e5a34e777d93f480536e574",
         "offline/ml/thresholds.py": "a0833ce08b773b9056e4317158c8dfee053f5e2fba234f07cd2bde8bbd89dc60",
-        "offline/ml/train.py": "66a115fa873f17bc69961a025a85430382f2cb5eb7bc55db3afcf4b20252cae8",
+        "offline/ml/train.py": "a01f47d04b4d18a860bb02773f187b77d30e17ea90450f76344493ba5cd43432",
         "offline/ml/validate.py": "87aa7b58ec30cee65eb86bbf8193c89127c24c9214aaeaf0a252b0e939b5759c",
         "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
+        "offline/simulator/causal_engine.py": "e7563145175ec0b20830d767fff57a2cc0de6863c7b8b1329426cdb36e779708",
+        "offline/simulator/generate.py": "761791ac70d90aec9d406ede8ae256e7ece45d9e679634979fb47e0d35e2be19",
         "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
         "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
         "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
+        "offline/simulator/physics.py": "bc7974d37292cfc9c2867d24b6e07581efed9481c3659d18ba10aa16e36ebe18"
       }
     },
     {
@@ -79,60 +78,20 @@
       ],
       "source_sha256": {
         "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
+        "offline/config_schema.py": "c8d8a4aa203711dce7b2eee41766c66ccb968d151e3598d4520849532864e9c8",
         "offline/ml/defect_model.py": "6df9124f793fbfcbcc862cb305ca01d25f7e299e217a5da4d9ba01498372899f",
-        "offline/ml/featurize.py": "eaff0c775fa0a57f5671385198d5e2efa426187f2f1d808ab382824b2ab729f3",
+        "offline/ml/featurize.py": "48dca4137e361a405d40e852aa597c39ec6c9e8278303fef6169a6f46e789431",
         "offline/ml/soft_sensor.py": "3e6bbba9d54b26aedb28433b4fb8ef99eb65b7512e5a34e777d93f480536e574",
         "offline/ml/thresholds.py": "a0833ce08b773b9056e4317158c8dfee053f5e2fba234f07cd2bde8bbd89dc60",
-        "offline/ml/train.py": "66a115fa873f17bc69961a025a85430382f2cb5eb7bc55db3afcf4b20252cae8",
+        "offline/ml/train.py": "a01f47d04b4d18a860bb02773f187b77d30e17ea90450f76344493ba5cd43432",
         "offline/ml/validate.py": "87aa7b58ec30cee65eb86bbf8193c89127c24c9214aaeaf0a252b0e939b5759c",
         "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
+        "offline/simulator/causal_engine.py": "e7563145175ec0b20830d767fff57a2cc0de6863c7b8b1329426cdb36e779708",
+        "offline/simulator/generate.py": "761791ac70d90aec9d406ede8ae256e7ece45d9e679634979fb47e0d35e2be19",
         "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
         "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
         "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
-      }
-    },
-    {
-      "name": "artifacts/model_plant_b.npz",
-      "present": true,
-      "required": true,
-      "schema_version": 1,
-      "producer": "offline/ml/train.py",
-      "command": "python -m offline.ml.train --config configs/plant_b.yaml",
-      "seed_source": "configs/plant_b.yaml :: simulation.seed",
-      "note": "",
-      "artifact_sha256": "3bfdb199ef4be32090571e66d8cd4b879b4e7ab78aac5b9a9f02044f57310565",
-      "size_bytes": 21128,
-      "generated_at": "2026-09-26T07:28:37.504794+00:00",
-      "source_groups": [
-        "config",
-        "simulator",
-        "features",
-        "labels",
-        "model",
-        "soft_sensor"
-      ],
-      "source_sha256": {
-        "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
-        "offline/ml/defect_model.py": "6df9124f793fbfcbcc862cb305ca01d25f7e299e217a5da4d9ba01498372899f",
-        "offline/ml/featurize.py": "eaff0c775fa0a57f5671385198d5e2efa426187f2f1d808ab382824b2ab729f3",
-        "offline/ml/soft_sensor.py": "3e6bbba9d54b26aedb28433b4fb8ef99eb65b7512e5a34e777d93f480536e574",
-        "offline/ml/thresholds.py": "a0833ce08b773b9056e4317158c8dfee053f5e2fba234f07cd2bde8bbd89dc60",
-        "offline/ml/train.py": "66a115fa873f17bc69961a025a85430382f2cb5eb7bc55db3afcf4b20252cae8",
-        "offline/ml/validate.py": "87aa7b58ec30cee65eb86bbf8193c89127c24c9214aaeaf0a252b0e939b5759c",
-        "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
-        "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
-        "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
-        "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
+        "offline/simulator/physics.py": "bc7974d37292cfc9c2867d24b6e07581efed9481c3659d18ba10aa16e36ebe18"
       }
     },
     {
@@ -157,62 +116,21 @@
       ],
       "source_sha256": {
         "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
-        "offline/build_artifact.py": "69d85a2fad20dd219a304e207665534b385b123a7f906e1a8869d10cb67669ec",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
+        "offline/build_artifact.py": "e03cc57187d1ce33294a518e7348e9698318b7b5669d717832ed8b479578d0bf",
+        "offline/config_schema.py": "c8d8a4aa203711dce7b2eee41766c66ccb968d151e3598d4520849532864e9c8",
         "offline/ml/defect_model.py": "6df9124f793fbfcbcc862cb305ca01d25f7e299e217a5da4d9ba01498372899f",
-        "offline/ml/featurize.py": "eaff0c775fa0a57f5671385198d5e2efa426187f2f1d808ab382824b2ab729f3",
-        "offline/ml/scenarios.py": "cdea85969f360aaf0ac73ebaf3c1c56c0746a6ea1ea29f566ea3bba910d2461e",
+        "offline/ml/featurize.py": "48dca4137e361a405d40e852aa597c39ec6c9e8278303fef6169a6f46e789431",
+        "offline/ml/scenarios.py": "b8e3bd993dd72f9201689ef29a0e2214b546dc7752fec5546671a61906b8d708",
         "offline/ml/thresholds.py": "a0833ce08b773b9056e4317158c8dfee053f5e2fba234f07cd2bde8bbd89dc60",
-        "offline/ml/train.py": "66a115fa873f17bc69961a025a85430382f2cb5eb7bc55db3afcf4b20252cae8",
+        "offline/ml/train.py": "a01f47d04b4d18a860bb02773f187b77d30e17ea90450f76344493ba5cd43432",
         "offline/ml/validate.py": "87aa7b58ec30cee65eb86bbf8193c89127c24c9214aaeaf0a252b0e939b5759c",
         "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
+        "offline/simulator/causal_engine.py": "e7563145175ec0b20830d767fff57a2cc0de6863c7b8b1329426cdb36e779708",
+        "offline/simulator/generate.py": "761791ac70d90aec9d406ede8ae256e7ece45d9e679634979fb47e0d35e2be19",
         "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
         "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
         "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
-      }
-    },
-    {
-      "name": "artifacts/stream_plant_b.jsonl",
-      "present": true,
-      "required": true,
-      "schema_version": 1,
-      "producer": "offline/build_artifact.py",
-      "command": "python -m offline.build_artifact --config configs/plant_b.yaml",
-      "seed_source": "configs/plant_b.yaml :: simulation.seed",
-      "note": "",
-      "artifact_sha256": "383b0b023685e6e26b8232228280ec80e7b6cbe19a848b0558f173d88e4e4aa9",
-      "size_bytes": 28066322,
-      "generated_at": "2026-09-26T07:32:30.942639+00:00",
-      "source_groups": [
-        "config",
-        "simulator",
-        "features",
-        "labels",
-        "model",
-        "artifact_builder"
-      ],
-      "source_sha256": {
-        "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
-        "offline/build_artifact.py": "69d85a2fad20dd219a304e207665534b385b123a7f906e1a8869d10cb67669ec",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
-        "offline/ml/defect_model.py": "6df9124f793fbfcbcc862cb305ca01d25f7e299e217a5da4d9ba01498372899f",
-        "offline/ml/featurize.py": "eaff0c775fa0a57f5671385198d5e2efa426187f2f1d808ab382824b2ab729f3",
-        "offline/ml/scenarios.py": "cdea85969f360aaf0ac73ebaf3c1c56c0746a6ea1ea29f566ea3bba910d2461e",
-        "offline/ml/thresholds.py": "a0833ce08b773b9056e4317158c8dfee053f5e2fba234f07cd2bde8bbd89dc60",
-        "offline/ml/train.py": "66a115fa873f17bc69961a025a85430382f2cb5eb7bc55db3afcf4b20252cae8",
-        "offline/ml/validate.py": "87aa7b58ec30cee65eb86bbf8193c89127c24c9214aaeaf0a252b0e939b5759c",
-        "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
-        "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
-        "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
-        "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
+        "offline/simulator/physics.py": "bc7974d37292cfc9c2867d24b6e07581efed9481c3659d18ba10aa16e36ebe18"
       }
     },
     {
@@ -235,50 +153,16 @@
       ],
       "source_sha256": {
         "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
         "mlops/fallback.py": "f654ce588f32b18207ebd15752a06a00289163f073d26a17166a7ebbab103d3b",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
-        "offline/ml/featurize.py": "eaff0c775fa0a57f5671385198d5e2efa426187f2f1d808ab382824b2ab729f3",
+        "offline/config_schema.py": "c8d8a4aa203711dce7b2eee41766c66ccb968d151e3598d4520849532864e9c8",
+        "offline/ml/featurize.py": "48dca4137e361a405d40e852aa597c39ec6c9e8278303fef6169a6f46e789431",
         "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
+        "offline/simulator/causal_engine.py": "e7563145175ec0b20830d767fff57a2cc0de6863c7b8b1329426cdb36e779708",
+        "offline/simulator/generate.py": "761791ac70d90aec9d406ede8ae256e7ece45d9e679634979fb47e0d35e2be19",
         "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
         "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
         "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
-      }
-    },
-    {
-      "name": "artifacts/fallback_plant_b.npz",
-      "present": true,
-      "required": true,
-      "schema_version": 1,
-      "producer": "mlops/fallback.py",
-      "command": "python -m mlops.fallback --config configs/plant_b.yaml",
-      "seed_source": "configs/plant_b.yaml :: simulation.seed",
-      "note": "",
-      "artifact_sha256": "526a35126881cb5e8db1b9cb82b9e333a3bfdf3dcb40bca8108187fa34ec5fe7",
-      "size_bytes": 2206,
-      "generated_at": "2026-09-26T04:06:28.431762+00:00",
-      "source_groups": [
-        "config",
-        "simulator",
-        "features",
-        "fallback"
-      ],
-      "source_sha256": {
-        "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
-        "mlops/fallback.py": "f654ce588f32b18207ebd15752a06a00289163f073d26a17166a7ebbab103d3b",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
-        "offline/ml/featurize.py": "eaff0c775fa0a57f5671385198d5e2efa426187f2f1d808ab382824b2ab729f3",
-        "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
-        "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
-        "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
-        "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
+        "offline/simulator/physics.py": "bc7974d37292cfc9c2867d24b6e07581efed9481c3659d18ba10aa16e36ebe18"
       }
     },
     {
@@ -292,7 +176,7 @@
       "note": "",
       "artifact_sha256": "e7133170fdc8c5891ce2a926f5777460a3e92df1f94fe1fea775390e3f845bdd",
       "size_bytes": 7831,
-      "generated_at": "2026-09-26T11:11:37.567157+00:00",
+      "generated_at": "2026-09-26T19:03:27.759704+00:00",
       "source_groups": [
         "knowledge"
       ],
@@ -313,7 +197,7 @@
       "note": "",
       "artifact_sha256": "e1fd832e451314005b3ee64a3affbcade3d4f381379ec0f7c6f999d801415610",
       "size_bytes": 11415,
-      "generated_at": "2026-09-26T11:11:37.568129+00:00",
+      "generated_at": "2026-09-26T19:03:27.759704+00:00",
       "source_groups": [
         "knowledge"
       ],
@@ -342,22 +226,21 @@
       ],
       "source_sha256": {
         "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
         "offline/benchmarks/__init__.py": "8c5d74d3e2c632b9d21677d1c6b0e07566776febfbced9184b73d3c06d663a66",
         "offline/benchmarks/agent_eval.py": "22f2c7db6502c4eaa96f91187f71dd305175358fdbeed31c8a0e395830a10024",
         "offline/benchmarks/bottleneck_detectors.py": "6f1b2157c9ac71497dca753c0c912e69d5b81d17640b5cad72f72a9633b725fb",
-        "offline/benchmarks/bottleneck_ground_truth.py": "6a6ac808aa322fe2a4f948e420c7ff1ef96f9b5b306e8de9d6aa8cb0c956178c",
-        "offline/benchmarks/run_bottleneck_benchmark.py": "50e91abf1bedf06bfc486bc60efef7f3c99b599a29404f297d737c0b5eb3070e",
+        "offline/benchmarks/bottleneck_ground_truth.py": "3f0849e332fe9271252e316ea72da888788c4272b32d0f4a0f21657b5d9b97db",
+        "offline/benchmarks/run_bottleneck_benchmark.py": "9d03b237fb377d7b9823ed5db4a27180de7756fb3be071940296d5c3af1a9663",
         "offline/benchmarks/score_diversity.py": "9fa2971d23c628528aab7596bd9c6ebe23e264d06a711db7ef65af02c2af1cdd",
-        "offline/benchmarks/simrun.py": "42d774157b52f1710b0cf6dd4aadc254b71c572fd795ed3cf08155c0ee828aec",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
+        "offline/benchmarks/simrun.py": "ef861c57429fd7e472c1f7d56c32b5ee6c6eead6d8d2efebf11467150a2b9b04",
+        "offline/config_schema.py": "c8d8a4aa203711dce7b2eee41766c66ccb968d151e3598d4520849532864e9c8",
         "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
+        "offline/simulator/causal_engine.py": "e7563145175ec0b20830d767fff57a2cc0de6863c7b8b1329426cdb36e779708",
+        "offline/simulator/generate.py": "761791ac70d90aec9d406ede8ae256e7ece45d9e679634979fb47e0d35e2be19",
         "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
         "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
         "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
+        "offline/simulator/physics.py": "bc7974d37292cfc9c2867d24b6e07581efed9481c3659d18ba10aa16e36ebe18"
       }
     },
     {
@@ -379,22 +262,21 @@
       ],
       "source_sha256": {
         "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
         "offline/benchmarks/__init__.py": "8c5d74d3e2c632b9d21677d1c6b0e07566776febfbced9184b73d3c06d663a66",
         "offline/benchmarks/agent_eval.py": "22f2c7db6502c4eaa96f91187f71dd305175358fdbeed31c8a0e395830a10024",
         "offline/benchmarks/bottleneck_detectors.py": "6f1b2157c9ac71497dca753c0c912e69d5b81d17640b5cad72f72a9633b725fb",
-        "offline/benchmarks/bottleneck_ground_truth.py": "6a6ac808aa322fe2a4f948e420c7ff1ef96f9b5b306e8de9d6aa8cb0c956178c",
-        "offline/benchmarks/run_bottleneck_benchmark.py": "50e91abf1bedf06bfc486bc60efef7f3c99b599a29404f297d737c0b5eb3070e",
+        "offline/benchmarks/bottleneck_ground_truth.py": "3f0849e332fe9271252e316ea72da888788c4272b32d0f4a0f21657b5d9b97db",
+        "offline/benchmarks/run_bottleneck_benchmark.py": "9d03b237fb377d7b9823ed5db4a27180de7756fb3be071940296d5c3af1a9663",
         "offline/benchmarks/score_diversity.py": "9fa2971d23c628528aab7596bd9c6ebe23e264d06a711db7ef65af02c2af1cdd",
-        "offline/benchmarks/simrun.py": "42d774157b52f1710b0cf6dd4aadc254b71c572fd795ed3cf08155c0ee828aec",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
+        "offline/benchmarks/simrun.py": "ef861c57429fd7e472c1f7d56c32b5ee6c6eead6d8d2efebf11467150a2b9b04",
+        "offline/config_schema.py": "c8d8a4aa203711dce7b2eee41766c66ccb968d151e3598d4520849532864e9c8",
         "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
+        "offline/simulator/causal_engine.py": "e7563145175ec0b20830d767fff57a2cc0de6863c7b8b1329426cdb36e779708",
+        "offline/simulator/generate.py": "761791ac70d90aec9d406ede8ae256e7ece45d9e679634979fb47e0d35e2be19",
         "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
         "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
         "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
+        "offline/simulator/physics.py": "bc7974d37292cfc9c2867d24b6e07581efed9481c3659d18ba10aa16e36ebe18"
       }
     },
     {
@@ -416,22 +298,21 @@
       ],
       "source_sha256": {
         "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
         "offline/benchmarks/__init__.py": "8c5d74d3e2c632b9d21677d1c6b0e07566776febfbced9184b73d3c06d663a66",
         "offline/benchmarks/agent_eval.py": "22f2c7db6502c4eaa96f91187f71dd305175358fdbeed31c8a0e395830a10024",
         "offline/benchmarks/bottleneck_detectors.py": "6f1b2157c9ac71497dca753c0c912e69d5b81d17640b5cad72f72a9633b725fb",
-        "offline/benchmarks/bottleneck_ground_truth.py": "6a6ac808aa322fe2a4f948e420c7ff1ef96f9b5b306e8de9d6aa8cb0c956178c",
-        "offline/benchmarks/run_bottleneck_benchmark.py": "50e91abf1bedf06bfc486bc60efef7f3c99b599a29404f297d737c0b5eb3070e",
+        "offline/benchmarks/bottleneck_ground_truth.py": "3f0849e332fe9271252e316ea72da888788c4272b32d0f4a0f21657b5d9b97db",
+        "offline/benchmarks/run_bottleneck_benchmark.py": "9d03b237fb377d7b9823ed5db4a27180de7756fb3be071940296d5c3af1a9663",
         "offline/benchmarks/score_diversity.py": "9fa2971d23c628528aab7596bd9c6ebe23e264d06a711db7ef65af02c2af1cdd",
-        "offline/benchmarks/simrun.py": "42d774157b52f1710b0cf6dd4aadc254b71c572fd795ed3cf08155c0ee828aec",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
+        "offline/benchmarks/simrun.py": "ef861c57429fd7e472c1f7d56c32b5ee6c6eead6d8d2efebf11467150a2b9b04",
+        "offline/config_schema.py": "c8d8a4aa203711dce7b2eee41766c66ccb968d151e3598d4520849532864e9c8",
         "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
+        "offline/simulator/causal_engine.py": "e7563145175ec0b20830d767fff57a2cc0de6863c7b8b1329426cdb36e779708",
+        "offline/simulator/generate.py": "761791ac70d90aec9d406ede8ae256e7ece45d9e679634979fb47e0d35e2be19",
         "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
         "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
         "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
+        "offline/simulator/physics.py": "bc7974d37292cfc9c2867d24b6e07581efed9481c3659d18ba10aa16e36ebe18"
       }
     },
     {
@@ -454,16 +335,15 @@
       ],
       "source_sha256": {
         "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
+        "offline/config_schema.py": "c8d8a4aa203711dce7b2eee41766c66ccb968d151e3598d4520849532864e9c8",
         "offline/ml/soft_sensor.py": "3e6bbba9d54b26aedb28433b4fb8ef99eb65b7512e5a34e777d93f480536e574",
         "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
+        "offline/simulator/causal_engine.py": "e7563145175ec0b20830d767fff57a2cc0de6863c7b8b1329426cdb36e779708",
+        "offline/simulator/generate.py": "761791ac70d90aec9d406ede8ae256e7ece45d9e679634979fb47e0d35e2be19",
         "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
         "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
         "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
+        "offline/simulator/physics.py": "bc7974d37292cfc9c2867d24b6e07581efed9481c3659d18ba10aa16e36ebe18"
       }
     },
     {
@@ -486,16 +366,15 @@
       ],
       "source_sha256": {
         "configs/plant_a.yaml": "ba736d1e746a9aa4eb656570a98b62de9fb0da4938a88ca004f86d0b4181b03d",
-        "configs/plant_b.yaml": "47a2d77b6a31ad48129611a9197950438f89f132ad0b3504fa4c3d036f792096",
-        "offline/config_schema.py": "af8c8ca08e2beb3a679126591f8a6986503cdba64ff43e245d018cab4b348ba1",
+        "offline/config_schema.py": "c8d8a4aa203711dce7b2eee41766c66ccb968d151e3598d4520849532864e9c8",
         "offline/ml/soft_sensor.py": "3e6bbba9d54b26aedb28433b4fb8ef99eb65b7512e5a34e777d93f480536e574",
         "offline/simulator/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "offline/simulator/causal_engine.py": "8b5a38dcbcfa14fe24355d8dc79684bb6781b933980ea675ef767431be51bf49",
-        "offline/simulator/generate.py": "cbb66c3d01e62344661113a273cd12cee1c6f62c5864d8424268627a19b46baa",
+        "offline/simulator/causal_engine.py": "e7563145175ec0b20830d767fff57a2cc0de6863c7b8b1329426cdb36e779708",
+        "offline/simulator/generate.py": "761791ac70d90aec9d406ede8ae256e7ece45d9e679634979fb47e0d35e2be19",
         "offline/simulator/inspection.py": "774d3b01cc5b1b87976c61eae070ab0e5e8392336dc04db90da2479e0fff5f98",
         "offline/simulator/line_model.py": "94482c5511093516d27dc39cfda91c947994d96132c55ef564e035826ffd015e",
         "offline/simulator/operators.py": "a02e6baf3801d6aff716b5329b6f4e4e330dce7ede2ee8c8b5886b941cc12032",
-        "offline/simulator/physics.py": "344b134ca803d3bfaa6b8fc13e973717cfafedc344edd1330394d0b2073b280d"
+        "offline/simulator/physics.py": "bc7974d37292cfc9c2867d24b6e07581efed9481c3659d18ba10aa16e36ebe18"
       }
     },
     {
@@ -507,9 +386,9 @@
       "command": "python tools/metrics_summary.py --write",
       "seed_source": "n/a -- derived from other artifacts",
       "note": "Derived. Its own freshness is checked by tools/metrics_summary.py --check.",
-      "artifact_sha256": "993b2bcaaafeb350593f35c1c7eeb1ee40d74219f86b5cd90de48280607bb15e",
-      "size_bytes": 7616,
-      "generated_at": "2026-09-26T05:07:34.515122+00:00",
+      "artifact_sha256": "f250b4db60426a1e5c3555d6a12bf3e1ef060a93bef3c5d57c4c0d3baf6bb441",
+      "size_bytes": 6345,
+      "generated_at": "2026-09-27T16:55:28.445105+00:00",
       "source_groups": [],
       "source_sha256": {}
     }

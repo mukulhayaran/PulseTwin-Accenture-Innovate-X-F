@@ -12,6 +12,7 @@ import { useState } from "react";
 import { type Role, login } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { Button, IconArrowRight } from "@/components/ui";
+import { BorderBeam } from "@/components/magicui/border-beam";
 
 const inputClass = cn(
   "h-12 w-full border border-line-strong bg-canvas px-4",
@@ -57,7 +58,10 @@ export default function SignInGate({
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-surface-2 px-4">
-      <div className="w-full max-w-sm border border-line bg-canvas p-8">
+      {/* The one highlighted panel in the app (ADR-075): a slow BMW-blue beam on the
+          card you sign in on. Off under reduced motion. */}
+      <div className="relative w-full max-w-sm border border-line bg-canvas p-8">
+        <BorderBeam />
         <Link href="/" className="flex items-center gap-2.5">
           <span aria-hidden className="flex items-end gap-[3px]">
             <span className="block h-3 w-[3px] bg-primary" />

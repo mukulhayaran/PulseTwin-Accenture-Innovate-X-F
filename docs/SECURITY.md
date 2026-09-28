@@ -103,7 +103,7 @@ signed-in role on the wrong view gets `AccessRestricted`, not a redirect.
 |---|---|
 | **none — open** | `/api/health`, `/api/config/plants`, `/api/config/stations`, `/api/stream`, `/api/predict/defect`, `/api/units`, `/api/units/{id}`, `/api/trace/containment/{id}`, `/api/bottleneck/current`, `/api/bottleneck/history`, `/api/stations/stats`, `/api/metrics`, `/api/whatif/stations`, `/api/triage/availability` |
 | `supervisor` (any valid role) | `/api/alerts/escalation-policy`, `/api/system/sensor-dropouts`, `/api/alerts/triage`, `/api/system/data-quality`, `/api/trace/evidence-graph/{id}`; and, via `get_role` rather than `require_role`, `POST /api/feedback` and `POST /api/alerts/{id}/acknowledge` — these accept any role but *record which one acted*. **Signed-in only (ADR-066):** `POST /api/triage/runs` and `GET /api/triage/runs/{id}` for the `incident` and `handover` intents alone — no free-text question, no thread, no raw tool evidence |
-| `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag`, `/api/shift/summary`, `POST /api/triage/runs`, `GET /api/triage/runs`, `GET /api/triage/runs/{id}`, `GET /api/triage/threads`, `GET /api/triage/threads/{id}`, `GET /api/watch/firings`, `GET /api/proposals`, `POST /api/proposals/{id}/approve`, `POST /api/proposals/{id}/reject` (ADR-051) |
+| `manager` | `POST /api/whatif`, `/api/system/health`, `/api/system/ingestion-lag`, `/api/shift/summary`, `POST /api/triage/runs`, `GET /api/triage/runs`, `GET /api/triage/runs/{id}`, `GET /api/triage/threads`, `GET /api/triage/threads/{id}`, `POST /api/recommendations/{id}/approve` / `reject` (ADR-069; the ADR-051 proposal endpoints were retired, ADR-073) |
 | `leadership` | `/api/economics/roi`, `/api/economics/instrumentation-plan`, `/api/model/health`, `/api/model/registry`, `/api/audit/log`, `/api/audit/actions` |
 
 `system` outranks every row above but gates no endpoint of its own: the retrain, promote
@@ -160,7 +160,7 @@ JSON payload, IP address. The eight covered actions — verify with
 | `containment_decision_recorded` | `POST /api/trace/containment/decisions` — records the model suggestion and human decision, but excludes the free-text validation note from the general audit payload |
 | `whatif_simulation_run` | `POST /api/whatif` |
 | `alert_acknowledged` | `POST /api/alerts/{id}/acknowledge` |
-| `proposal_approved` / `proposal_rejected` | `POST /api/proposals/{id}/approve` / `reject` (ADR-051) |
+| `recommendation_approved` / `recommendation_rejected` | `POST /api/recommendations/{id}/approve` / `reject` (ADR-069; replaces the retired ADR-051 `proposal_*` events, ADR-073) |
 | `triage_run_started` | `POST /api/triage/runs` — payload records `plant_id`, the capped `acting_role`, the mode, the `intent`, and the `thread_id`/`turn_index` so a whole conversation is reconstructable from the audit trail |
 
 ### The GenAI tier's security posture (ADR-037)
@@ -224,11 +224,12 @@ Four boundaries, each with a test:
 | Path injection | path parameters are URL-quoted with `safe=""`, so a unit id cannot add a segment and walk out of the allowlist | `tests/test_prompt_injection.py` |
 | Grounding | a claim must resolve to a number in the recorded transcript; injected prose can manufacture a sentence, never a verified figure | `tests/test_prompt_injection.py` |
 
-**Proposing is not doing (ADR-051).** A watch-triggered agent may return
-`proposed_actions` from a closed catalogue of six, each citing the claims that justify it;
-the verifier serves an action only if every cited claim verified. Deciding one is a
-separate, human-called endpoint — `POST /api/proposals/{id}/approve|reject`, manager and
-above, audited, 409 on a second decision — and it is deliberately **not** in the tool
+**Proposing is not doing (ADR-051, ADR-069).** An agent may return `proposed_actions`
+from a closed catalogue of six, each citing the claims that justify it; the verifier
+serves an action only if every cited claim verified. Deciding a recommendation is a
+separate, human-called endpoint — `POST /api/recommendations/{id}/approve|reject` (the
+Incident Commander's Decision Queue; the ADR-051 proposal endpoints were retired, ADR-073),
+manager and above, audited, re-checked by the governor — and it is deliberately **not** in the tool
 registry, so no instruction to an agent can reach it. An approved action changes only the
 running *simulation* (`serve/live_simulation.py::MITIGATIONS`); nothing writes toward MQTT
 or any OT interface, so the one-way OT→IT boundary is unchanged.

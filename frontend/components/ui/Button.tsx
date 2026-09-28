@@ -34,7 +34,7 @@ const VARIANTS: Record<Variant, string> = {
     "border-transparent bg-transparent text-ink-dim hover:bg-surface-2 hover:text-ink active:bg-surface-3",
   outline:
     "border-line-strong bg-transparent text-ink hover:border-ink active:bg-surface-2",
-  // For use over a dark hero band -- transparent with a white hairline.
+  // For use over the accent band -- transparent with an ink hairline (ADR-074).
   "on-dark":
     "border-on-dark bg-transparent text-on-dark hover:bg-on-dark/10 active:bg-on-dark/15",
   // The inline uppercase text link. No background, no border, no height.

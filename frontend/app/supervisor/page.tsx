@@ -17,12 +17,17 @@ import SensorDropoutAlert from "@/components/supervisor/SensorDropoutAlert";
 import EscalationChain from "@/components/supervisor/EscalationChain";
 import { useAuditToast } from "@/components/shared/AuditToast";
 import {
-  AppShell, Badge, Button, DataTable, Panel, SegmentedControl, Select, Skeleton, Stat, Tooltip,
+  AppShell, Badge, Button, DataTable, EmptyState, Panel, SegmentedControl, Select, Skeleton, Stat, Tooltip,
   type Column,
 } from "@/components/ui";
 import CopilotDock from "@/components/copilot/CopilotDock";
 import FindingView from "@/components/copilot/FindingView";
 import AgentPanel from "@/components/copilot/AgentPanel";
+import IncidentsPanel, { type IncidentFocus } from "@/components/incidents/IncidentsPanel";
+import VehicleTimeline from "@/components/vehicles/VehicleTimeline";
+import LineStatusStrip from "@/components/incidents/LineStatusStrip";
+import FloorControls from "@/components/incidents/FloorControls";
+import IncidentLog from "@/components/incidents/IncidentLog";
 
 // Station state -> surface treatment. Tint + border rather than a flat fill, so a
 // 42-station line reads as a map instead of a block of colour.
@@ -84,6 +89,9 @@ export default function SupervisorPage() {
   const [affectedLot, setAffectedLot] = useState("");
   const [incidentStartS, setIncidentStartS] = useState(0);
   const [activeRun, setActiveRun] = useState<SimulationRun | null>(null);
+  const liveRunId = activeRun?.run_id ?? null;
+  // ADR-069: after a demo preset starts, the incidents panel opens THAT run's incident.
+  const [incidentFocus, setIncidentFocus] = useState<IncidentFocus | null>(null);
   const [runMetrics, setRunMetrics] = useState<SimulationMetrics | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [speed, setSpeed] = useState(10);
@@ -367,8 +375,8 @@ export default function SupervisorPage() {
     }
     let es: EventSource | null = null;
     let cancelled = false;
-    const urlPromise = mode === "live_synthetic" && activeRun
-      ? liveSimulationStreamUrl(activeRun.run_id, liveSeq.current)
+    const urlPromise = mode === "live_synthetic" && liveRunId
+      ? liveSimulationStreamUrl(liveRunId, liveSeq.current)
       : streamUrl(plant, speed, resumeTs.current);
     urlPromise.then((url) => {
       if (cancelled) return;
@@ -427,7 +435,11 @@ export default function SupervisorPage() {
     // retryNonce has no effect on what the stream does -- it exists so OfflineBanner's
     // [Retry Now] button (and its auto-retry ticker) can force this effect to re-run and
     // open a fresh EventSource without duplicating the connection logic above.
-  }, [plant, speed, push, retryNonce, running, mode, activeRun]);
+    // The run's ID, not the run object: the 1 s status poll replaces `activeRun` every
+    // second, and depending on the object closed and reopened this EventSource every
+    // second -- 60 stream requests a minute, which with the page's other polls pushed a
+    // supervisor tab past the API's 300/min limit into 429s (LOOP UI run, 2026-09-28).
+  }, [plant, speed, push, retryNonce, running, mode, liveRunId]);
 
   // Switching plant must not resume the NEW plant at the OLD plant's timestamp.
   useEffect(() => { resumeTs.current = null; }, [plant]);
@@ -950,6 +962,7 @@ export default function SupervisorPage() {
             : "Reproducible recorded events"}
         </span>
       </div>
+      <LineStatusStrip plant={plant} />
       {runError && (
         <div role="alert" className="mb-4 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger-fg">
           {runError}
@@ -974,7 +987,7 @@ export default function SupervisorPage() {
           >
             {/* min-height is reserved on BOTH branches: without it the skeleton-to-data
                 swap resized the panel and shifted the whole page (measured load CLS
-                0.145). Sized for a 30-station line; plant B's 42 still grow past it,
+                0.145). Sized for a 30-station line; a longer line still grows past it,
                 which is a smaller shift than collapsing from nothing. */}
             {stations.length === 0 ? (
               <div className="min-h-[27rem] space-y-5">
@@ -1362,15 +1375,7 @@ export default function SupervisorPage() {
           bodyClassName="p-3"
         >
           {alerts.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 py-12 text-center">
-              <span className="breathe flex size-8 items-center justify-center rounded-full border border-ok/30 bg-ok/10 text-ok-fg">
-                ✓
-              </span>
-              <p className="text-xs text-ink-dim">No alerts yet</p>
-              <p className="max-w-48 text-2xs leading-relaxed text-ink-faint">
-                The line is inside the alarm budget.
-              </p>
-            </div>
+            <EmptyState tone="ok" title="No alerts yet" description="The line is inside the alarm budget." className="py-12" />
           ) : (
             <div className="scroll-fade-b max-h-[calc(100vh-150px)] space-y-2 overflow-y-auto pr-1">
               <AnimatePresence initial={false}>
@@ -1429,6 +1434,40 @@ export default function SupervisorPage() {
             </div>
           )}
         </Panel>
+      </div>
+
+      {/* ADR-071: every vehicle's story -- where it is, what was measured, what the AI saw. */}
+      <div className="mt-4">
+        <VehicleTimeline plant={plant} />
+      </div>
+
+      {/* ADR-069: the Incident Commander on the floor -- what is being investigated, what
+          it found, and any manual check it needs. Decisions are made in the manager's
+          Decision Queue. */}
+      <div className="mt-4">
+        <IncidentsPanel
+          plant={plant}
+          focus={incidentFocus}
+          onFocused={() => setIncidentFocus(null)}
+          headerActions={
+            <FloorControls
+              plant={plant}
+              stations={stations}
+              onAction={show}
+              onError={setRunError}
+              onRunStarted={async (runId, focus) => {
+                resetView();
+                setMode("live_synthetic");
+                setIncidentFocus(focus);
+                try { setActiveRun(await getSimulation(runId)); } catch { /* the poll picks it up */ }
+                setRunning(true);
+              }}
+            />
+          }
+        />
+      </div>
+      <div className="mt-4">
+        <IncidentLog plant={plant} />
       </div>
       {ToastElement}
       <CopilotDock plant={plant}

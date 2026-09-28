@@ -1,6 +1,6 @@
 """The watch on an EDGE-produced (MQTT) run (ADR-059): events projected by ingestion/ are
 followed by sequence number, silence ticks only on the edge's heartbeat, and a firing
-opens a proposal exactly as on a backend run. Events are written the way
+opens an Incident Commander incident exactly as on a backend run (ADR-069). Events are written the way
 ingestion/live_projection.py writes them."""
 
 from __future__ import annotations
@@ -26,7 +26,8 @@ T0 = datetime(2026, 1, 5, 8, 0)
 
 @pytest.fixture()
 def mqtt_run(monkeypatch):
-    monkeypatch.setenv("PULSETWIN_JOBS_ENABLED", "0")  # record proposals, spawn nothing
+    monkeypatch.setenv("PULSETWIN_JOBS_ENABLED", "0")  # record incidents, spawn nothing
+    monkeypatch.setenv("PULSETWIN_COMMANDER_TICK_S", "0")  # no background investigation
     with TestClient(app):  # the lifespan builds app.state
         manager, ops = app.state.live_simulation, app.state.ops
         run_id = f"MQTT-test-{secrets.token_hex(4)}"
@@ -53,7 +54,7 @@ def mqtt_run(monkeypatch):
 
         manager.follow_mqtt_once()  # first sight: starts at the current end, fires nothing
         yield manager, ops, run_id, emit
-        db.execute(ops, "DELETE FROM action_proposals WHERE sim_run_id=?", (run_id,))
+        db.execute(ops, "DELETE FROM incidents WHERE sim_run_id=?", (run_id,))
         db.execute(ops, "DELETE FROM simulation_events WHERE run_id=?", (run_id,))
         db.execute(ops, "DELETE FROM simulation_runs WHERE run_id=?", (run_id,))
 
@@ -62,12 +63,15 @@ def _at(minutes: float) -> str:
     return (T0 + timedelta(minutes=minutes)).isoformat()
 
 
-def _proposals(ops, run_id):
-    return db.query_all(ops, "SELECT detector, station_id, trigger_evidence FROM "
-                             "action_proposals WHERE sim_run_id=?", (run_id,))
+def _incidents(ops, run_id):
+    rows = db.query_all(ops, "SELECT source_ref, station_id, symptom FROM incidents "
+                             "WHERE sim_run_id=? AND source='watch'", (run_id,))
+    return [{"detector": r["source_ref"], "station_id": r["station_id"],
+             "evidence": json.loads(r["symptom"]) if isinstance(r["symptom"], str)
+             else r["symptom"]} for r in rows]
 
 
-def test_a_down_station_on_the_edge_feed_opens_a_breakdown_proposal(mqtt_run):
+def test_a_down_station_on_the_edge_feed_opens_a_breakdown_incident(mqtt_run):
     manager, ops, run_id, emit = mqtt_run
     for sid in range(1, 8):
         emit({"event_type": "station_update", "ts": _at(0), "station_id": sid,
@@ -79,8 +83,8 @@ def test_a_down_station_on_the_edge_feed_opens_a_breakdown_proposal(mqtt_run):
     # The line is quiet; only the edge's heartbeat moves the clock.
     emit({"event_type": "heartbeat", "ts": _at(20)})
     assert manager.follow_mqtt_once() == 1
-    [row] = _proposals(ops, run_id)
-    evidence = json.loads(row["trigger_evidence"])
+    [row] = _incidents(ops, run_id)
+    evidence = row["evidence"]
     assert (row["detector"], row["station_id"]) == ("starvation", 4)
     assert evidence["signal"] == "silence" and evidence["down_stations"] == [4]
 
@@ -93,7 +97,7 @@ def test_no_heartbeat_means_no_silence(mqtt_run):
               "unit_id": f"U{sid}", "station_state": "working", "cycle_time_s": 60.0})
     assert manager.follow_mqtt_once() == 0
     assert manager.follow_mqtt_once() == 0
-    assert _proposals(ops, run_id) == []
+    assert _incidents(ops, run_id) == []
 
 
 def test_merged_telemetry_reaches_the_tool_wear_detector(mqtt_run):
@@ -109,5 +113,5 @@ def test_merged_telemetry_reaches_the_tool_wear_detector(mqtt_run):
               "unit_id": f"W{i}", "variant": "suv", "station_state": "working",
               "cycle_time_s": 60.0, "torque_nm": base * 0.85})
     assert manager.follow_mqtt_once() == 1
-    [row] = _proposals(ops, run_id)
+    [row] = _incidents(ops, run_id)
     assert (row["detector"], row["station_id"]) == ("tool_wear", sid)

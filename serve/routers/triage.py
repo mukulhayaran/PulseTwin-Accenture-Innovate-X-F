@@ -45,9 +45,6 @@ INTENT_LABELS = {
     "incident": "Investigate this incident",
     "handover": "Generate shift handover",
     "whatif": "Run a what-if",
-    "starvation": "Prevent line starvation",
-    "paint_env": "Mitigate paint environment risk",
-    "tool_wear": "Assess tool degradation",
 }
 INTENT_KEYS = frozenset(INTENT_LABELS)
 
@@ -55,11 +52,11 @@ INTENT_KEYS = frozenset(INTENT_LABELS)
 # runs a supervisor may read back. Both are fixed jobs (no operator prose reaches the
 # model, no follow-up turn) whose output has passed the verifier, so the run acts as
 # `manager` -- capped at the supervisor's own role it cannot read the shift summary,
-# proposals or experiments, and a handover built without them is two claims long.
+# outcomes or experiments, and a handover built without them is two claims long.
 # Measured 2026-09-27. The auto-investigation already acts as `system` for the same view.
 SUPERVISOR_INTENTS = frozenset({"incident", "handover"})
 SUPERVISOR_RUN_ROLE = "manager"
-INTENT_PATTERN = "^(ask|incident|handover|whatif|starvation|paint_env|tool_wear)$"
+INTENT_PATTERN = "^(ask|incident|handover|whatif)$"
 
 # The phase trail the UI renders. Mirrors genai/tools.py::PHASE_ORDER, for the same
 # import-wall reason. The first entry is written by THIS module before the worker exists.
@@ -202,7 +199,7 @@ def start_triage_run(
         if thread is None:
             raise ValueError(f"unknown thread '{thread_id}'")
         # A thread is plant-scoped because the values it carries forward are plant facts.
-        # Letting a turn switch plants would carry plant_a's throughput into a plant_b
+        # Letting a turn switch plants would carry one plant's throughput into another's
         # answer as a verifier exemption.
         if thread["plant_id"] != plant_id:
             raise ValueError(f"thread '{thread_id}' belongs to plant '{thread['plant_id']}'")

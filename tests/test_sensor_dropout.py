@@ -86,9 +86,9 @@ def test_dropout_scoped_to_its_own_plant(client):
         """INSERT INTO sensor_health
                (station_id, sensor_type, status, last_reading_at, dropout_duration_s, plant_id)
            VALUES (?,?,?,?,?,?)""",
-        (5, "torque_nm", "dropout", "2026-01-01T00:00:00", 60.0, "plant_b"),
+        (5, "torque_nm", "dropout", "2026-01-01T00:00:00", 60.0, "plant_x"),
     )
     body_a = client.get("/api/system/health?plant_id=plant_a").json()
-    body_b = client.get("/api/system/health?plant_id=plant_b").json()
+    body_b = client.get("/api/system/health?plant_id=plant_x").json()
     assert not any(d["station_id"] == 5 for d in body_a["ingestion"]["dropout_details"])
     assert any(d["station_id"] == 5 for d in body_b["ingestion"]["dropout_details"])

@@ -1,4 +1,4 @@
-"""The Monte Carlo counterfactual (ADR-055) on the real physical twin, at toy size."""
+"""Firing hypotheses and twin mitigations (ADR-055) on the real physical twin."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ if not (ARTIFACTS / "pulsetwin.db").exists():
     pytest.skip("artifacts not built", allow_module_level=True)
 
 from offline import counterfactual as CF  # noqa: E402
-from serve.live_simulation import MITIGATIONS  # noqa: E402
 
 
 def _threshold() -> float:
@@ -37,41 +36,6 @@ def test_the_hypothesis_comes_from_the_firing_evidence(detector, evidence, scena
     assert got == scenario and 0 < severity <= 1 and basis
     if scenario == "buffer_congestion":
         assert severity == CF.MAX_CONGESTION  # a zero-capacity buffer deadlocks the DES
-
-
-BREAKDOWN = ("plant_a", "starvation", 12, {"stalled_share": 0.6, "stalled_state": "down"})
-
-
-@pytest.fixture(scope="module")
-def breakdown():
-    return CF.forecast(*BREAKDOWN, _threshold(), replicas=2, horizon_s=1200.0,
-                       onset_s=600.0, workers=2)
-
-
-def test_parallel_arms_are_bit_identical_to_serial(breakdown):
-    serial = CF.forecast(*BREAKDOWN, _threshold(), replicas=2, horizon_s=1200.0,
-                         onset_s=600.0, workers=1)
-    assert serial["arms"] == breakdown["arms"] and serial["ranking"] == breakdown["ranking"]
-
-
-def test_every_catalogue_action_for_the_condition_gets_an_arm(breakdown):
-    got = {a["action_type"] for a in breakdown["arms"]}
-    want = {a for a, m in MITIGATIONS.items() if "station_breakdown" in m["scenarios"]}
-    assert got == want | {CF.DO_NOTHING}
-    assert breakdown["provenance"] == "inferred"
-    assert set(breakdown["ranking"]) == want
-
-
-def test_every_number_carries_its_interval(breakdown):
-    for arm in breakdown["arms"]:
-        for metric in ("throughput_uph", "expected_defects", "alerts"):
-            v = arm[metric]
-            assert v["ci_low"] <= v["mean"] <= v["ci_high"]
-        if arm["action_type"] != CF.DO_NOTHING:
-            assert "distinguishable" in arm["vs_do_nothing"]
-        t = arm["trajectory"]
-        assert len(t["t_min"]) == len(t["p10"]) == len(t["p50"]) == len(t["p90"])
-        assert all(lo <= mid <= hi for lo, mid, hi in zip(t["p10"], t["p50"], t["p90"]))
 
 
 def test_a_mitigation_never_knocks_a_repaired_station_down_again():

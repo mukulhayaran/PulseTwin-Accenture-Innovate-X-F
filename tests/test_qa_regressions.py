@@ -192,15 +192,19 @@ def test_postgres_boolean_columns_are_not_compared_to_integer_literals():
     previously made Alert Triage and Shift Summary return HTTP 500 in the Docker stack
     even though their SQLite API tests passed.
     """
-    source = (ROOT / "serve" / "routers" / "intelligence.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    # Every serve/ module, every BOOLEAN column in the Postgres schema. It used to scan one
+    # file for three columns, and ADR-067's commander shipped `alert_triggered=1` and
+    # `CAST(actual_defect AS REAL)` -- every investigation failed on the Docker stack.
+    bool_cols = ("alert_fired|above_cost_threshold|actual_defect|true_defect|correct|"
+                 "shift_event|checklist_pass|is_inspection|alert_triggered|orchestrated")
     executable_strings = "\n".join(
         node.value
-        for node in ast.walk(tree)
+        for path in sorted((ROOT / "serve").rglob("*.py"))
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     )
     invalid = re.findall(
-        r"\b(?:alert_fired|above_cost_threshold|actual_defect)\s*=\s*[01]\b",
+        rf"\b(?:{bool_cols})\s*=\s*[01]\b|CAST\(\s*(?:{bool_cols})\s+AS",
         executable_strings,
         flags=re.IGNORECASE,
     )
@@ -210,7 +214,7 @@ def test_postgres_boolean_columns_are_not_compared_to_integer_literals():
     )
 
 
-@pytest.mark.parametrize("plant", ["plant_a", "plant_b"])
+@pytest.mark.parametrize("plant", ["plant_a"])
 def test_instrumentation_plan_leads_with_the_fundable_retrofits(client, plant):
     """`ORDER BY payback_months` sorts NULLs FIRST on SQLite, so this table -- a capital
     recommendation rendered top-to-bottom in the Leadership view -- led with every DEFER

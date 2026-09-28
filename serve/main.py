@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import socket
 import time
 import urllib.error
@@ -29,7 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse, StreamingResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from serve import db
+from serve import db, demo_session
 from serve.shift import shift_window
 from serve import metrics as prom_metrics  # "metrics" collides with this module's own
 # GET /api/metrics endpoint function further below -- both would bind the name `metrics`
@@ -53,9 +54,10 @@ from serve.middleware import jwt_auth
 from serve.middleware.rate_limit import RateLimitMiddleware
 from serve.privacy import contains_operator_identity
 from serve.routers import (
-    alerts_mgmt, audit, auth_demo, experiments, intelligence, knowledge, learning,
-    model_health, proposals, simulations, system, triage,
+    alerts_mgmt, audit, auth_demo, experiments, incidents, intelligence, knowledge, learning,
+    model_health, operations, simulations, system, triage,
 )
+from serve import commander
 from serve.knowledge_index import KnowledgeIndex
 from serve.model_loader import load_scorer
 from serve.live_simulation import LiveSimulationManager
@@ -241,8 +243,22 @@ async def lifespan(app: FastAPI):
         STATE["con"], STATE["ops"], ARTIFACTS, STATE["plants"]
     )
     app.state.live_simulation.start_mqtt_watch()
+    app.state.live_simulation.scorers = STATE["scorers"]
+    app.state.artifacts = ARTIFACTS
+    if demo_session.enabled():
+        # ~15 s of stream replay; warm it now so the first reset/preset does not pay it.
+        for pid in STATE["plants"]:
+            threading.Thread(target=demo_session.warm, args=(str(ARTIFACTS), pid),
+                             daemon=True, name=f"demo-quiet-{pid}").start()
+    # ADR-067: every running investigation -- including ones a previous process left
+    # mid-way -- is advanced one step per tick. 0 disables it (tests drive it directly).
+    tick_s = float(os.environ.get("PULSETWIN_COMMANDER_TICK_S", "1.0"))
+    advancer = (commander.start_advancer(commander.Deps.from_state(app.state, ARTIFACTS), tick_s)
+                if tick_s > 0 else None)
 
     yield
+    if advancer is not None:
+        advancer.set()
     app.state.live_simulation.shutdown()
     seen = set()
     for key in ("con", "ops"):
@@ -290,9 +306,10 @@ app.include_router(triage.router)
 app.include_router(intelligence.router)
 app.include_router(simulations.router)
 app.include_router(knowledge.router)
-app.include_router(proposals.router)
 app.include_router(experiments.router)
 app.include_router(learning.router)
+app.include_router(incidents.router)
+app.include_router(operations.router)
 
 
 def _plant(plant_id: str) -> dict:
@@ -1488,8 +1505,7 @@ def instrumentation_plan(plant_id: str = "plant_a",
         # payback_months` sorted NULLs to the TOP on SQLite, so this table -- a capital
         # recommendation, rendered top-to-bottom in the Leadership view -- led with every
         # DEFER candidate (annual value $0, payback undefined) and buried the only PROCEED
-        # row at the bottom: plant A showed its single funded retrofit 4th of 4, plant B
-        # showed its two 7th and 8th of 8. The endpoint's own docstring calls this a
+        # row at the bottom: plant A showed its single funded retrofit 4th of 4. The endpoint's own docstring calls this a
         # "ranking by measured marginal model value per dollar"; it was inverted at the top.
         #
         # It was also backend-dependent: SQLite sorts NULLs first, Postgres sorts them

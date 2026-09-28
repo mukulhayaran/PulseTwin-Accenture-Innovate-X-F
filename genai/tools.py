@@ -45,13 +45,6 @@ STILL ABSENT, and still a governance decision rather than an oversight:
          Mutating. Absent from the registry entirely. The registry contains no tool that
          can change a model, a config, or the line.
 
-ADMITTED by ADR-051:
-
-  /api/watch/firings   what the proactive watch saw (detector, station, measured window
-                       evidence). Read-only. The PROPOSAL endpoints beside it
-                       (/api/proposals/*/approve|reject) are NOT tools: an agent may
-                       propose an action in its finding, and only a human can decide it.
-
 `tests/test_genai_tools.py` asserts the registry's path set EQUALS the approved list, so
 widening the egress surface requires editing a test -- the same trick
 `tests/test_serve_imports.py` plays on the import wall. That friction is the feature.
@@ -182,7 +175,7 @@ def build_registry(plant_ids: list[str]) -> dict[str, ToolSpec]:
     """Build the registry, with plant ids taken from the running API.
 
     NOT hardcoded: CLAUDE.md §1 bans station and plant literals outside configs/*.yaml,
-    and plant_b must work without editing this file.
+    and a new plant config must work without editing this file.
     """
     plant = {"type": "string", "enum": list(plant_ids)}
 
@@ -406,25 +399,6 @@ def build_registry(plant_ids: list[str]) -> dict[str, ToolSpec]:
             "GET", "/api/economics/instrumentation-plan", "leadership",
             _obj(["plant_id"], {"plant_id": plant}), _q(plant_id="plant_id"),
         ),
-        # ------------------------------------------------------------------- ADR-051
-        ToolSpec(
-            "get_watch_firings",
-            "The live watch's recent firings: which detector (starvation, paint_env, "
-            "tool_wear) fired at which station, when, and the MEASURED window evidence "
-            "that crossed the threshold -- e.g. stalled_share, "
-            "humidity_excess_over_ambient_pct, deviation_pct. Start here for a "
-            "watch-triggered investigation and cite its evidence values. Empty when "
-            "nothing has fired.",
-            "Checking production state",
-            "GET", "/api/watch/firings", "manager",
-            _obj(["plant_id"], {
-                "plant_id": plant,
-                "detector": {"type": "string",
-                             "enum": ["starvation", "paint_env", "tool_wear"]},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
-            }),
-            _q(plant_id="plant_id", detector="detector", limit="limit"),
-        ),
         # ------------------------------------------------------------------- ADR-046
         ToolSpec(
             "search_engineering_knowledge",
@@ -552,18 +526,6 @@ def build_registry(plant_ids: list[str]) -> dict[str, ToolSpec]:
             }),
             _q(plant_id="plant_id", incident_type="incident_type", station_id="station_id",
                intervention_type="intervention_type", limit="limit"),
-        ),
-        ToolSpec(
-            "get_proposals",
-            "The action-proposal inbox, READ-ONLY: each watch firing's proposed actions, "
-            "the human decision (approved / rejected / awaiting), whether it was applied "
-            "to the simulated twin, its lifecycle stage and its outcome. You cannot "
-            "approve or reject anything -- only a person can.",
-            "Recalling past outcomes",
-            "GET", "/api/proposals", "manager",
-            _obj(["plant_id"], {"plant_id": plant,
-                                "limit": {"type": "integer", "minimum": 1, "maximum": 20}}),
-            _q(plant_id="plant_id", limit="limit"),
         ),
     ]
     return {s.name: s for s in specs}

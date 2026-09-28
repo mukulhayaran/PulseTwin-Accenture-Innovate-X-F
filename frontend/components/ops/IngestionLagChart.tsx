@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ReferenceLine, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { axisProps, gridProps, theme } from "@/lib/theme";
 import { cn } from "@/lib/cn";
-import { Badge, ChartFrame, ChartTooltip, Panel } from "@/components/ui";
+import { Badge, ChartFrame, ChartTooltip, EmptyState, Panel } from "@/components/ui";
 
 // GET /api/system/ingestion-lag exposes only the current lag reading -- there is no
 // server-side history. This keeps a small client-side rolling buffer (capped at 60 points)
@@ -28,15 +28,10 @@ export default function IngestionLagChart({ lag }: Props) {
   if (!lag || !lag.samples) {
     return (
       <Panel title="Ingestion lag">
-        <div className="flex flex-col items-center gap-2 py-10 text-center">
-          <span className="flex size-8 items-center justify-center rounded-full border border-line bg-surface-2 text-ink-faint">
-            ⌁
-          </span>
-          <p className="max-w-56 text-2xs leading-relaxed text-ink-faint">
-            No live ingestion telemetry yet — <span className="text-numeric">ingestion/</span> has
-            not run against this plant.
-          </p>
-        </div>
+        <EmptyState
+          title="No ingestion telemetry yet"
+          description={<>Start the <span className="text-numeric">ingestion/</span> service against this plant to see its lag here.</>}
+        />
       </Panel>
     );
   }

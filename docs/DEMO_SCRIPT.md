@@ -122,23 +122,9 @@ Open `/api/metrics?plant_id=plant_a` or the Leadership panel.
 > 70% defect rate, which means one near-deterministic condition, not a multi-causal
 > intermittent problem. Hitting 0.85 here would have meant deleting the confounders."
 
-## 4:15 — Plant B
-
-Switch the plant selector to **Plant B**.
-
-> "42 stations instead of 30. Eight legacy stations instead of four. Trucks instead of
-> EVs. Different zones, different takt, different buffers.
->
-> Same pipeline, same feature construction, zero code changes — one YAML file.
->
-> And the bottleneck shift generalises: Plant A moves S12 → S19 on EV days, Plant B moves
-> S16 → S31 on truck days. Neither is hardcoded; both fall out of the cycle-time physics.
-> Plant B's Mode B even has a *different* root cause — its paint prep is blocked by the
-> cure oven, not by the truck bottleneck twelve stations downstream."
-
 ## 4:45 — Close
 
-> "Detection accuracy on the constraint is 86% on Plant A, 90% on Plant B — scored against
+> "Detection accuracy on the constraint is 86% — scored against
 > a deliberately *different* definition than the detector uses, because scoring a
 > 15-minute argmax against a 15-minute argmax gives you 100% and means nothing.
 >

@@ -99,6 +99,18 @@ export const IconChevronDown = (p: IconProps) => (
   </Icon>
 );
 
+export const IconClose = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M6 6l12 12M18 6 6 18" />
+  </Icon>
+);
+
+export const IconCheck = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="m5 12.5 4.5 4.5L19 7.5" />
+  </Icon>
+);
+
 export const IconAlert = (p: IconProps) => (
   <Icon {...p}>
     <path d="M12 3.8 21 19.5H3z" />

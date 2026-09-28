@@ -218,8 +218,8 @@ def build(config_path: str) -> dict:
     peak_days = set(cfg.ambient.humidity_high_days)
     day_of = lambda s: ((SIM_START + pd.to_timedelta(s, unit="s")).weekday())
     # ...and that contains at least one alert. Chosen on model OUTPUT, never on labels, so
-    # no metric moves (they are all computed on the full test split). Without it, plant B's
-    # validation-chosen threshold (ADR-062) left its demo day with nothing to show.
+    # no metric moves (they are all computed on the full test split). Without it, a
+    # validation-chosen threshold (ADR-062) can leave the demo day with nothing to show.
     # Preference: peak day with an alert > latest day with an alert > peak day > last day.
     alert_pts = scores.loc[scores["alert_fired"] == 1, "prediction_ts"].to_numpy()
     starts = [end_ts - (win_h + back * 24) * 3600.0 for back in range(0, 14)]

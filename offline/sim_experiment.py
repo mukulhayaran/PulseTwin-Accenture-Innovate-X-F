@@ -484,6 +484,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--experiment-id", required=True)
     p.add_argument("--budget-threshold", type=float, default=None)
     args = p.parse_args(argv)
+    # Up to max_concurrent x MAX_WORKERS replica processes on the API's own CPUs: at normal
+    # priority they starved the server and one request took >30 s mid-demo (LOOP run
+    # 2026-09-28). Lower priority, inherited by the pool: the API always runs first and a
+    # twin test only takes longer. POSIX only; a no-op elsewhere.
+    if hasattr(os, "nice"):
+        os.nice(10)
     con, _ = db.open_ops_only()
     try:
         summary = execute(con, args.experiment_id, args.budget_threshold)

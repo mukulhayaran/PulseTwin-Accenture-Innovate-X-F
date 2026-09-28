@@ -21,8 +21,12 @@ could notice:
                             transfer), which is Mode A's co-trigger
     station_breakdown    the station is forced DOWN through the simulator's own failure
                          path -> downstream starves, upstream blocks, the constraint moves
-    buffer_congestion    the station's output buffer capacity is physically reduced
-                         -> blocking propagates upstream, dwell times rise
+    buffer_congestion    the station's output buffer capacity is physically reduced AND
+                         the next station pulls slower (CONGESTION_SLOWDOWN)
+                         -> the station blocks, blocking propagates upstream, dwell rises.
+                         A smaller buffer alone never blocked anything: with the downstream
+                         station keeping pace the station stayed starved, and every twin
+                         test of a congestion fix read exactly 0.0 (LOOP finding F5).
     sensor_dropout       named sensors stop reporting -> the value is ABSENT, and the
                          soft-sensor/inference path takes over
     rushed_checklist     the manual station's checklist standard is shortened
@@ -37,6 +41,12 @@ could notice:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+# Downstream pull slowdown per unit of congestion severity: the next station's cycle time
+# is scaled by (1 + CONGESTION_SLOWDOWN * severity). A modelled assumption
+# (docs/ASSUMPTIONS.md, "Congestion in the twin"), chosen so a congestion episode
+# reproduces what the live run reports -- the congested station BLOCKED.
+CONGESTION_SLOWDOWN = 1.0
 
 # The scenario vocabulary is shared with serve/live_simulation.py's SCENARIOS so the two
 # modes offer the same menu. `normal` means no incident.
@@ -158,6 +168,11 @@ class IncidentState:
         for incident in self._matching("buffer_congestion", station_id, now):
             capacity = min(capacity, int(round(base_capacity * (1.0 - incident.severity))))
         return max(0, capacity)
+
+    def congestion_severity(self, station_id: int, now: float) -> float:
+        """Severity of the congestion in force at this station's OUTPUT (0 when none)."""
+        return max((i.severity for i in self._matching("buffer_congestion", station_id, now)
+                    if i.station_id is not None), default=0.0)
 
     def forces_breakdown(self, station_id: int, now: float) -> bool:
         return bool(self._matching("station_breakdown", station_id, now))

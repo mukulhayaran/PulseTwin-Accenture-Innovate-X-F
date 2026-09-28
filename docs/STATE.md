@@ -3,6 +3,109 @@
 > **READ THIS FIRST, EVERY SESSION.** Then `docs/SPEC.md` for the build target.
 > Update the ledger and the "next action" line at the end of every phase.
 
+## Engineering loop — 2026-09-28 (ADR-072)
+
+**What changed.**
+- A maker/checker loop now tracks Grand-Finale criteria A–W with evidence (`LOOP.md`,
+  `docs/ENGINEERING_LOOP_STATUS.md`).
+- The loop found and fixed these problems:
+  - every demo opened on a baked S3 incident (fix: quiet-start rotation);
+  - there was no reset (fix: `POST /api/demo/reset`, demo mode only, deletes nothing);
+  - the twin could not show a congestion fix (fix: downstream slowdown, now −21 pts
+    blocking, `improved`);
+  - scenarios switched on instantly (fix: a 20 simulated-minute ramp);
+  - twin workers starved the API (fix: `nice 10`).
+- The UI gained the AI stage track, a manager card that leads with five facts, and a
+  full Explain drawer.
+
+**Verified.** Live status is in `docs/ENGINEERING_LOOP_STATUS.md` and `.loop/`.
+
+## Stakeholder views: Vehicle Timeline + Decision Queue — 2026-09-28 (ADR-071)
+
+**What changed.**
+- /supervisor has a **Vehicle Timeline** with expandable rows, source badges, filters and
+  search, and read-only **Active incidents** cards showing affected vehicles, first
+  detected, AI status and confidence.
+- /manager opens on a **Decision Queue**: only governor-filtered approval requests, with
+  evidence drawer, approve / modify / reject / request further investigation, Decision
+  History and summary KPIs.
+- The decision UI was removed from the incident workspace.
+
+**Verified.** On the Docker stack with Playwright, supervisor preset A → pending decision
+(236 s) → View Evidence → Approve (`CMMS-WO-9266588`) → Decision History → the vehicle
+timeline shows MANAGER / SYSTEM follow-ups. tsc and `next build` are clean.
+
+**Limits.** Vehicle risk shows "—" until a unit is scored at the checkpoint. On scenario A
+the twin test is still inconclusive (ADR-067), so the card's expected impact reads
++0.00 with a 0 … 0 range.
+
+## Incidents explain themselves — 2026-09-28 (ADR-070)
+
+**What changed.**
+- Every incident has a plain-words headline and an "In simple words" section, generated
+  from its own record.
+- The list shows the current run by default, with repeat counts.
+- Incidents close automatically when their run ends.
+- /supervisor has an incident log.
+
+**Verified.** On the Docker stack with Playwright, the preset A explanation text was read
+back through the API and matches the record. 175 tests pass.
+
+## Incidents folded into /supervisor and /manager — 2026-09-28 (ADR-069)
+
+**What changed.**
+- One approval flow. Supervisors see investigations and manual checks; managers decide in
+  **Decisions**.
+- `/incidents` and the Proposals inbox are removed.
+
+**Verified on the Docker/Postgres stack with Playwright.**
+- Preset A from /supervisor shows its incident on the floor (no decision buttons there).
+- Approve and execute on /manager show the outcome.
+- Preset C shows "Manual check requested".
+- Zero console or HTTP errors.
+
+**Tests.** 169 backend tests pass (commander, watch, MQTT watch, proposals, live
+simulation, outcomes, import wall). `tsc` is clean and `next build` succeeds.
+
+**Bugs found by running it.** A render-loop poll (380 calls/min → 429), fixed. Earlier the
+same day, on Postgres: boolean SQL, stale sensor-log reads, and the view-role pin.
+
+## Plant B removed — 2026-09-27 (ADR-068)
+
+Removed from code, config, artifacts (rows deleted per table; DB 42 MB → 18 MB), CI, UI,
+tests and current-facing docs. Historical records are unchanged.
+`tools/verify_artifacts.py --write` was re-run, and `artifacts/MANIFEST.json` now lists
+plant A only.
+
+## Incident Commander — 2026-09-27 (ADR-067)
+
+**What it is.** A stateful, governed agentic layer on the existing twin:
+- **Build.** Migration 022; `serve/{commander,incident_evidence,hypotheses,governor,action_gateway,case_memory,ai_operations,demo_scenarios}.py`; `serve/routers/incidents.py`; `genai/commander.py` (the optional LLM planner); `/incidents` workspace; scorecard on /ops and /leadership.
+- **Docs.** `docs/AGENT_ARCHITECTURE.md`, `AUTONOMY_AND_SAFETY.md`, `INCIDENT_LIFECYCLE.md`, `ENTERPRISE_INTEGRATION.md`, `AI_EVALUATION.md`, `GRAND_FINALE_DEMO.md`, `AGENTIC_AI_UPGRADE_PLAN.md`.
+
+**Verified live (plant A, SQLite dev stack, deterministic planner):**
+- The five scenarios, results in `docs/AI_EVALUATION.md`.
+- Scenario A driven through the browser end to end: launch, detection, the investigation,
+  approve, execute (idempotent replay), twin outcome (partially successful, 1.00 → 0.56),
+  incident resolved, and case memory retrieved on the next run. Zero HTTP errors.
+- A hydration mismatch in the new page was found in the browser and fixed.
+
+**Tests.**
+- `tests/test_incident_commander.py`: 28 passed in ~55 s.
+- The touched existing suites (import wall, proposals, watch, MQTT watch, live
+  simulation, experiments, outcomes, configs, audit, auth): 241 passed.
+- `npx tsc --noEmit`: clean.
+
+**Eleven defects found by running it.** All are fixed and listed in
+`docs/AI_EVALUATION.md`.
+
+**Next action:**
+- Build a held-out randomised fault set to measure calibration.
+- Compare the LLM planner with the deterministic planner once the provider quota allows.
+- Verify migration 022 on the Postgres stack (`make migrate`). It is written for Postgres
+  and exercised on SQLite through the derived dialect, but not yet applied to a live
+  Postgres.
+
 ## End-to-end validation + agent timings — 2026-09-27
 
 Running Postgres stack, plant A, manager session, all 8 intents through `/api/triage/runs`.

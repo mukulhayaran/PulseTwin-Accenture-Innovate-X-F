@@ -16,7 +16,7 @@ import pytest
 ARTIFACTS = Path(__file__).resolve().parents[1] / "artifacts"
 
 
-@pytest.mark.parametrize("plant", ["plant_a", "plant_b"])
+@pytest.mark.parametrize("plant", ["plant_a"])
 def test_risk_appears_only_from_the_prediction_time(plant):
     path = ARTIFACTS / f"stream_{plant}.jsonl"
     if not path.exists():

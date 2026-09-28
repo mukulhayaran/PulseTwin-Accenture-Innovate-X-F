@@ -21,7 +21,7 @@ if not (ROOT / "artifacts" / "pulsetwin.db").exists():
 
 from serve.main import app  # noqa: E402
 
-PLANTS = ["plant_a", "plant_b"]
+PLANTS = ["plant_a"]
 
 
 @pytest.fixture(scope="module")

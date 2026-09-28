@@ -10,11 +10,9 @@ PY = python
 
 generate:
 	$(PY) -m offline.simulator.generate --config configs/plant_a.yaml
-	$(PY) -m offline.simulator.generate --config configs/plant_b.yaml
 
 train:
 	$(PY) -m offline.ml.train --config configs/plant_a.yaml
-	$(PY) -m offline.ml.train --config configs/plant_b.yaml
 
 # ADR-061: tune, calibrate, threshold and test the XGBoost challenger; promotes it ONLY if
 # every gate passes on the untouched test set. Writes artifacts/xgb_challenger_<plant>.json,
@@ -28,7 +26,6 @@ xgb-challenger-smoke:
 build-artifact:
 	rm -f artifacts/pulsetwin.db
 	$(PY) -m offline.build_artifact --config configs/plant_a.yaml
-	$(PY) -m offline.build_artifact --config configs/plant_b.yaml
 
 # ADR-046: the engineering-knowledge TF-IDF index (search_engineering_knowledge). Not
 # plant-scoped, so it is built once, not per plant.

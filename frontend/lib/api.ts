@@ -703,8 +703,6 @@ export interface ProposedAction {
   params: Record<string, number | string>;
   rationale: string;
   claim_ids: string[];
-  /** ADR-055: this action's arm of the twin counterfactual; only on /api/proposals. */
-  simulated_impact?: ForecastArm | null;
 }
 
 export interface TriageKnowledgeCitation {
@@ -727,9 +725,7 @@ export interface TriageVerdict {
 // understanding at all, which is why every button still works with no provider
 // credential. Mirrors genai/intents.py.
 export type TriageIntent =
-  | "ask" | "incident" | "handover" | "whatif"
-  // ADR-051: the three watch-triggered agents -- each PROPOSES an action a human decides.
-  | "starvation" | "paint_env" | "tool_wear";
+  | "ask" | "incident" | "handover" | "whatif";
 
 export interface TriageToolEvent {
   call_id: string;
@@ -852,23 +848,11 @@ export const startTriage = (args: StartTriageArgs) =>
 export const getTriageRun = (runId: string) =>
   get<TriageRun>(`/api/triage/runs/${runId}`);
 
-export const listTriageRuns = (plant: string, limit = 5) =>
-  get<{ runs: TriageRun[]; count: number }>(
-    `/api/triage/runs?plant_id=${plant}&limit=${limit}`
-  );
-
 /** `intent` filters on a thread's opening turn -- the copilot lists "ask" threads only. */
 export const listTriageThreads = (plant: string, limit = 20, intent?: TriageIntent) =>
   get<{ threads: TriageThread[]; count: number }>(
     `/api/triage/threads?plant_id=${plant}&limit=${limit}${intent ? `&intent=${intent}` : ""}`
   );
-
-// ------------------------------------------------------- ADR-051: proposals
-export type WatchDetector = "starvation" | "paint_env" | "tool_wear";
-
-export type ProposalStatus =
-  | "INVESTIGATING" | "SIMULATING" | "PROPOSED" | "NO_ACTION" | "AGENT_FAILED" | "NO_AGENT"
-  | "APPROVED" | "APPLIED" | "EFFECTIVE" | "REJECTED";
 
 // ------------------------------------------------------- ADR-064: experiments + outcomes
 /** An interval over simulated seeds. Always provenance "inferred": never measured. */
@@ -995,79 +979,6 @@ export const getActionOutcomes = (plant: string, limit = 20) =>
                     with_projection: number; mean_abs_projection_error: number | null } }>(
     `/api/learning/outcomes?plant_id=${plant}&limit=${limit}`);
 
-export interface ActionProposal {
-  proposal_id: string;
-  sim_run_id: string;
-  plant_id: string;
-  detector: WatchDetector;
-  station_id: number;
-  fired_at: string;
-  created_at: string;
-  status: ProposalStatus;
-  trigger_evidence: Record<string, number | string | number[] | null>;
-  triage_run_id: string | null;
-  agent_status: TriageRun["status"] | null;
-  agent_mode: "agent" | "deterministic" | null;
-  finding: TriageFinding | null;
-  proposed_actions: ProposedAction[];
-  counterfactual: Counterfactual | null;
-  do_nothing_forecast: ForecastArm | null;
-  selected_action: ProposedAction | null;
-  decided_by_role: string | null;
-  decided_at: string | null;
-  decision_note: string | null;
-  applied_at: string | null;
-  effective_at: string | null;
-  // ADR-064
-  experiments?: { experiment_id: string; status: SimulationExperiment["status"];
-                  created_at: string; verdict: SimulationExperiment["verdict"];
-                  best_label: string | null }[];
-  outcome?: ActionOutcome | null;
-  lifecycle?: Lifecycle;
-}
-
-// ADR-055: the paired Monte Carlo fork of the physical twin behind every proposal.
-export interface Interval { mean: number; ci_low: number; ci_high: number }
-
-export interface ForecastArm {
-  action_type: ActionType | "do_nothing";
-  modelled: boolean;
-  reason?: string;
-  /** What the fork actually changed, e.g. "ends the station breakdown; +4 slots on S3's output buffer". */
-  simulated_as?: string | null;
-  throughput_uph?: Interval;
-  expected_defects?: Interval;
-  alerts?: Interval;
-  vs_do_nothing?: { throughput_uph: Interval; expected_defects: Interval; distinguishable: boolean };
-}
-
-export interface Counterfactual {
-  status: "queued" | "running" | "done" | "failed";
-  error?: string;
-  provenance?: "inferred";
-  hypothesis?: { scenario: string; severity: number; basis: string };
-  method?: { replicas: number; horizon_s: number; paired: boolean; interval: string };
-  ranking?: string[];
-  arms?: ForecastArm[];
-  elapsed_s?: number;
-}
-
-export const listProposals = (plant: string, limit = 20) =>
-  get<{ proposals: ActionProposal[]; count: number }>(
-    `/api/proposals?plant_id=${plant}&limit=${limit}`
-  );
-
-export const approveProposal = (proposalId: string, actionId: string, note?: string) =>
-  post<{ proposal_id: string; status: ProposalStatus; applied_to_twin: boolean }>(
-    `/api/proposals/${encodeURIComponent(proposalId)}/approve`,
-    { action_id: actionId, note: note ?? null }
-  );
-
-export const rejectProposal = (proposalId: string, note: string) =>
-  post<{ proposal_id: string; status: ProposalStatus }>(
-    `/api/proposals/${encodeURIComponent(proposalId)}/reject`, { note }
-  );
-
 export const getTriageThread = (threadId: string) =>
   get<TriageThreadDetail>(`/api/triage/threads/${threadId}`);
 
@@ -1191,3 +1102,217 @@ export const getDataQuality = (plant: string) =>
   get<DataQuality>(`/api/system/data-quality?plant_id=${plant}`);
 
 
+
+// ------------------------------------------------------------------ incident commander
+//
+// ADR-067. Every number these return was computed by the backend (probes, the twin, the
+// governor); the UI renders them and never derives a confidence, a cost or a verdict.
+
+async function postDetail<T>(path: string, body: unknown): Promise<T> {
+  const base = await apiBase();
+  const r = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let detail = `${r.status}`;
+    try { detail = (await r.json())?.detail ?? detail; } catch { /* keep the status */ }
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return r.json() as Promise<T>;
+}
+
+export interface Hypothesis {
+  id: string; key: string; title: string; description: string;
+  possible_causes: string[]; expected_observations: string[];
+  supporting_evidence: string[]; contradicting_evidence: string[];
+  confidence: number; prior: number; status: string; station_id: number | null;
+  contributions: { evidence_id: string; delta: number }[];
+}
+export interface Evidence {
+  evidence_id: string; specialist: string; probe: string; station_id: number | null;
+  provenance: "measured" | "inferred" | "simulated" | "manual" | "missing";
+  summary: string; observed_at: string | null; created_at: string;
+  data: Record<string, any>; effects: Record<string, number>; quality: number;
+}
+export interface InvestigationStep {
+  step_id: string; seq: number; kind: string; agent: string | null; summary: string;
+  plan: Record<string, any> | null; plan_source: string | null; plan_valid: number | null;
+  rejection_reason: string | null; created_at: string;
+}
+export interface Investigation {
+  investigation_id: string; status: string; phase: string; planner_mode: string;
+  created_at: string; finished_at: string | null; steps: InvestigationStep[];
+  agent_runs: any[];
+  state: {
+    objective: string; hypotheses: Hypothesis[]; evidence: Evidence[];
+    assessment: Record<string, any> | null; decision: string | null;
+    experiments: any[]; sensor_maturity: Record<string, string>;
+    model_health: Record<string, any> | null; current_step: Record<string, any> | null;
+    budgets: Record<string, any>; fallbacks: any[]; trace: Record<string, any> | null;
+    window?: Record<string, any>; stop_reason: string | null;
+  };
+}
+export interface RecOption {
+  option_id: string; action_type: string; title: string; station_id: number | null;
+  parameters: Record<string, any>; adapter: string; risk: string; reversible: boolean;
+  autonomy_level_required: string; expected_impact: Record<string, any> | null;
+  cost: Record<string, any> | null; maintenance_plan: Record<string, any> | null;
+  governor: { decision: string; required_level: string | null; granted_level: string;
+              reasons: string[] };
+  rank: number;
+}
+export interface Recommendation {
+  recommendation_id: string; status: string; assessment: string;
+  root_cause_key: string | null; root_cause_title: string | null; confidence: number;
+  options: RecOption[]; rationale: { points: any[]; therefore: string; scoring: string } | null;
+  decision_note: string | null; decided_by_role: string | null;
+}
+export interface IncidentSummary {
+  incident_id: string; plant_id: string; kind: string; station_id: number | null;
+  title: string; severity: string; source: string; status: string; created_at: string;
+  investigation: Record<string, any> | null; recommendation: Record<string, any> | null;
+  sim_run_id: string; trigger_ts: string;
+  /** One plain-language line, built server-side from the incident's own record (ADR-070). */
+  headline: string;
+  /** Vehicles the incident touches (current-run list only; ADR-071). */
+  affected?: { count: number | null; basis: string } | null;
+  /** Earlier incidents with the same kind, station and trigger. */
+  seen_before: number;
+}
+export interface IncidentDetail {
+  incident: IncidentSummary & { notes: string | null; trigger_ts: string; sim_run_id: string };
+  investigation: Investigation | null; recommendation: Recommendation | null;
+  actions: any[]; case: Record<string, any> | null;
+  headline: string;
+  /** "In simple words": titled sections generated from this incident's stored data. */
+  explanation: { title: string; text: string }[];
+  /** Detect → … → Verify, derived server-side from the persisted record (LOOP G). */
+  stages?: IncidentStage[];
+}
+export interface IncidentStage {
+  key: string; label: string; status: "done" | "active" | "pending" | "skipped"; detail: string;
+}
+
+export const listIncidents = (plant: string, scope: "current" | "all" = "current", limit = 30) =>
+  get<{ incidents: IncidentSummary[]; run: { run_id: string; status: string } | null }>(
+    `/api/incidents?plant_id=${plant}&scope=${scope}&limit=${limit}`);
+export const getIncident = (id: string) => get<IncidentDetail>(`/api/incidents/${id}`);
+export const getSimilarCases = (id: string) => get<{ cases: any[] }>(`/api/incidents/${id}/similar-cases`);
+export const getDemoScenarios = () => get<{ scenarios: any[]; demo_mode?: boolean }>("/api/demo/scenarios");
+/** A fresh demo session (demo backends only): closes the old one, deletes nothing. */
+export const resetDemo = (plant: string) =>
+  postDetail<{ run_id: string; stopped_run: string | null; closed_incidents: string[] }>(
+    "/api/demo/reset", { plant_id: plant });
+export const startDemoScenario = (key: string, plant: string, speed = 60) =>
+  postDetail<any>(`/api/demo/scenarios/${key}/start`, { plant_id: plant, speed });
+export const openIncident = (body: Record<string, unknown>) => postDetail<any>("/api/incidents", body);
+export const approveRecommendation = (id: string, optionId: string, note?: string) =>
+  postDetail<any>(`/api/recommendations/${id}/approve`, { option_id: optionId, note });
+export const rejectRecommendation = (id: string, reason: string) =>
+  postDetail<any>(`/api/recommendations/${id}/reject`, { reason });
+export const modifyRecommendation = (
+  id: string, optionId: string, windowId: string | null, note: string,
+  extra: { priority?: "low" | "normal" | "high"; description?: string } = {},
+) =>
+  postDetail<any>(`/api/recommendations/${id}/modify`,
+                  { option_id: optionId, schedule_window_id: windowId, note, ...extra });
+export type InvestigationFocus = "more_evidence" | "supplier_lot";
+export const requestMoreInvestigation = (id: string, note: string, focus: InvestigationFocus[] = []) =>
+  postDetail<any>(`/api/recommendations/${id}/request-investigation`, { note, focus });
+export const executeAction = (id: string) => postDetail<any>(`/api/actions/${id}/execute`, {});
+export const getAiMetrics = (plant?: string) =>
+  get<Record<string, any>>(`/api/ai/operations/metrics${plant ? `?plant_id=${plant}` : ""}`);
+export const getBusinessImpact = (plant: string) =>
+  get<{ lines: any[]; unit_value_usd: any }>(`/api/business/impact?plant_id=${plant}`);
+
+// ------------------------------------------------------ stakeholder views (ADR-071)
+//
+// Supervisor: the Vehicle Timeline (server-side filter / search / pagination; one vehicle's
+// story fetched lazily on expand). Manager: the Decision Queue -- ONLY recommendations that
+// need the caller's authority, decided server-side by the autonomy governor.
+
+export type VehicleStatus = "normal" | "at_risk" | "inspection_required" | "incident" | "completed";
+export type EventSource = "SENSOR" | "INFERRED" | "MANUAL" | "AI" | "SYSTEM" | "VERIFIED" | "MANAGER" | "SIMULATION";
+
+export interface Vehicle {
+  unit_id: string; variant: string | null; lot_id: string | null;
+  current_station: number | null; current_station_name: string | null;
+  status: VehicleStatus; risk: number | null; risk_threshold: number;
+  /** 0..1: how far along the line the vehicle is. */
+  progress: number | null;
+  entered_at: string | null; updated_at: string; eta: string | null; eta_basis: string;
+  inspected: boolean; defect_found: boolean | null; incidents: string[];
+}
+export interface InvestigationCard {
+  incident_id: string; title: string; kind: string; station_id: number | null; status: string;
+  trigger_ts: string; investigation_status: string | null; now: string | null;
+  observation: string;
+  evidence: { text: string; provenance: string; supports: boolean }[];
+  hypotheses: { title: string; confidence: number; status: string }[];
+  confidence: number | null; assessment: string | null;
+  recommendation: { status: string; root_cause: string | null; action: string | null } | null;
+  follow_ups: TimelineEvent[];
+}
+export interface TimelineEvent {
+  ts: string; clock: "simulation" | "wall"; source: EventSource;
+  category: "journey" | "process" | "manual" | "quality" | "ai" | "incident";
+  text: string; station_id: number | null; flagged?: boolean; station_state?: string;
+  investigation?: InvestigationCard;
+}
+export interface VehicleTimelineData {
+  vehicle: Vehicle & { quality_status: string };
+  run_id: string; events: TimelineEvent[]; incidents: InvestigationCard[];
+}
+export const listVehicles = (plant: string, o: { status?: string; q?: string; limit?: number; offset?: number } = {}) => {
+  const qs = new URLSearchParams({ plant_id: plant, status: o.status ?? "all",
+                                   limit: String(o.limit ?? 25), offset: String(o.offset ?? 0) });
+  if (o.q) qs.set("q", o.q);
+  return get<{ run: { run_id: string; status: string; simulation_time: string | null } | null; vehicles: Vehicle[]; total: number;
+               counts: Record<VehicleStatus, number> }>(`/api/vehicles?${qs}`);
+};
+export const getVehicleTimeline = (plant: string, unitId: string, runId?: string | null) =>
+  get<VehicleTimelineData>(`/api/vehicles/${encodeURIComponent(unitId)}/timeline?plant_id=${plant}`
+    + (runId ? `&run_id=${encodeURIComponent(runId)}` : ""));
+
+export interface DecisionCardData {
+  recommendation_id: string; incident_id: string; severity: string; title: string;
+  problem: string; conclusion: string | null; confidence: number | null;
+  affected: { count: number | null; basis: string };
+  action: { option_id: string; action_type: string; title: string; adapter: string; station_id: number | null };
+  expected_impact: { mean: number; ci_low: number; ci_high: number; metric: string; basis: string;
+                     experiment_id: string; improves: boolean } | null;
+  risk: string; reversible: boolean; downtime_min: number; downtime_basis: string;
+  cost: { value_usd: number; basis: string; sources: string[] } | null;
+  schedule: string | null; schedule_windows: { window_id: string; name: string; start: string }[];
+  recommended_timing: string | null;
+  approval: { required_level: string; granted_level: string; reason: string; details: string[] };
+}
+export interface DecisionEvidence {
+  points: { text: string; supports: boolean; against: string | null }[];
+  twin_tests: { label: string; tests: string; metric: string; mean: number | null; ci_low: number | null;
+                ci_high: number | null; baseline_uph: number | null; throughput_delta: number | null;
+                effect: string; experiment_id: string }[];
+  leading: { title: string; confidence: number }[];
+  alternatives: { title: string; confidence: number }[];
+  conclusion: string | null; assessment: string | null;
+  observation: string | null;
+  investigated: { specialist: string; what: string }[];
+  explanations: { title: string; confidence: number; status: string }[];
+  recommendation: string | null;
+  approval: { decision: string; reasons: string[] } | null;
+}
+export interface DecisionHistoryItem {
+  recommendation_id: string; incident_id: string; problem: string | null; action: string | null;
+  decision: string; decided_by: string | null; decided_at: string | null; note: string | null;
+  actions: { action_type: string; status: string; reference: string | null }[];
+  outcome: { status: string; reason: string | null; prediction_error: number | null } | null;
+}
+export const getPendingDecisions = (plant: string) =>
+  get<{ decisions: DecisionCardData[]; summary: { pending: number; high_risk: number;
+        approved_today: number; in_progress: number } }>(`/api/decisions/pending?plant_id=${plant}`);
+export const getDecisionHistory = (plant: string) =>
+  get<{ history: DecisionHistoryItem[] }>(`/api/decisions/history?plant_id=${plant}`);
+export const getDecisionEvidence = (recId: string) =>
+  get<DecisionEvidence>(`/api/decisions/${encodeURIComponent(recId)}/evidence`);

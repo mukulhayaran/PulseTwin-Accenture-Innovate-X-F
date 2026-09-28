@@ -296,14 +296,16 @@ def test_a_run_opens_a_thread(client) -> None:
 
 
 def test_a_thread_cannot_change_plants(client) -> None:
+    """With one configured plant the HTTP route 404s any other plant first, so the thread
+    guard itself is exercised on the function every caller goes through."""
     body = client.post("/api/triage/runs",
                        json={"plant_id": "plant_a", "intent": "handover"},
                        headers={"X-PulseTwin-Role": "manager"}).json()
-    r = client.post("/api/triage/runs",
-                    json={"plant_id": "plant_b", "intent": "handover",
-                          "thread_id": body["thread_id"]},
-                    headers={"X-PulseTwin-Role": "manager"})
-    assert r.status_code == 409
+    from serve.routers.triage import start_triage_run
+    with pytest.raises(ValueError, match="belongs to plant"):
+        start_triage_run(app.state.ops, plant_id="plant_x", question="q", intent="handover",
+                         role="manager", acting_role="manager", mode="deterministic",
+                         api_base="http://testserver", thread_id=body["thread_id"])
 
 
 def test_an_unknown_thread_is_404(client) -> None:

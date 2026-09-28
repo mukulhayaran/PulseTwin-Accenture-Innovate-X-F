@@ -82,7 +82,7 @@ export default function LifecycleStrip({ lifecycle }: { lifecycle: Lifecycle }) 
               <span
                 className={cn(
                   "cursor-help border px-1.5 py-0.5 text-2xs",
-                  current ? "border-primary bg-primary font-bold text-on-dark"
+                  current ? "border-primary bg-primary font-bold text-on-primary"
                     : done ? "border-ink/30 bg-surface-2 text-ink"
                     : "border-dashed border-line text-ink-faint",
                 )}

@@ -145,9 +145,9 @@ replication.
 
 ## Multi-plant
 
-Feature names are positional (`s3_torque_nm`). Plant B has 42 stations, different zone
-boundaries and a TRUCK variant — a genuinely different feature space — so one ensemble
-cannot score both. Each plant gets its own `model_<plant>.npz` and the scorer selects on
+Feature names are positional (`s3_torque_nm`). A differently configured plant has different stations, zone
+boundaries and variants — a genuinely different feature space — so one ensemble cannot
+score two plants. Each plant gets its own `model_<plant>.npz` and the scorer selects on
 `plant_id` (ADR-006).
 
 What is shared is everything that matters: the same simulator, the same feature

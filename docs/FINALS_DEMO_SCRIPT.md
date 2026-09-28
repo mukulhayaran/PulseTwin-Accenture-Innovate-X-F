@@ -103,14 +103,13 @@ publisher, ingestion projection, online scoring, backend, and frontend are all r
 
 ## ACT 4 — "It scales" (1.5 min)
 
-1. Switch plant selector to Plant B on any view — full reload, same UI, same code,
-   different station count and variant mix. **Line:** "Zero pipeline code changed for
-   this."
+1. **Line:** "A new plant is a new YAML file — zero pipeline code. The validator in
+   `offline/config_schema.py` is the gate."
 2. Show `render.yaml` and `docs/PRODUCTION_ARCHITECTURE.md` §DEPLOY for 15 seconds:
    "It runs on Postgres or not at all, and the backend has no MQTT client code to reach
    the factory floor with — the import wall forbids it."
-3. Show `docs/SCALING_COST_MODEL.md`'s headline table: "1 plant to 20 plants, and we
-   price it against our WORSE-performing simulated plant, not our better one, on purpose."
+3. Show `docs/SCALING_COST_MODEL.md`'s headline table: "1 plant to 20 plants, priced on the
+   one measured plant — an upper bound until shadow mode measures each new site."
 4. Back on `/ops`, open `AuditLogViewer.tsx`: "Every mutating action — a promoted model,
    an acknowledged alert, a what-if run — timestamped, attributed by role, queryable.
    IATF 16949 asks for exactly this kind of traceability."

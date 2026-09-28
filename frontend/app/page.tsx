@@ -5,10 +5,10 @@
 // BMW's page rhythm rule is that no two consecutive bands share a surface mode, so the
 // order here is fixed and load-bearing:
 //
-//   white nav -> light hero -> DARK principles -> light persona grid -> DARK cta -> grey footer
+//   white nav -> light hero -> TINTED principles -> white persona grid -> TINTED cta -> grey footer
 //
-// The photographic vehicle panel sits within a light hero; the principles section
-// supplies the next dark band, preserving the page's light/dark rhythm.
+// Light theme only (ADR-074): bands alternate white and a cool blue-grey gradient
+// with hairlines, never dark. The illustrated twin car sits within the light hero.
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -25,6 +25,8 @@ import {
   IconArrowRight, IconChart, IconGear, IconTarget, IconUser,
 } from "@/components/ui";
 import { VehicleHero } from "@/components/landing/VehicleHero";
+import { StationTicker } from "@/components/landing/StationTicker";
+import { TextAnimate } from "@/components/magicui/text-animate";
 
 const STATIONS = [
   {
@@ -236,10 +238,13 @@ export default function Landing() {
             </motion.span>
 
             <h1 id="hero-title" className="mt-6 max-w-2xl text-3xl font-bold leading-[1.04] text-ink sm:text-4xl lg:text-[clamp(2.5rem,4vw,3.6rem)]">
-              <motion.span {...heroItem(reduced, 0.08)} className="block">
+              {/* The page's one orchestrated moment (ADR-075): the first line resolves word
+                  by word, then the gradient line follows whole -- split into words, a
+                  background-clip gradient would restart on every word. */}
+              <TextAnimate className="block" delay={0.08} duration={0.35}>
                 The line never fails in one place.
-              </motion.span>
-              <motion.span {...heroItem(reduced, 0.2)} className="text-gradient mt-2 block pb-1">
+              </TextAnimate>
+              <motion.span {...heroItem(reduced, 0.5)} className="text-gradient mt-2 block pb-1">
                 It fails in the space between stations.
               </motion.span>
             </h1>
@@ -294,12 +299,14 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ========================================== principles (dark band) */}
+      <StationTicker />
+
+      {/* ========================================== principles (accent band) */}
       <section id="principles" className="band-dark relative scroll-mt-16 overflow-hidden">
-        {/* Hairline highlight where the light hero hands over to the dark band. */}
+        {/* Hairline highlight where the light hero hands over to the accent band. */}
         <div aria-hidden className="absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgb(138_180_240/0.35),transparent)]" />
         <div aria-hidden className="tex-grid-dark pointer-events-none absolute inset-0 [mask-image:linear-gradient(180deg,#000,transparent_85%)]" />
-        <div aria-hidden className="aurora aurora-b right-[-10%] top-[-30%] h-[420px] w-[620px] bg-[rgb(28_105_212/0.22)]" />
+        <div aria-hidden className="aurora aurora-b right-[-10%] top-[-30%] h-[420px] w-[620px] bg-[rgb(28_105_212/0.10)]" />
         <div aria-hidden className="tex-grain pointer-events-none absolute inset-0" />
         <div className="relative mx-auto w-full max-w-[1280px] px-5 py-section sm:px-8">
           <div className="max-w-2xl">
@@ -319,7 +326,7 @@ export default function Landing() {
               <motion.div
                 key={p.n}
                 {...reveal(reduced, i)}
-                className="spotlight bg-[#171e26]/95 px-7 py-8 transition-colors duration-300 [--spot:rgb(138_180_240/0.14)] hover:bg-[#1c242e]"
+                className="spotlight bg-canvas/90 px-7 py-8 transition-colors duration-300 [--spot:rgb(28_105_212/0.08)] hover:bg-canvas"
               >
                 <motion.div
                   className="m-stripe w-12 origin-left"
@@ -366,11 +373,11 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ================================================ cta (dark band) */}
+      {/* ================================================ cta (accent band) */}
       <section className="band-dark relative overflow-hidden">
         <div aria-hidden className="absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgb(138_180_240/0.35),transparent)]" />
         <div aria-hidden className="tex-grain pointer-events-none absolute inset-0" />
-        <div aria-hidden className="aurora aurora-a left-[calc(50%-360px)] top-[calc(50%-180px)] h-[360px] w-[720px] bg-[rgb(28_105_212/0.2)]" />
+        <div aria-hidden className="aurora aurora-a left-[calc(50%-360px)] top-[calc(50%-180px)] h-[360px] w-[720px] bg-[rgb(28_105_212/0.10)]" />
         <div className="relative mx-auto w-full max-w-[1280px] px-5 py-section text-center sm:px-8">
           <h2 className="mx-auto max-w-2xl text-2xl font-bold leading-[1.15] text-on-dark sm:text-4xl">
             Start on the overview. <span className="text-gradient-dark">It tells you where to look first.</span>

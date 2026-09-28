@@ -121,7 +121,7 @@ constraint on quality here is human attention, not model quality.**
 | **1 — Shadow** | 8 weeks | Predict silently on one line. Zero operator exposure. | Measured precision within 20% of modelled; alarm budget tuned against real response capacity |
 | **2 — Advisory** | 12 weeks | Supervisor UI live on one line. Feedback loop on. | Supervisor-rated precision ≥ 30%; containment trialled on ≥ 20 events |
 | **3 — Integration** | 16 weeks | MES quality holds, auto-containment lists, Manager + Leadership views, Phase 1 sensor retrofit | Hold decisions traceable end to end; retrofit payback confirmed |
-| **4 — Multi-plant** | ongoing | Plant B onboard by config; per-site models; central dashboard | Second site live with zero pipeline code changes |
+| **4 — Multi-plant** | ongoing | Second plant onboard by config; per-site models; central dashboard | Second site live with zero pipeline code changes |
 
 Shadow mode first is not caution for its own sake: it is what lets the system be evaluated
 against real inspection outcomes before anyone is asked to trust it.

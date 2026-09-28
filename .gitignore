@@ -24,13 +24,20 @@ frontend/.next/
 frontend/out/
 frontend/tsconfig.tsbuildinfo
 
-# Markdown is not committed here -- README.md is the only exception.
-# Note: this has no effect on the ~20 .md files already tracked (CLAUDE.md, docs/*.md);
-# .gitignore never applies to files already in the index. Use `git rm --cached` for those.
-*.md
-!README.md
 
 # Real-dataset benchmark subsystem (ADR pending, docs/benchmarking.md): raw downloads and
 # Parquet caches never committed, matching artifacts/'s "commit derived output once, never
 # raw bulk data" convention. tests/fixtures/*.csv (small, curated) are NOT covered by this
 # and stay tracked.
+
+# Engineering loop (LOOP.md): goal.json is the stable contract and is committed; the rest
+# of .loop/ is per-machine runtime state.
+.loop/*
+!.loop/goal.json
+.neon
+
+# Local scratch output (screenshots, PDFs, pytest temp dirs) -- never source.
+tmp/
+
+.vercel
+.env*

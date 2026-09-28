@@ -29,7 +29,7 @@ from genai.api_client import PulseTwinAPI  # noqa: E402
 from genai.api_client import testclient_transport as _tc_transport  # noqa: E402
 from serve.main import app  # noqa: E402
 
-PLANTS = ["plant_a", "plant_b"]
+PLANTS = ["plant_a"]
 
 
 @pytest.fixture(scope="module")
@@ -130,8 +130,7 @@ def test_a_restricted_role_reports_rather_than_invents(ctx) -> None:
 # whole argument for this module is that the demo survives an outage with its guarantees
 # intact, not with a weaker version of them.
 
-PLANS = ["general", "handover", "whatif", "incident",
-         "starvation", "paint_env", "tool_wear"]
+PLANS = ["general", "handover", "whatif", "incident"]
 
 
 def _grid_station(client, plant: str):

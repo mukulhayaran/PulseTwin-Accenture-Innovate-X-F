@@ -2,7 +2,7 @@
 
 // The one renderer for a verified finding.
 //
-// Extracted from TriageConsole so the copilot page, the dock and the ops console are the
+// Extracted from the old ops TriageConsole so the copilot page and the dock are the
 // SAME implementation. Two renderers for one contract is how a redaction marker ends up
 // styled as ordinary text on the surface nobody checked.
 //

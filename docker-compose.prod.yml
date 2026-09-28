@@ -88,6 +88,9 @@ services:
       # ADR-063: roles come only from server-issued demo sessions; a bare role header can
       # no longer claim one. Still NOT production auth.
       PULSETWIN_AUTH_MODE: session
+      # LOOP criterion U: demo reset exists only on a demo backend. Off unless the shell
+      # sets it: PULSETWIN_DEMO_MODE=1 docker compose -f docker-compose.prod.yml up -d
+      PULSETWIN_DEMO_MODE: ${PULSETWIN_DEMO_MODE:-0}
       # Login passwords. REQUIRE_POSTGRES=1 above makes the backend refuse the committed
       # dev passwords, so this LOCAL stack passes them in explicitly; override any of them
       # from the shell or a .env file. The cloud deploy (render.yaml) has no defaults.

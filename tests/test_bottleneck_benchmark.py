@@ -295,7 +295,7 @@ def test_scenarios_are_uniquely_keyed_per_plant():
 
 
 def test_every_plant_has_a_baseline_and_a_controlled_scenario():
-    for plant_id in ("plant_a", "plant_b"):
+    for plant_id in ("plant_a",):
         keys = [s.key for s in scenarios_for(plant_id)]
         assert "baseline" in keys
         assert len(keys) >= 3, f"{plant_id} has only {keys}"

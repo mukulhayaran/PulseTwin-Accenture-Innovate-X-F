@@ -75,7 +75,7 @@
 }
 
 .image {
-  object-fit: cover;
+  overflow: visible;
 }
 
 /* Fade into the page canvas, keeping the vehicle clear in the centre. */
@@ -130,7 +130,7 @@
   transform: translate(-50%, -50%);
   border-radius: 50%;
   background: transparent;
-  color: var(--color-on-dark);
+  color: var(--color-on-primary);
   cursor: pointer;
 }
 
@@ -160,7 +160,7 @@
 }
 
 .hotspot[data-active="true"]::before {
-  border-color: var(--color-on-dark);
+  border-color: var(--color-on-primary);
   background: rgb(28 105 212 / 25%);
 }
 
@@ -423,8 +423,29 @@
   100% { transform: translateY(100%); opacity: 0; }
 }
 
+/* The twin's scan boundary pulses; the mesh behind it breathes with it. */
+.scanLine {
+  animation: scan-pulse 2.8s ease-in-out infinite;
+}
+
+.twin {
+  animation: twin-breathe 2.8s ease-in-out infinite;
+}
+
+@keyframes scan-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@keyframes twin-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.78; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .image,
+  .scanLine,
+  .twin,
   .hotspot::after,
   .scan {
     animation: none;

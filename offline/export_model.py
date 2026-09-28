@@ -8,7 +8,7 @@ here: isotonic would have needed two step-function arrays).
 Correctness is proven, not asserted: `tests/test_scorer_parity.py` scores the entire test
 set with both sklearn and the numpy scorer and requires max |difference| < 1e-6.
 
-Per-plant output (ADR-006): model_plant_a.npz, model_plant_b.npz.
+Per-plant output (ADR-006): model_<plant>.npz.
 """
 
 from __future__ import annotations

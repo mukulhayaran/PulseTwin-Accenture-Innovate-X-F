@@ -28,7 +28,7 @@ from genai.api_client import PulseTwinAPI  # noqa: E402
 from genai.api_client import testclient_transport as _tc_transport  # noqa: E402
 from serve.main import app  # noqa: E402
 
-PLANTS = ["plant_a", "plant_b"]
+PLANTS = ["plant_a"]
 
 # The egress allowlist, written out longhand. If a tool is added, this fails first.
 #
@@ -58,18 +58,14 @@ APPROVED = {
     ("GET", "/api/economics/instrumentation-plan"),
     # --- ADR-046
     ("GET", "/api/knowledge/search"),
-    # --- ADR-051: read-only -- the watch's evidence, never its decisions
-    ("GET", "/api/watch/firings"),
     # --- ADR-064: simulation experiments on an ISOLATED twin copy, and the structured
-    # outcome memory. The one POST runs the simulator, never the line; the proposal
-    # inbox is readable, its approve/reject endpoints are still not tools.
+    # outcome memory. The one POST runs the simulator, never the line.
     ("POST", "/api/simulation-experiments"),
     ("GET", "/api/simulation-experiments"),
     ("GET", "/api/simulation-experiments/{experiment_id}"),
     ("GET", "/api/simulation-experiments/{experiment_id}/comparison"),
     ("GET", "/api/learning/outcomes"),
     ("GET", "/api/learning/similar"),
-    ("GET", "/api/proposals"),
 }
 
 # Surfaces that must NEVER become tools, whatever else is admitted.
@@ -156,7 +152,7 @@ def test_the_only_non_get_tools_run_simulators(registry) -> None:
 
 
 def test_plant_ids_are_not_hardcoded(registry) -> None:
-    """CLAUDE.md §1 -- swapping plant_a for plant_b must need no code edit."""
+    """CLAUDE.md §1 -- a different plant id must need no code edit."""
     other = T.build_registry(["plant_zz"])
     enum = other["get_station_stats"].parameters["properties"]["plant_id"]["enum"]
     assert enum == ["plant_zz"]

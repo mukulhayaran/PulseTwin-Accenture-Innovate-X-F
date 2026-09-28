@@ -2596,3 +2596,344 @@ the copilot is unchanged. `tests/test_triage_api.py` pins these rules:
   multi-change comparison.
 - **Placement:** `/ops` shows incident, handover and what-if.
 
+
+### ADR-067 — The Incident Commander: stateful, bounded, governed investigation
+
+**Context.** The GenAI tier explains and proposes, but an incident had no persistent
+reasoning state. The ADR-045 coordinator ran every specialist in a fixed order, and nothing
+between a finding and an approved action represented competing causes, missing evidence,
+sensing quality, authority or cost.
+
+**Decision.** Add a deterministic Incident Commander in `serve/`, with an optional LLM
+planner in `genai/`.
+
+- **State and planning.** State is persisted per investigation (migration 022). The
+  next specialist is chosen by expected information gain over explicit, mutually exclusive
+  hypotheses.
+- **Scoring.** Evidence is scored with a published log-odds rule. Confidence is capped
+  by sensor maturity, and six named abstention states are computed.
+- **The twin as a test.** The digital twin tests the intervention that fits each
+  leading hypothesis, on the condition reproduced from *observed* evidence.
+- **The governor.** An autonomy governor (L0–L4, OT never) is evaluated for the AI
+  and again for the approving human.
+- **Actions.** An enterprise action gateway runs idempotent reference adapters for
+  CMMS / MES / QMS / notification.
+- **Outcome and memory.** The ADR-064 outcome monitor measures the effect, and a
+  cross-plant case memory reads it back.
+
+**Alternatives rejected.**
+- **LangGraph / CrewAI:** the graph is ten explicit phases, and a framework would put a
+  new dependency inside the import wall for no capability the code lacks.
+- **A vector database:** a few hundred cases; lexical TF-IDF matches ADR-046, and
+  embeddings would need a model call inside `serve/`.
+- **An LLM-chosen confidence:** unverifiable.
+- **Replacing ADR-051 proposals:** kept; runs started with `commander=true` route
+  firings to the commander instead.
+
+**Consequences.**
+- **Deterministic by default.** The commander runs without any provider. The LLM
+  planner is opt-in (`PULSETWIN_COMMANDER_PLANNER=llm`) because a free tier allows
+  ~50 requests a day.
+- **Live-twin changes (additive).** Torque faults now induce defects at the gate (so a
+  delayed defect exists to trace). Commander-routed runs skip the per-alert triage spawn.
+- **Tuning disclosure.** Weights were set against the five scenarios, and
+  `docs/AI_EVALUATION.md` says so.
+- **Measured limitations.** The replay/twin mismatch on scripted blocking is measured
+  and published, not hidden. See `docs/AGENT_ARCHITECTURE.md`,
+  `docs/AUTONOMY_AND_SAFETY.md` and `docs/AI_EVALUATION.md`.
+
+
+### ADR-068 — Plant B removed; the project ships one plant
+
+**Decision (owner request, 2026-09-27).** Plant B is removed from the whole project: its
+config, model, fallback scorer, replay stream, watch rules, challenger reports and benchmark
+file; its rows in every table of `artifacts/pulsetwin.db` (deleted per table, so plant A's
+rows are byte-for-byte what a plant-A-only build writes); its Postgres partitions in
+migration 001; the Makefile and nightly CI; the UI plant list; and the tests that
+parametrised over both plants.
+
+**What stays.** The config-driven rule stands: a new `configs/<plant>.yaml` must work with
+no code edit, and `test_plant_ids_are_not_hardcoded` still pins it.
+
+**What changes in the claims.**
+- Findings that were comparisons with plant B now read "not established", not "true":
+  the alert-cohort score collapse is no longer called plant-A-specific.
+- `docs/SCALING_COST_MODEL.md` priced every multi-plant row on plant B as the
+  conservative basis. It now scales plant A's measured figure and says plainly that this
+  is an upper bound.
+
+**Not rewritten.** Earlier ADRs, dated `docs/STATE.md` entries, `docs/AUDIT.md`,
+`docs/FINAL_APPLICATION_AUDIT.md` and the original brief keep their plant B measurements.
+They are records of what was measured then.
+
+**Existing Postgres databases.** They keep their now-empty plant B partitions and any
+loaded plant B rows. `make down` followed by `make up` rebuilds a clean database.
+
+
+### ADR-069 — Incidents live in the persona views; the Proposals inbox is retired
+
+**Context.** ADR-067 shipped the Incident Commander on its own `/incidents` page, beside the
+ADR-051 watch → proposal → Proposals inbox. That left two approval flows, and a page that
+was empty unless you knew to launch a scenario there (the owner hit exactly that).
+
+**Decision.**
+- **Routing.** Every simulation run routes watch firings to the commander
+  (`StartSimulationRequest.commander` defaults to true, and `_on_firing` routes MQTT-followed
+  runs too). The legacy proposal / agent / counterfactual spawn is gone. Proposal read
+  endpoints stay for history. The defect-escape detector runs on every backend run.
+- **/supervisor** (`IncidentsPanel mode="floor"`) shows every incident read-only: evidence
+  with provenance, hypotheses, twin tests, the trace, and a **Manual check requested** box
+  when the commander withholds. Demo presets and **Report an issue** sit in that panel's
+  header (the page header must stay on one line). Demo start opens to `supervisor`, which
+  adds no power: `POST /api/simulations` already accepts any role.
+- **/manager** (`mode="decide"`) replaces the Proposals inbox with **Decisions** (approve /
+  reject / modify / more / execute), plus the outcome ledger.
+- **/ops** drops the inbox. **/leadership** is unchanged.
+- **Removed:** `frontend/app/incidents/` and `components/ops/ProposalInbox.tsx`.
+- **Kept:** the per-alert auto-investigation on /supervisor's alert feed, which answers a
+  different question (one unit).
+
+**Measured on the Docker stack.** The first build of `IncidentsPanel` re-created its poll on
+every render. The cause was an inline callback prop in the effect's dependencies, and the
+result was 380 list calls a minute from one tab and 429s. That was fixed with refs, and
+the tab now makes 12 calls a minute. Detail polling now runs only while an investigation or
+outcome window is live.
+
+
+### ADR-070 — Incidents explain themselves; a clean list and an incident log
+
+**Decision (owner request).** Everything shown about an incident is generated live from its
+own record, and the lists stay readable.
+- **Plain words.** `serve/incident_story.py` writes a one-line **headline** and an **"In
+  simple words"** explanation: what happened, what it looked at, what it checked, what it
+  tested, what it concluded, what it decided, and now. It is deterministic wording filled
+  from persisted fields, not a language model, so it can never state something the record
+  does not.
+- **Clean list.** `/api/incidents` defaults to `scope=current` (the plant's latest run), with
+  `scope=all` for history. Each row carries `seen_before`, the earlier incidents with the
+  same kind, station and trigger, so repeats read as repeats.
+- **Auto-close.** `commander.close_ended_runs` (run from the advancer tick) closes incidents
+  nobody can act on once their run has ended, and expires their pending recommendations.
+  Resolved, executed and rejected incidents keep their outcome. On the Docker stack it
+  closed 30 stale incidents on first start.
+- **Incident log.** `/supervisor` shows every incident across all runs, newest first, one
+  headline each (`components/incidents/IncidentLog.tsx`).
+
+
+### ADR-071 — Supervisor sees vehicles; manager sees only decisions
+
+**Decision (owner brief).** *Supervisor = what is happening; AI = why; manager = what needs
+my decision.* This is a presentation change on top of ADR-067. No agent logic changed.
+- **Vehicle Timeline** (`/supervisor`, `components/vehicles/`). Every vehicle of the
+  latest run is a compact row: unit, variant, station, entry/ETA, risk and status. Status
+  precedence is completed > inspection required > incident > at risk > normal.
+  - Filters, search (unit / variant / station / lot) and paging are server-side:
+    `GET /api/vehicles`, limit ≤ 100.
+  - Expanding a row lazily fetches `GET /api/vehicles/{unit}/timeline`: journey, process
+    and sensor events, quality, AI observations, incident history and manual inspections.
+  - Every event carries a source badge. SENSOR and INFERRED never share a badge (contract 1).
+  - An AI event expands into the investigation's persisted fields only
+    (`serve/vehicles.py::incident_card`), plus MANAGER / SYSTEM / VERIFIED follow-ups.
+- **Active incidents** rows show first detected, affected vehicles
+  (`decisions.affected_vehicles`, current run only), AI status and confidence. The
+  workspace is read-only; the old `mode="decide"` path is removed.
+- **Decision Queue** (`/manager`, `components/decisions/`, `GET /api/decisions/pending`).
+  - Server-side filter: a recommendation is `proposed`, its incident is open, and for its
+    first non-floor option the governor at the CALLER's role returns
+    HUMAN_APPROVAL_REQUIRED. So leadership (ceiling L2) sees an empty queue, and supervisors
+    get 403. Floor-handled actions (`actions.supervisor_handled` in `configs/agentic.yaml`)
+    never reach it.
+  - Approve and Modify (window / priority / scope) call the existing approve/modify and
+    then `execute`, so the manager sees the adapter reference.
+  - Reject takes a reason list plus text and is saved as case memory.
+  - Request Further Investigation resumes the same incident with an instruction and a
+    bounded `focus` (Literal list; 422 otherwise) that the deterministic planner runs first.
+  - A **Decision History** tab, summary KPIs, and an evidence drawer
+    (`GET /api/decisions/{id}/evidence`: stored rationale + twin tests + alternatives,
+    nothing composed).
+- **Terminology.** Vehicle Timeline, Active incidents, Investigation Timeline, Operations
+  Log, Decision Queue, Approval Request, Decision History.
+
+**Measured on the Docker stack.** Preset A reached the queue in 236 s. Evidence drawer →
+Approve returned `CMMS-WO-9266588`, and the affected vehicle's timeline then showed
+MANAGER → SYSTEM (CMMS) → scheduled → watching. The floor had zero Approve buttons, and a
+clean page load logged zero console errors.
+
+
+### ADR-072 — The engineering loop, and what it found
+
+**Decision (owner brief).** A bounded maker/checker loop now drives the Grand-Finale work
+(`LOOP.md`, `.loop/goal.json` criteria A–W, the `pulsetwin-loop` skill, and the `maker` /
+`verifier` subagents in `.claude/agents/`). A criterion is PASS only on observable
+evidence from three instruments:
+- `scripts/verify.py` — quality gates;
+- `scripts/verify_demo_flow.py` — the whole flow through the API, `--replay` for a second session;
+- `scripts/verify_ui_flow.py` — two never-reloaded browser pages.
+
+**What the loop found and changed.** Every item was measured before it was fixed.
+- **No clean start.** Every run replayed the recorded stream from line 0, where the
+  designed S3 Mode C torque deficit trips the tool-wear watch 8 simulated minutes in. Every
+  demo therefore opened on an S3 incident.
+  - `serve/demo_session.py` finds the quiet points of the recorded shift: 3 simulated hours
+    with no watch firing, starting 2 h apart. Demo runs start there and rotate, so a new
+    session shows different vehicles and times.
+  - Nothing is suppressed; the watch sees every event.
+- **No reset.** `POST /api/demo/reset` stops the run, closes open incidents, expires pending
+  approvals and cancels in-flight twin experiments, then starts a healthy run.
+  - It deletes nothing and is audited (`demo_reset`).
+  - It exists only when `PULSETWIN_DEMO_MODE=1`; compose defaults it off.
+  - The old session's experiments had held both concurrency slots, so the new session's twin
+    test was refused with 429.
+- **The twin could not test a congestion fix.** A smaller output buffer alone never blocked
+  the station: the downstream station kept pace, S19 stayed starved (blocked 0.0 %), and
+  every arm read exactly 0.0.
+  - Congestion now also slows the next station (`CONGESTION_SLOWDOWN`, a modelled assumption
+    in `docs/ASSUMPTIONS.md`).
+  - The twin reproduces the symptom (S19 blocked 41 %), and the conveyor fix measurably
+    relieves it (19 %, 3 paired seeds). On the stack, the commander's test now reads
+    −21 points of blocking, `improved`.
+- **Scenarios switched on instantly.** At onset every S19 event became BLOCKED.
+  - Effects now build over `SCENARIO_RAMP_S` = 600 simulated seconds (at 1200 s an approval could land mid-ramp and a real fix was judged `harmful`, 0.52 → 0.62; the commander's 600 s telemetry wait now guarantees full strength first): the blocked share
+    grows, torque and humidity drift.
+  - A breakdown and a sensor dropout stay step changes (`tests/test_scenario_ramp.py`).
+- **A twin test could starve the API.** Two experiments × 3 replica processes on the API's
+  4 CPUs stalled one request past 30 s. The worker now runs at `nice 10`.
+- **AI progress had no shape.** `incident_story.stages` derives Detect → Investigate →
+  Hypothesize → Simulate → Recommend → Approve → Verify from the persisted record.
+  `AiStages` renders it, with no timers.
+- **The manager card was a wall of nine facts.** It now leads with problem, recommendation,
+  expected impact, risk and why approval is required, with Approve and Explain. Modify,
+  Reject and Request more evidence are secondary.
+- **The Explain drawer.** It now covers observation, what each specialist investigated,
+  every explanation with its status, the evidence, the twin test, the recommendation and
+  the governor's reasons. All of it is persisted.
+- **Per-alert triages had no bound.** Every new model alert started a multi-agent triage
+  with its own twin experiments. The backend sat at 306 % CPU and 1.24 GB on an idle normal
+  run, the twin slots were never free for the commander, and the host ran out of memory.
+  - Now at most one unattended triage runs at a time (`AUTO_TRIAGE_WINDOW_S`).
+  - Measured after the change: 9 % CPU, 149 MB, and decision history in 0.3–0.9 s
+    instead of 4–19 s.
+- **Rejecting needed less authority than approving.** Found by the independent verifier:
+  the role hierarchy let leadership (ceiling L2) reject recommendations and re-open
+  investigations, although approving needs L3.
+  - Both endpoints now require L3 (`_require_decision_authority`).
+  - A demo reset requires a real sign-in; anonymous callers get 401.
+  - Reset takes the commander's per-investigation lock.
+
+**Final evidence (2026-09-28, Docker/Postgres stack).**
+- `verify_demo_flow.py --replay`: 65/65.
+- `verify_ui_flow.py`: 14/14.
+- `pytest tests/`: see `docs/LOOP_COMPLETION_REPORT.md`.
+
+
+### ADR-073 — The ADR-051 proposal inbox and ADR-055 forecast job are retired
+
+**Decision.** Remove the code of a workflow that had stopped running. Since ADR-069,
+`serve/live_simulation.py::_on_firing` sends every watch firing to the Incident
+Commander. Nothing writes `action_proposals` any more, so the endpoints that read it
+could only return empty or 404. Removed:
+- `serve/routers/proposals.py`: `GET /api/watch/firings`, `GET /api/proposals`, and
+  `POST /api/proposals/{id}/approve|reject`;
+- the detached `python -m offline.counterfactual` forecast job (`forecast` plus its CLI);
+- the three watch-triggered GenAI intents (`starvation`, `paint_env`, `tool_wear`), their
+  deterministic plans in `genai/offline_triage.py`, and the `get_watch_firings` and
+  `get_proposals` tools.
+
+The three intent mirrors are all updated: `serve/routers/triage.py`
+(`INTENT_LABELS`/`INTENT_PATTERN`), `frontend/lib/api.ts::TriageIntent`, and
+`genai/intents.py`.
+
+**Kept.**
+- The `action_proposals` table and its migrations, because existing databases hold rows.
+- The mitigation catalogue (`MITIGATIONS` ↔ `genai/finding.py::ACTION_TYPES`, still
+  pinned by `tests/test_proposals.py`).
+- `offline/counterfactual.py`'s `hypothesis`/`_reseed`/`_mitigate`, which
+  `offline/sim_experiment.py` uses.
+- `serve/outcomes.py::record_decision`.
+
+The deterministic handover now reads outcome status from `get_action_outcomes`, not from
+the proposal list. Pending human decisions live in the Commander's Decision Queue.
+
+**Known gap, recorded and not fixed here.** `record_decision` was only ever called from
+the retired approve/reject endpoints. Since ADR-069, no runtime path writes
+`incident_learning_records`, so `/api/learning/similar` answers only from historical rows.
+Wiring the Commander's decisions into it is follow-up work (`output/codebase_cleanup_report.md`).
+
+### ADR-074 — Light theme only: the navy band is gone
+
+**Decision (owner request).** Remove every dark surface. Selected text was invisible on the
+navy band (`#1a2129`): `::selection` forces ink text, which vanished on navy. The owner
+asked for light only, with a light gradient where the band used to be.
+
+**How.** Values change at the token level. The token names do not, so every page moves at
+once and no call site had to know:
+- `--color-surface-dark*` becomes a light blue-grey tint;
+- `on-dark`/`on-dark-soft` become ink/ink-dim;
+- the `-on-dark` signals take the `-fg` values;
+- `band-dark` becomes a light blue-grey gradient with hairlines;
+- `tex-grid-dark` and `text-gradient-dark` get their light counterparts;
+- `lib/theme.ts` mirrors all of the above for Recharts.
+
+Six call sites really meant "white on a coloured fill" and were moved off `text-on-dark`:
+- `LifecycleStrip` and `VehicleTimeline` (blue fill) → `text-on-primary`;
+- `SegmentedControl` and both `Badge` solid variants (ink fill) → `text-canvas`;
+- the `VehicleHero` hotspot → `--color-on-primary`.
+
+The hardcoded navy in the `AppShell` rail and the landing principle cards is now light.
+
+**Trade-off.** ADR-047's "no two consecutive bands share a surface mode" rhythm now alternates
+white and tint rather than light and dark. A band is told apart by its gradient and
+hairline.
+
+### ADR-075 — shadcn/ui and Magic UI, mapped onto the kit rather than beside it
+
+**Decision (owner request).** Bring in shadcn/ui primitives only where the kit lacked one,
+and a few restrained Magic UI pieces, **without a second design system.** The approved set
+had 5 shadcn primitives and 4 Magic UI pieces:
+
+| Component | Where | Why |
+|---|---|---|
+| `Sheet` | Decision evidence drawer; mobile nav drawer | The hand-rolled versions handled Esc, but not the focus trap, scroll lock or focus return |
+| `Dialog` | Confirm before "Reset demo" | A reset cannot be undone |
+| `Popover` | Notification tray | Collision-aware positioning and focus handling |
+| `DropdownMenu` | Account menu | Real menu semantics and arrow-key navigation |
+| `Tabs` | `/manager` Queue / History / Analytics | These switch panels, so they need tab semantics; `SegmentedControl` stays for value filters |
+| TextAnimate | Landing headline, line 1 only | The page's one load moment |
+| Marquee | A ticker of the real stations, read from `/api/config/stations` | Shows what the twin actually covers |
+| BorderBeam | The sign-in card | The one highlighted panel |
+| DotPattern | Behind the new shared `EmptyState` | Replaces 6 hand-written empty states |
+
+**How it stays one system.**
+- `components.json` aliases `utils` to `@/lib/cn`. The CLI misread that alias as a package
+  name, wrote `import { cn } from "cn"` and installed an unrelated npm package called `cn`.
+  That package and the umbrella `radix-ui` package were removed.
+- The primitives use the individual `@radix-ui/react-*` packages like the rest of the kit.
+  They are PascalCase kit files, trimmed to the parts in use.
+- `lucide` was replaced by `IconClose`/`IconCheck` in `icons.tsx`, and
+  `class-variance-authority` by plain class strings.
+- shadcn's colour names (`--color-popover`, `--color-muted-foreground`, …) are `@theme inline`
+  aliases of existing tokens. There is no `.dark` block, and `--radius` is 0.
+- Enter animations are theme keyframes that the global reduced-motion rule collapses.
+- Magic UI sources come from the public registry (the MCP server was not connected to the
+  session), live in `components/magicui/`, and are adapted:
+  - BMW blue replaces the upstream orange→violet;
+  - the BorderBeam path has square corners;
+  - DotPattern uses a static `<pattern>` (upstream animates one `motion.circle` per dot and
+    seeds `Math.random`);
+  - reduced motion renders static text, a static single ticker copy, and no beam.
+
+**Rejected:** BlurFade and the grid patterns duplicate existing effects; BentoGrid needs
+`@radix-ui/react-icons` plus a `button` that clashes with `Button.tsx`; NumberTicker
+duplicates `AnimatedNumber`; the shimmer/rainbow/sparkle family is excluded by the brief.
+There is no decorative motion on the persona dashboards.
+
+**Measured.**
+- Every route's first-load JS is about 27–29 kB larger. The persona pages mostly pay for
+  Radix Dialog, Popover and DropdownMenu, which `AppShell` now loads everywhere.
+- CLS on `/supervisor` is 0.0505 before and after on production builds, so there is no
+  regression. It was already above the 0.043 recorded in CLAUDE.md §8 before this change.
+- Two traps caught by measuring:
+  - `--animate-marquee` must be `@theme inline`. Under `@theme`, its `var(--duration)`
+    resolved at `:root` and the animation computed to `none`.
+  - A state-opened Sheet lost focus to `<body>` on close. `Sheet` now returns it to
+    whatever had focus when it opened.

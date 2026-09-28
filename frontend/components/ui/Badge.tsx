@@ -10,7 +10,7 @@ type Variant = "neutral" | "solid" | "ok" | "warn" | "danger" | "info" | "ai";
 const VARIANTS: Record<Variant, string> = {
   neutral: "border-line-strong bg-canvas text-ink-dim",
   // The `filter-chip-active` treatment: inverted to ink.
-  solid: "border-ink bg-ink text-on-dark",
+  solid: "border-ink bg-ink text-canvas",
   ok: "border-ok/40 bg-ok/8 text-ok-fg",
   warn: "border-warn/40 bg-warn/8 text-warn-fg",
   danger: "border-danger/40 bg-danger/8 text-danger-fg",
@@ -22,7 +22,7 @@ const VARIANTS: Record<Variant, string> = {
 // darkened `-fg` text goes muddy on navy.
 const ON_DARK: Record<Variant, string> = {
   neutral: "border-line-on-dark bg-transparent text-on-dark-soft",
-  solid: "border-on-dark bg-on-dark text-ink",
+  solid: "border-on-dark bg-on-dark text-canvas",
   ok: "border-ok-on-dark/40 bg-ok-on-dark/15 text-ok-on-dark",
   warn: "border-warn-on-dark/40 bg-warn-on-dark/15 text-warn-on-dark",
   danger: "border-danger-on-dark/40 bg-danger-on-dark/15 text-danger-on-dark",

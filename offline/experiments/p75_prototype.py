@@ -41,7 +41,7 @@ from offline.simulator import generate  # noqa: E402
 from offline.simulator.physics import _station_targets  # noqa: E402
 
 EXP_ROOT = Path(__file__).resolve().parents[2] / "data" / "_exp"
-PLANTS = ("plant_a", "plant_b")
+PLANTS = ("plant_a",)
 TARGET = 0.75
 
 # Cumulative: each variant removes one more cause of irreducible error.

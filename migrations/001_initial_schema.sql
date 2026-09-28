@@ -10,7 +10,7 @@
 -- genealogy and station_readings are LIST-partitioned by plant_id (finals brief, "Partition
 -- the station_readings and genealogy tables by plant_id for multi-plant scaling"). Plant
 -- IDs are not station IDs -- they already appear as literals throughout this repo
--- (configs/plant_a.yaml, configs/plant_b.yaml, the Makefile) -- so naming their partitions
+-- (configs/plant_a.yaml, the Makefile) -- so naming their partitions
 -- explicitly does not violate the "no hardcoded station IDs" rule. A DEFAULT partition
 -- catches any plant added later without a schema change.
 
@@ -76,7 +76,6 @@ CREATE TABLE IF NOT EXISTS genealogy (
 ) PARTITION BY LIST (plant_id);
 
 CREATE TABLE IF NOT EXISTS genealogy_plant_a PARTITION OF genealogy FOR VALUES IN ('plant_a');
-CREATE TABLE IF NOT EXISTS genealogy_plant_b PARTITION OF genealogy FOR VALUES IN ('plant_b');
 CREATE TABLE IF NOT EXISTS genealogy_default PARTITION OF genealogy DEFAULT;
 
 CREATE INDEX IF NOT EXISTS idx_genealogy_station ON genealogy (plant_id, station_id);
@@ -101,8 +100,6 @@ CREATE TABLE IF NOT EXISTS station_readings (
 
 CREATE TABLE IF NOT EXISTS station_readings_plant_a PARTITION OF station_readings
     FOR VALUES IN ('plant_a');
-CREATE TABLE IF NOT EXISTS station_readings_plant_b PARTITION OF station_readings
-    FOR VALUES IN ('plant_b');
 CREATE TABLE IF NOT EXISTS station_readings_default PARTITION OF station_readings DEFAULT;
 
 -- ====================================================================== station_stats

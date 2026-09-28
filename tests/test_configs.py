@@ -19,17 +19,12 @@ from offline.config_schema import (
     load_plant_config,
 )
 
-PLANTS = ["plant_a.yaml", "plant_b.yaml"]
+PLANTS = ["plant_a.yaml"]
 
 
 @pytest.fixture(scope="module")
 def plant_a() -> PlantConfig:
     return load_plant_config("plant_a.yaml")
-
-
-@pytest.fixture(scope="module")
-def plant_b() -> PlantConfig:
-    return load_plant_config("plant_b.yaml")
 
 
 @pytest.fixture(scope="module")

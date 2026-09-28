@@ -5,8 +5,8 @@
 Loads simulated data, builds features, trains the defect model, calibrates it, computes
 both alarm thresholds, and writes everything to data/<plant_id>/model.pkl + metrics.json.
 
-Per-plant by design (ADR-006): plant B has 42 stations, different zones and a TRUCK
-variant, so its feature space is genuinely different and one ensemble cannot score both.
+Per-plant by design (ADR-006): a plant with different stations, zones or
+variants has a genuinely different feature space, and one ensemble cannot score two.
 The pipeline is identical -- only the YAML changes.
 """
 

@@ -1,7 +1,7 @@
 """Station-level telemetry -> one row per unit, with leakage discipline.
 
 THE CUTOFF. Only data available at or before the config-derived prediction station may be
-used (S20 of 30 for plant A, S28 of 42 for plant B). Everything downstream of it is the
+used (S20 of 30 for plant A). Everything downstream of it is the
 future at prediction time.
 
 THE LEAKAGE TRAP THIS MODULE IS BUILT AROUND (docs/AUDIT.md H10). `lot_trailing_defect_rate`

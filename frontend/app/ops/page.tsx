@@ -10,17 +10,12 @@ import { usePersonaAccess } from "@/lib/usePersonaAccess";
 import SignInGate from "@/components/shared/SignInGate";
 import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import RoleGate from "@/components/shared/RoleGate";
-import { useAuditToast } from "@/components/shared/AuditToast";
 import ModelHealthPanel from "@/components/ops/ModelHealthPanel";
 import DriftMonitor from "@/components/ops/DriftMonitor";
 import SensorHealthGrid from "@/components/ops/SensorHealthGrid";
 import IngestionLagChart from "@/components/ops/IngestionLagChart";
 import SystemStatusBar from "@/components/ops/SystemStatusBar";
 import AuditLogViewer from "@/components/ops/AuditLogViewer";
-import TriageConsole from "@/components/ops/TriageConsole";
-import AgentPanel from "@/components/copilot/AgentPanel";
-import ProposalInbox from "@/components/ops/ProposalInbox";
-import OutcomeLedger from "@/components/agents/OutcomeLedger";
 import { AppShell, Select, Tooltip } from "@/components/ui";
 
 const ROLES: Role[] = ["supervisor", "manager", "leadership", "system"];
@@ -47,7 +42,6 @@ export default function OpsPage() {
   const [stations, setStations] = useState<StationCfg[]>([]);
   const [connected, setConnected] = useState(true);
   const [lastKnownAt, setLastKnownAt] = useState<string | null>(null);
-  const { show, ToastElement } = useAuditToast();
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Re-applied when `granted` flips: usePersonaAccess pins the page to `system` once it
@@ -161,25 +155,9 @@ export default function OpsPage() {
         <RoleGate allowed={["leadership", "system"]}>
           <AuditLogViewer />
         </RoleGate>
-
-        <RoleGate allowed={["manager", "leadership", "system"]}>
-          <ProposalInbox plant={plant} onAction={show} />
-        </RoleGate>
-
-        <RoleGate allowed={["manager", "leadership", "system"]}>
-          <OutcomeLedger plant={plant} />
-        </RoleGate>
-
-        <RoleGate allowed={["manager", "leadership", "system"]}>
-          <AgentPanel plant={plant} onAction={show} />
-        </RoleGate>
-
-        <RoleGate allowed={["manager", "leadership", "system"]}>
-          <TriageConsole plant={plant} onAction={show} />
-        </RoleGate>
+        {/* Agents are provided on /supervisor and /manager only; Ops is platform health. */}
       </div>
 
-      {ToastElement}
     </AppShell>
   );
 }

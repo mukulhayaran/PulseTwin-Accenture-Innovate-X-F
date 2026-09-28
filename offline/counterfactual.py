@@ -1,52 +1,25 @@
-"""Monte Carlo counterfactual for one watch firing (ADR-055).
+"""Condition hypotheses and twin mitigations for a watch firing (ADR-055, ADR-064).
 
-Nothing an agent proposes reaches a human without passing through here. For the condition
-the watch detected, the physical twin (`offline.live_twin.LiveTwinEngine`) is warmed up
-once, the condition is reproduced at the firing station, and the line is then FORKED --
-`copy.deepcopy` of the whole engine, every RNG reseeded in place -- into `replicas`
-futures per arm. One arm is doing nothing; the others apply each catalogue action that
-has a physical effect on that condition. Replica k uses the same seed in every arm
-(common random numbers), so the action-vs-nothing difference is PAIRED and its interval
-is honest about how much of the gap is the action and how much is the line's own noise.
+`hypothesis` maps a firing's own measured evidence (never the injected ground truth) to
+the scenario and severity the physical twin should reproduce; `_reseed` and `_mitigate`
+fork and treat an `offline.live_twin.LiveTwinEngine` copy. `offline/sim_experiment.py`
+runs its paired-seed experiments on these, and `offline/benchmarks/agent_eval.py` scores
+root causes against `hypothesis`.
 
-What this is not: a fork of the live stream-replay run. `serve/live_simulation.py` replays
-the committed stream; this reproduces the DETECTED condition on the physical twin at a
-severity inferred from the firing's own evidence (never from the injected ground truth).
-Every output is `provenance: "inferred"` and carries its interval (contract #1). No
-dollar figure is emitted (contract #2).
-
-Spawned detached by `serve/live_simulation.py::_on_firing`, exactly like `genai.triage`;
-writes `<jobs>/<proposal_id>.forecast.json`, which `/api/proposals` reads.
-
-    python -m offline.counterfactual --plant plant_a --detector tool_wear --station 3 \
-        --evidence '{"deviation_pct": -12.4}' --budget-threshold 0.3 --out f.json
+The ADR-055 forecast job that used to be spawned from `/api/proposals` was retired with
+the proposal workflow (ADR-073); the Incident Commander's experiments replaced it.
 """
 
 from __future__ import annotations
 
-import argparse
-import pickle
-import json
-import os
-import sys
-import time
-from concurrent.futures import ProcessPoolExecutor
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from offline.benchmarks.simrun import with_horizon
-from offline.config_schema import load_plant_config
-from offline.live_twin import warm_cache
 from offline.live_twin.engine import LiveTwinEngine
-from offline.live_twin.incidents import MAX_HUMIDITY_ADD_PCT, MAX_TOOL_DEFICIT, Incident
+from offline.live_twin.incidents import MAX_HUMIDITY_ADD_PCT, MAX_TOOL_DEFICIT
 from serve.live_simulation import MITIGATIONS
 
-ROOT = Path(__file__).resolve().parents[1]
-DO_NOTHING = "do_nothing"
-CHECKPOINT_S = 600.0
-BOOTSTRAP = 2000
 # Congestion at severity 1.0 is a zero-capacity buffer: the line deadlocks and the DES
 # clock jumps to the next failure event. Measured on plant_a, 2026-09-25. A detector that
 # sees events still arriving is by definition not looking at a deadlocked line.
@@ -119,6 +92,7 @@ def _mitigate(engine: LiveTwinEngine, scenario: str, action_type: str,
     if action_type == "increase_feed_buffer":
         engine._base_capacity[station_id] += FEED_BUFFER_SLOTS
     now = engine.now
+    engine.apply_congestion_pull(now)   # a milder congestion slows the next station less
     for rt in stations:
         sid = rt.cfg.id
         rt.capacity = engine.incidents.buffer_capacity(sid, engine._base_capacity[sid], now)
@@ -129,220 +103,3 @@ def _mitigate(engine: LiveTwinEngine, scenario: str, action_type: str,
         # downstream pull to notice the room.
         if rt.held is not None and rt.state != "down":
             engine.sim._release_held(rt, now)
-
-
-def simulated_as(scenario: str, action_type: str, station_id: int) -> str:
-    """What the fork actually changed, in words -- shown beside the agent's own params so
-    a difference between what was proposed and what was simulated is visible."""
-    share = float(MITIGATIONS[action_type]["factor"])
-    what = (f"ends the {scenario.replace('_', ' ')}" if share >= 1.0
-            else f"removes {share:.0%} of the {scenario.replace('_', ' ')}")
-    if action_type == "increase_feed_buffer":
-        what += f"; +{FEED_BUFFER_SLOTS} slots on S{station_id}'s output buffer"
-    return what
-
-
-def _ci(values: np.ndarray, rng: np.random.Generator) -> dict[str, float]:
-    """Mean with a 95% percentile-bootstrap interval of the mean."""
-    means = rng.choice(values, size=(BOOTSTRAP, len(values)), replace=True).mean(axis=1)
-    return {"mean": round(float(values.mean()), 3),
-            "ci_low": round(float(np.percentile(means, 2.5)), 3),
-            "ci_high": round(float(np.percentile(means, 97.5)), 3)}
-
-
-def _run_arm(forked: LiveTwinEngine, scenario: str, action: str, station_id: int,
-             replicas: int, horizon_s: float) -> dict[str, np.ndarray]:
-    """Defects are EXPECTED defects -- the sum of each inspected unit's propensity --
-    rather than the Bernoulli draw on it: the same expectation with far less variance
-    (conditional Monte Carlo), which matters at ~0.3 true defects an hour."""
-    steps = int(horizon_s // CHECKPOINT_S)
-    units, defects, alerts = [], [], []
-    trajectory = np.zeros((replicas, steps))
-    # One pickle, then a cheap load per replica: the same isolated copy as deepcopy at
-    # about a sixth of the cost (ADR-064 CPU work).
-    blob = pickle.dumps(forked, protocol=pickle.HIGHEST_PROTOCOL)
-    for k in range(replicas):
-        f = pickle.loads(blob)
-        _reseed(f, k)
-        if action != DO_NOTHING:
-            _mitigate(f, scenario, action, station_id)
-        u0, a0, expected = f.units_completed, f.alerts_opened, 0.0
-        for s in range(steps):
-            for e in f.advance(CHECKPOINT_S):
-                if e["event_type"] == "inspection_outcome":
-                    expected += float(e["propensity"])
-            trajectory[k, s] = f.units_completed - u0
-        units.append(f.units_completed - u0)
-        defects.append(expected)
-        alerts.append(f.alerts_opened - a0)
-    return {"units": np.array(units, float), "defects": np.array(defects, float),
-            "alerts": np.array(alerts, float), "trajectory": trajectory}
-
-
-def _prepare(plant_id: str, scenario: str, severity: float, station_id: int, seed: int,
-             onset_s: float, budget_threshold: float) -> LiveTwinEngine:
-    """The decision-point snapshot: warmed, the condition injected, given time to bite.
-    Deterministic in its arguments -- which is what lets each arm rebuild it in its own
-    process rather than pickling an engine."""
-    if seed == warm_cache.SNAPSHOT_SEED:
-        # The warm-up is shared with every experiment on this plant and code: cached.
-        twin = warm_cache.warm_twin(plant_id, budget_threshold)
-    else:
-        cfg = with_horizon(load_plant_config(ROOT / "configs" / f"{plant_id}.yaml"), 3.0)
-        twin = LiveTwinEngine(cfg, seed=seed, artifacts=ROOT / "artifacts",
-                              budget_threshold=budget_threshold)
-        twin.start()
-    # Humidity is a zone condition; everything else is local to the firing station.
-    twin.inject(Incident(scenario, severity,
-                         station_id=None if scenario == "high_humidity" else station_id))
-    twin.advance(onset_s)
-    return twin
-
-
-def _arm_worker(job: tuple) -> dict[str, np.ndarray]:
-    (plant_id, scenario, severity, station_id, seed, onset_s, budget_threshold,
-     action, replicas, horizon_s) = job
-    twin = _prepare(plant_id, scenario, severity, station_id, seed, onset_s, budget_threshold)
-    return _run_arm(twin, scenario, action, station_id, replicas, horizon_s)
-
-
-def forecast(plant_id: str, detector: str, station_id: int, evidence: dict[str, Any],
-             budget_threshold: float, replicas: int = 8, horizon_s: float = 7200.0,
-             onset_s: float = 1800.0, seed: int = 42,
-             workers: int | None = None) -> dict[str, Any]:
-    started = time.time()
-    scenario, severity, basis = hypothesis(detector, evidence)
-    down = evidence.get("down_stations") or []
-    if scenario == "station_breakdown" and down and station_id not in down:
-        # The firing is at a blocked/starved neighbour; the fault is the DOWN station.
-        station_id = min(down, key=lambda s: abs(s - station_id))
-    cfg = with_horizon(load_plant_config(ROOT / "configs" / f"{plant_id}.yaml"), 3.0)
-    if station_id not in {s.id for s in cfg.stations}:
-        raise ValueError(f"station {station_id} is not in {plant_id}")
-
-    actions = [DO_NOTHING] + [a for a, m in MITIGATIONS.items() if scenario in m["scenarios"]]
-    modelled = [a for a in actions
-                if a == DO_NOTHING or MITIGATIONS[a]["scope"] != "risk"]
-    jobs = [(plant_id, scenario, severity, station_id, seed, onset_s, budget_threshold,
-             action, replicas, horizon_s) for action in modelled]
-    workers = max(1, min(len(jobs), workers or os.cpu_count() or 1))
-    if workers == 1:
-        results = [_arm_worker(job) for job in jobs]
-    else:
-        # One arm per process. Each rebuilds the identical warmed twin from the seed, and
-        # the intervals below are drawn in arm order afterwards, so the output is
-        # bit-identical to the serial path (tests/test_counterfactual.py pins it).
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            results = list(pool.map(_arm_worker, jobs))
-    by_action = dict(zip(modelled, results))
-
-    hours = horizon_s / 3600.0
-    boot = np.random.default_rng(seed)
-    runs: dict[str, dict[str, np.ndarray]] = {}
-    arms: list[dict[str, Any]] = []
-    for action in actions:
-        if action not in by_action:
-            arms.append({"action_type": action, "modelled": False,
-                         "reason": "acts on scoring priority, not on a physical condition "
-                                   "the twin simulates"})
-            continue
-        run = runs[action] = by_action[action]
-        traj = run["trajectory"]
-        arm: dict[str, Any] = {
-            "action_type": action,
-            "modelled": True,
-            "simulated_as": (None if action == DO_NOTHING
-                             else simulated_as(scenario, action, station_id)),
-            "throughput_uph": _ci(run["units"] / hours, boot),
-            "expected_defects": _ci(run["defects"], boot),
-            "alerts": _ci(run["alerts"], boot),
-            "trajectory": {
-                "t_min": [round((s + 1) * CHECKPOINT_S / 60) for s in range(traj.shape[1])],
-                "p10": np.percentile(traj, 10, axis=0).round(1).tolist(),
-                "p50": np.percentile(traj, 50, axis=0).round(1).tolist(),
-                "p90": np.percentile(traj, 90, axis=0).round(1).tolist(),
-            },
-        }
-        if action != DO_NOTHING:
-            base = runs[DO_NOTHING]
-            d_uph = _ci((run["units"] - base["units"]) / hours, boot)
-            d_def = _ci(run["defects"] - base["defects"], boot)
-            arm["vs_do_nothing"] = {
-                "throughput_uph": d_uph,
-                "expected_defects": d_def,
-                # The paired interval excludes zero on at least one outcome.
-                "distinguishable": bool(d_uph["ci_low"] > 0 or d_uph["ci_high"] < 0
-                                        or d_def["ci_low"] > 0 or d_def["ci_high"] < 0),
-            }
-        arms.append(arm)
-
-    # Rank by expected throughput gain, then by defects avoided. An action whose interval
-    # includes zero on both still ranks, but says so -- the human sees the overlap.
-    def key(a: dict[str, Any]) -> tuple[float, float]:
-        v = a.get("vs_do_nothing") or {}
-        return (-(v.get("throughput_uph") or {}).get("mean", 0.0),
-                (v.get("expected_defects") or {}).get("mean", 0.0))
-    ranked = sorted((a for a in arms if a["modelled"] and a["action_type"] != DO_NOTHING),
-                    key=key)
-    return {
-        "version": 1,
-        "status": "done",
-        "plant_id": plant_id,
-        "detector": detector,
-        "station_id": station_id,
-        "provenance": "inferred",
-        "hypothesis": {"scenario": scenario, "severity": round(severity, 3), "basis": basis},
-        "method": {"twin": "offline.live_twin.LiveTwinEngine", "replicas": replicas,
-                   "horizon_s": horizon_s, "onset_s": onset_s, "seed": seed,
-                   "paired": True, "interval": "95% percentile bootstrap of the mean",
-                   "mitigation_effects": "docs/ASSUMPTIONS.md, Mitigation effects"},
-        "ranking": [a["action_type"] for a in ranked],
-        "arms": arms,
-        "elapsed_s": round(time.time() - started, 1),
-    }
-
-
-def _write(path: Path, payload: dict[str, Any]) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-    os.replace(tmp, path)  # a reader never sees half a file
-
-
-def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--plant", required=True)
-    p.add_argument("--detector", required=True, choices=("starvation", "paint_env", "tool_wear"))
-    p.add_argument("--station", type=int, required=True)
-    p.add_argument("--evidence", required=True, help="the firing's evidence, as JSON")
-    p.add_argument("--budget-threshold", type=float, required=True)
-    p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--replicas", type=int, default=8)
-    p.add_argument("--horizon-s", type=float, default=7200.0)
-    p.add_argument("--workers", type=int, default=2)
-    args = p.parse_args(argv)
-
-    _write(args.out, {"version": 1, "status": "running"})
-    # ADR-064: a forecast is background work nobody waits on, while an agent's experiment
-    # is on its critical path. Measured on a 4-core container: two forecasts at one
-    # process per CPU starved the experiments ~15x (35 s per simulated hour vs 2.5 s).
-    # So forecasts run at lower OS priority and with at most two processes.
-    if hasattr(os, "nice"):
-        try:
-            os.nice(10)
-        except OSError:
-            pass
-    try:
-        result = forecast(args.plant, args.detector, args.station, json.loads(args.evidence),
-                          args.budget_threshold, replicas=args.replicas,
-                          horizon_s=args.horizon_s, workers=args.workers)
-    except Exception as exc:  # noqa: BLE001 - the row must never sit at `running`
-        _write(args.out, {"version": 1, "status": "failed", "error": f"{type(exc).__name__}: {exc}"})
-        raise
-    _write(args.out, result)
-    print(f"[counterfactual] {args.out.name} done in {result['elapsed_s']}s, "
-          f"ranking={result['ranking']}", flush=True)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

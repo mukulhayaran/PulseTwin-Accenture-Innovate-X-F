@@ -75,9 +75,8 @@ def _run_window(cfg: PlantConfig, seed: int) -> tuple[float, float, int]:
 
     # Score the constraint on the SECOND HALF of the window only. While the line is
     # filling, upstream stations have simply seen more units than downstream ones, so
-    # cumulative active time is biased toward the front of the line -- plant B reported
-    # S2 as its constraint for exactly this reason, on a 42-station line where the fill
-    # takes longer.
+    # cumulative active time is biased toward the front of the line -- on a long line
+    # the fill takes longer and an upstream station is wrongly reported as the constraint.
     half = active.shape[0] // 2
     totals = active[half:, :].sum(axis=0)
     bn = int(ids[int(np.argmax(totals))]) if totals.sum() > 0 else -1

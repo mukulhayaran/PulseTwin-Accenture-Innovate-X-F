@@ -41,9 +41,9 @@ const AGENTS: AgentDef[] = [
   { intent: "incident", title: "Incident agent", hint: "Reliability, production and risk specialists in sequence, a simulation planner that runs a fresh experiment, then one verified synthesis." },
   { intent: "whatif", title: "What-if agent", hint: "A fresh paired simulation of more than one change at the live constraint; the precomputed grid only as a labelled fallback.", needsStation: true },
   { intent: "handover", title: "Handover agent", hint: "What changed, what was applied or awaits approval, outcomes not yet mature, and what to watch." },
-  // The three watch agents (starvation, paint_env, tool_wear) have no card: the live watch
-  // starts them when it fires (ADR-051), and their findings are decided in the Proposals
-  // inbox. Shift intelligence was removed -- it re-read the same shift summary as Handover.
+  // A watch firing opens an Incident Commander incident (ADR-069); the ADR-051 watch agents
+  // were retired (ADR-073). Shift intelligence was removed -- it re-read the same shift
+  // summary as Handover.
 ];
 
 export default function AgentPanel({

@@ -1,0 +1,122 @@
+# PulseTwin — Incident Commander policy (ADR-067)
+#
+# The reviewable source for every budget, threshold and permission the commander, the
+# autonomy governor and the enterprise action gateway enforce. serve/ cannot parse YAML
+# (CLAUDE.md §2), so serve/agentic_config.py holds the same values as a Python dict and
+# tests/test_incident_commander.py asserts the two are EQUAL. Change one, change both.
+#
+# Nothing here is a model output. Every number is either a policy choice (named as such)
+# or an assumption with a source in docs/ASSUMPTIONS.md ("Enterprise action assumptions").
+
+commander:
+  max_steps: 10                 # plan/collect cycles before the commander must decide
+  max_probe_calls: 20           # deterministic evidence probes per investigation
+  max_simulations: 2            # twin experiments per investigation (each ~40-90 s)
+  timeout_s: 900                # wall clock from investigation start
+  max_llm_tokens: 60000         # LLM planner budget; past it the deterministic planner runs
+  max_llm_cost_usd: 0.50
+  evidence_window_s: 900        # manual report: simulated seconds of events before the report
+  pre_trigger_s: 300            # detector firing: context kept from before detection
+  post_trigger_s: 600           # ...and telemetry gathered AFTER it before observing (a detector
+                                # fires at onset; a backward-only window saw mostly healthy data)
+  baseline_min_events: 20       # per station, below which a comparison is MISSING
+  station_scope_hops: 2         # probes may read stations within N positions of the incident
+  planner_stale_s: 120          # an LLM driver silent this long is replaced by the deterministic planner
+  min_information_gain: 0.02    # below this no probe is worth running: stop collecting
+
+confidence:
+  recommendation_min: 0.70      # below this a recommendation is WITHHELD
+  autonomous_low_risk_min: 0.90 # L4 auto-execution floor (whitelisted IT workflows only)
+  stop_confidence: 0.80         # the commander stops collecting at this posterior
+  conflict_margin: 0.15         # top-two posteriors this close, both supported -> CONFLICTING_EVIDENCE
+  min_evidence_coverage: 0.50   # share of planned evidence actually measurable -> else INSUFFICIENT_DATA
+
+# The most confidence the station's instrumentation can support, whatever the evidence says.
+maturity_caps:
+  HIGH: 0.95
+  MEDIUM: 0.85
+  LOW: 0.70
+  MANUAL_ONLY: 0.65
+  UNKNOWN: 0.50
+
+# Multiplies each evidence weight: an inferred reading moves a hypothesis less than a
+# measured one, and a missing reading moves it not at all.
+evidence_quality:
+  measured: 1.0
+  simulated: 0.8
+  inferred: 0.6
+  manual: 0.5
+  missing: 0.0
+
+model_health:
+  psi_warn: 0.10                # population stability index, window vs recorded baseline
+  psi_block: 0.25               # at or above: MODEL_DEGRADED, recommendations blocked
+
+data_quality:
+  sensor_unreliable_below: 0.60 # share of expected sensor readings present at the station
+
+autonomy:
+  default_level: L2
+  levels: [L0, L1, L2, L3, L4]
+  # The most authority a caller of each role may exercise, whatever the governor allows.
+  role_ceiling:
+    supervisor: L1
+    manager: L3
+    leadership: L2
+    system: L4
+  # Roles that may execute an approved enterprise action. Exact match, not the hierarchy:
+  # leadership outranks manager in the API, but executing work orders is an operations duty.
+  execute_roles: [manager, system]
+
+actions:
+  # adapter: which enterprise adapter carries it. level: the autonomy level it needs.
+  # twin_effect: the serve/live_simulation.py MITIGATIONS entry applied to the simulated
+  # twin when it executes (none = no simulated effect, the outcome is not measurable there).
+  # downtime_min / technician_hours are ASSUMPTIONS (docs/ASSUMPTIONS.md).
+  catalogue:
+    continue_monitoring:
+      {adapter: none, level: L2, risk: none, reversible: true, downtime_min: 0, technician_hours: 0.0, twin_effect: none}
+    notify_supervisor:
+      {adapter: notification, level: L4, risk: none, reversible: true, downtime_min: 0, technician_hours: 0.0, twin_effect: none}
+    manual_inspection:
+      {adapter: cmms, level: L3, risk: low, reversible: true, downtime_min: 0, technician_hours: 0.5, twin_effect: none}
+    sensor_calibration:
+      {adapter: cmms, level: L3, risk: low, reversible: true, downtime_min: 15, technician_hours: 1.0, twin_effect: none}
+    maintenance_inspection:
+      {adapter: cmms, level: L3, risk: low, reversible: true, downtime_min: 25, technician_hours: 1.0, twin_effect: none}
+    conveyor_buffer_adjustment:
+      {adapter: cmms, level: L3, risk: low, reversible: true, downtime_min: 25, technician_hours: 1.5, twin_effect: increase_feed_buffer}
+    maintenance_work_order:
+      {adapter: cmms, level: L3, risk: medium, reversible: false, downtime_min: 45, technician_hours: 2.0, twin_effect: maintenance_ticket}
+    hvac_correction:
+      {adapter: cmms, level: L3, risk: low, reversible: true, downtime_min: 0, technician_hours: 1.0, twin_effect: hvac_setpoint}
+    line_rebalance:
+      {adapter: mes, level: L3, risk: medium, reversible: true, downtime_min: 0, technician_hours: 0.5, twin_effect: rebalance_cycle}
+    quality_hold:
+      {adapter: qms, level: L3, risk: medium, reversible: true, downtime_min: 0, technician_hours: 0.5, twin_effect: none}
+    increase_inspection:
+      {adapter: qms, level: L3, risk: low, reversible: true, downtime_min: 0, technician_hours: 0.5, twin_effect: none}
+  auto_execute_whitelist: [notify_supervisor]
+  # Handled on the floor, never queued for a manager (ADR-071): the Decision Queue shows
+  # only actions that need MANAGER authority -- downtime, quality holds, line changes.
+  supervisor_handled: [continue_monitoring, notify_supervisor, manual_inspection, increase_inspection]
+  # Never available to any AI path, at any level, for any role. Refused at plan validation,
+  # at option generation and again inside the gateway.
+  prohibited: [plc_write, setpoint_change, safety_override, emergency_stop, interlock_bypass]
+  max_cost_usd_without_leadership: 25000
+
+business:
+  technician_cost_per_hour:
+    value: 95
+    currency: USD
+    source: "docs/ASSUMPTIONS.md, Enterprise action assumptions: fully loaded maintenance technician rate"
+
+# Recurring windows on the SIMULATION clock. weekday 0 = Monday; null = every day.
+maintenance_windows:
+  - {window_id: nightly_changeover, name: "Nightly changeover", weekday: null, start: "02:00", duration_min: 60, available_teams: 1}
+  - {window_id: sunday_maintenance, name: "Sunday maintenance window", weekday: 6, start: "06:00", duration_min: 480, available_teams: 3}
+
+quality_watch:
+  window_inspections: 30        # trailing inspection outcomes considered
+  alpha: 0.01                   # fire when that many defects is this improbable at the recorded gate rate
+  min_defects: 3                # and never on fewer than this

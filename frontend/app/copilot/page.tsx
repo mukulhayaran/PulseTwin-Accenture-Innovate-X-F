@@ -29,7 +29,7 @@ import {
 import { usePersonaAccess } from "@/lib/usePersonaAccess";
 import SignInGate from "@/components/shared/SignInGate";
 import {
-  AppShell, Badge, Button, PLANT_OPTIONS, Panel, Skeleton,
+  AppShell, Badge, Button, EmptyState, PLANT_OPTIONS, Panel, Skeleton,
 } from "@/components/ui";
 import AiTrustPanel from "@/components/shared/AiTrustPanel";
 import CopilotComposer from "@/components/copilot/CopilotComposer";
@@ -202,9 +202,11 @@ export default function CopilotPage() {
 
           <Panel title="Conversations" note="Earlier threads on this plant.">
             {threads.length === 0 ? (
-              <p className="py-4 text-center text-2xs text-ink-faint">
-                No conversations yet.
-              </p>
+              <EmptyState
+                title="No conversations yet"
+                description="Ask a question or run an agent; each thread is kept here for this plant."
+                className="py-8"
+              />
             ) : (
               <ul className="scroll-fade-b max-h-[26rem] space-y-1 overflow-y-auto pb-4">
                 {threads.map((t) => (

@@ -23,7 +23,7 @@ COPY migrations/ ./migrations/
 # retraining is gone (ADR-053).
 COPY genai/ ./genai/
 COPY configs/ ./configs/
-# The proposals route launches `python -m offline.counterfactual` the same way (ADR-055):
+# The experiments route launches `python -m offline.sim_experiment` the same way (ADR-064):
 # a detached job forking the physical twin. The API process still never imports offline/.
 COPY offline/ ./offline/
 COPY feature_contract.py ./

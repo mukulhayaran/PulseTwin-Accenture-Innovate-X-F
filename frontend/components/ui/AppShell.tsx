@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -11,6 +11,11 @@ import { cn } from "@/lib/cn";
 import OfflineBanner from "@/components/shared/OfflineBanner";
 import Select from "./Select";
 import { TooltipProvider } from "./Tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "./Popover";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
+} from "./DropdownMenu";
+import { Sheet, SheetContent, SheetTitle } from "./Sheet";
 import {
   IconAlert, IconBell, IconChart, IconChevronDown, IconGear, IconHome, IconLock,
   IconLogout, IconSearch, IconSparkle, IconTarget, IconUser,
@@ -64,7 +69,6 @@ const DEMO_USER: Record<Role, string> = {
 
 export const PLANT_OPTIONS = [
   { value: "plant_a", label: "Plant A — Midwest Assembly" },
-  { value: "plant_b", label: "Plant B — Southern Truck" },
 ];
 
 // ---------------------------------------------------------------- notification tray
@@ -143,33 +147,12 @@ const NOTICE_TONE: Record<Notice["tone"], string> = {
 
 function NotificationTray({ notices }: { notices: Notice[] }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
 
-  // Plain outside-click rather than @radix-ui/react-popover: the tray is the only
-  // popover in the app that Radix does not already cover, and this frontend ships as
-  // a static export onto a plant network, where a dependency costs more than 20 lines.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
+  // Radix Popover (ADR-075): outside-click, Esc, focus return and viewport collision.
+  // The hand-rolled version handled the first two and could open off-screen.
   return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
         aria-label={`Notifications${notices.length ? ` (${notices.length})` : ""}`}
         className={cn(
           "relative flex size-9 items-center justify-center border border-transparent text-ink-dim",
@@ -187,10 +170,9 @@ function NotificationTray({ notices }: { notices: Notice[] }) {
             {notices.length}
           </span>
         )}
-      </button>
+      </PopoverTrigger>
 
-      {open && (
-        <div className="absolute right-0 top-11 z-50 w-80 border border-line-strong bg-canvas shadow-pop">
+      <PopoverContent className="w-80 border-line-strong">
           <div className="border-b border-line px-4 py-2.5 text-2xs font-bold uppercase tracking-[0.115em] text-ink-faint">
             Needs attention
           </div>
@@ -220,34 +202,21 @@ function NotificationTray({ notices }: { notices: Notice[] }) {
               ))}
             </ul>
           )}
-        </div>
-      )}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
 // ------------------------------------------------------------------------ user chip
 
 function UserChip({ role, sessionRole }: { role: Role; sessionRole: Role | null }) {
-  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
 
   const signOut = async () => {
     setBusy(true);
     // Revokes the token server-side, not just here -- otherwise "sign out" would leave a
     // working credential in sessionStorage and only pretend to end the session.
     await logout();
-    setOpen(false);
     setBusy(false);
     // A restricted page re-renders its SignInGate on SESSION_EVENT; nowhere to navigate.
   };
@@ -270,13 +239,11 @@ function UserChip({ role, sessionRole }: { role: Role; sessionRole: Role | null 
     .map((w) => w[0])
     .join("");
 
+  // Radix DropdownMenu (ADR-075): arrow keys, typeahead, Esc and focus return, with
+  // role="menu" semantics the hand-rolled panel only claimed via aria-haspopup.
   return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-haspopup="menu"
+    <DropdownMenu>
+      <DropdownMenuTrigger
         aria-label={`Account: ${name}, ${sessionRole}`}
         className={cn(
           "flex items-center gap-2.5 border border-transparent py-1 pl-1 pr-2 text-left",
@@ -296,36 +263,33 @@ function UserChip({ role, sessionRole }: { role: Role; sessionRole: Role | null 
           </span>
         </span>
         <IconChevronDown size={14} className="shrink-0 text-ink-faint" />
-      </button>
+      </DropdownMenuTrigger>
 
-      {open && (
-        <div className="absolute right-0 top-12 z-50 w-72 border border-line-strong bg-canvas shadow-pop">
-          <div className="border-b border-line px-4 py-3">
-            <div className="text-xs font-bold text-ink">{name}</div>
-            <div className={cn("mt-0.5 text-2xs capitalize", ROLE_TONE[sessionRole])}>
-              {sessionRole}
-              {sessionRole !== role && (
-                <span className="text-ink-faint"> · viewing as {role}</span>
-              )}
-            </div>
-            <p className="mt-2 text-2xs leading-relaxed text-ink-faint">
-              A fixed demo account per role, validated server-side — not a user directory.
-              Signing in mints a session token the API resolves to this role on every
-              request, and signing out revokes it.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={signOut}
-            disabled={busy}
-            className="flex w-full items-center gap-2 px-4 py-3 text-left text-xs text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink disabled:opacity-50"
-          >
-            <IconLogout size={14} />
-            {busy ? "Signing out…" : "Sign out"}
-          </button>
-        </div>
-      )}
-    </div>
+      <DropdownMenuContent className="w-72 border-line-strong py-0">
+        <DropdownMenuLabel className="border-b border-line px-4 py-3">
+          <span className="block text-xs font-bold text-ink">{name}</span>
+          <span className={cn("mt-0.5 block text-2xs capitalize", ROLE_TONE[sessionRole])}>
+            {sessionRole}
+            {sessionRole !== role && (
+              <span className="text-ink-faint"> · viewing as {role}</span>
+            )}
+          </span>
+          <span className="mt-2 block text-2xs leading-relaxed text-ink-faint">
+            A fixed demo account per role, validated server-side — not a user directory.
+            Signing in mints a session token the API resolves to this role on every
+            request, and signing out revokes it.
+          </span>
+        </DropdownMenuLabel>
+        <DropdownMenuItem
+          onSelect={signOut}
+          disabled={busy}
+          className="px-4 py-3 text-xs text-ink-dim data-[highlighted]:text-ink"
+        >
+          <IconLogout size={14} />
+          {busy ? "Signing out…" : "Sign out"}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -347,10 +311,10 @@ function Rail({
   const pathname = usePathname();
 
   return (
-    <div className="relative flex h-full flex-col bg-[linear-gradient(180deg,#1c242d,#1a2129_40%,#161c23)] shadow-[inset_-1px_0_0_rgb(255_255_255/0.06)]">
+    <div className="relative flex h-full flex-col bg-[linear-gradient(180deg,#f8fafd,#f3f6fb_40%,#edf2f9)] shadow-[inset_-1px_0_0_var(--color-line)]">
       <div aria-hidden className="tex-grain pointer-events-none absolute inset-0" />
-      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-[radial-gradient(120%_80%_at_0%_0%,rgb(28_105_212/0.28),transparent_70%)]" />
-      <div aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-48 bg-[radial-gradient(100%_80%_at_100%_100%,rgb(124_58_237/0.12),transparent_70%)]" />
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-[radial-gradient(120%_80%_at_0%_0%,rgb(28_105_212/0.10),transparent_70%)]" />
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-48 bg-[radial-gradient(100%_80%_at_100%_100%,rgb(124_58_237/0.06),transparent_70%)]" />
       <Link
         href="/"
         onClick={onNavigate}
@@ -406,7 +370,7 @@ function Rail({
                   className={cn(
                     "group relative flex items-center gap-3 px-3 py-2.5 text-sm transition-colors duration-200",
                     active
-                      ? "bg-[linear-gradient(90deg,rgb(138_180_240/0.16),rgb(255_255_255/0.03))] font-bold text-on-dark"
+                      ? "bg-[linear-gradient(90deg,rgb(28_105_212/0.10),rgb(28_105_212/0.02))] font-bold text-on-dark"
                       : "text-on-dark-soft hover:bg-on-dark/[0.035] hover:text-on-dark"
                   )}
                 >
@@ -565,23 +529,19 @@ export default function AppShell({
           <Rail role={role} sessionRole={sessionRole} connected={connected} />
         </aside>
 
-        {railOpen && (
-          <div className="fixed inset-0 z-50 lg:hidden">
-            <button
-              aria-label="Close navigation"
-              onClick={() => setRailOpen(false)}
-              className="absolute inset-0 bg-surface-dark/60"
+        {/* Mobile nav as a Radix Sheet (ADR-075): focus trap, Esc, scroll lock and focus
+            back on the menu button -- the hand-rolled overlay had none of them. */}
+        <Sheet open={railOpen} onOpenChange={setRailOpen}>
+          <SheetContent side="left" showCloseButton={false} className="w-60 border-r-0 lg:hidden">
+            <SheetTitle className="sr-only">Navigation</SheetTitle>
+            <Rail
+              role={role}
+              sessionRole={sessionRole}
+              connected={connected}
+              onNavigate={() => setRailOpen(false)}
             />
-            <aside className="absolute inset-y-0 left-0 w-60 overflow-y-auto">
-              <Rail
-                role={role}
-                sessionRole={sessionRole}
-                connected={connected}
-                onNavigate={() => setRailOpen(false)}
-              />
-            </aside>
-          </div>
-        )}
+          </SheetContent>
+        </Sheet>
 
         <div className="flex min-h-screen flex-col lg:pl-60">
           <OfflineBanner connected={connected} lastKnownAt={lastKnownAt} onRetry={onRetry} />

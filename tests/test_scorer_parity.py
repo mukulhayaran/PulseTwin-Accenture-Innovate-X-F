@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "artifacts"
 DATA = ROOT / "data"
 
-PLANTS = ["plant_a", "plant_b"]
+PLANTS = ["plant_a"]
 
 
 def _load(plant: str):

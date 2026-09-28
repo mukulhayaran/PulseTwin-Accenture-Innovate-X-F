@@ -33,8 +33,8 @@ CONFIDENCE = ("low", "medium", "high")
 
 # ADR-051: the CLOSED catalogue of actions an agent may propose, and the params each one
 # requires. An agent proposes; a human approves; the twin applies. Nothing here executes.
-# `serve/routers/proposals.py::ACTION_EFFECTS` mirrors these keys (the import wall), and a
-# test asserts the two agree.
+# `serve/live_simulation.py::MITIGATIONS` mirrors these keys (the import wall), and
+# `tests/test_proposals.py` asserts the two agree.
 ACTION_TYPES: dict[str, tuple[str, ...]] = {
     "increase_feed_buffer": ("station_id", "buffer_delta"),
     "rebalance_cycle": ("station_id", "cycle_delta_pct"),

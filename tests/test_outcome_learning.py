@@ -135,14 +135,6 @@ def test_an_applied_action_is_monitored_evaluated_and_learned(client):
 
     body = client.get("/api/learning/outcomes?plant_id=plant_a", headers=MANAGER).json()
     assert body["accuracy"]["evaluated"] == 1 and body["accuracy"]["success_rate"] == 1.0
-    # ...and the proposal view carries the SAME outcome, not a row of nulls (caught live).
-    view = next(p for p in client.get("/api/proposals?plant_id=plant_a",
-                                      headers=MANAGER).json()["proposals"]
-                if p["proposal_id"] == "P-T1")
-    assert view["outcome"]["status"] == "successful"
-    assert view["outcome"]["prediction_error"] == pytest.approx(-0.5)
-    assert view["lifecycle"]["phase"] == "outcome_evaluated"
-    assert view["experiments"][0]["experiment_id"] == "EXP-P-T1"
     assert body["accuracy"]["mean_abs_projection_error"] == pytest.approx(0.5)
 
 
@@ -183,33 +175,3 @@ def test_similar_incidents_match_on_structure_and_rejections_are_not_failures(cl
     assert body["rejected_recommendations"] == 1
     d = next(r for r in body["records"] if r["proposal_id"] == "D")
     assert d["success_status"] == "not_applied"
-
-
-def test_the_proposal_endpoints_write_the_learning_records(client):
-    prop = _proposal("P-API")
-    db.execute(_ops(), "INSERT INTO triage_runs (run_id, plant_id, question, requested_by, "
-                       "acting_role, mode, status, finding) VALUES (?,?,?,?,?,?,?,?)",
-               ("run-P-API", "plant_a", "q", "manager", "manager", "deterministic",
-                "verified", json.dumps({"summary": "s", "claims": [], "proposed_actions": [
-                    {"id": "a1", "action_type": "increase_feed_buffer",
-                     "params": {"station_id": 13, "buffer_delta": 4}, "rationale": "r",
-                     "claim_ids": []}]})))
-    listed = {p["proposal_id"]: p for p in client.get(
-        "/api/proposals?plant_id=plant_a", headers=MANAGER).json()["proposals"]}
-    assert listed["P-API"]["lifecycle"]["phase"] == "awaiting_approval"
-    r = client.post("/api/proposals/P-API/approve", json={"action_id": "a1"},
-                    headers=MANAGER).json()
-    assert r["applied_to_twin"] is False and r["outcome_id"] is None
-    rec = db.query_one(_ops(), "SELECT * FROM incident_learning_records WHERE proposal_id=?",
-                       ("P-API",))
-    assert rec["decision"] == "approved" and rec["success_status"] == "not_applied"
-    assert rec["intervention_type"] == "increase_feed_buffer"
-
-    _proposal("P-REJ")
-    assert client.post("/api/proposals/P-REJ/reject", json={"note": "not now"},
-                       headers=MANAGER).status_code == 200
-    rej = db.query_one(_ops(), "SELECT * FROM incident_learning_records WHERE proposal_id=?",
-                       ("P-REJ",))
-    assert rej["decision"] == "rejected" and rej["decision_note"] == "not now"
-    assert rej["success_status"] == "not_applied" and rej["action"] is None
-    assert prop["proposal_id"] == "P-API"

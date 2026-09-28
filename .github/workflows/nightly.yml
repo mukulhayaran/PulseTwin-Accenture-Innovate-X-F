@@ -30,13 +30,13 @@ jobs:
   bottleneck-benchmark:
     name: Bottleneck benchmark (${{ inputs.profile || 'dev' }})
     runs-on: ubuntu-latest
-    # A dev-profile plant B run is thousands of DES runs; full is an order more. The cap
+    # A full-profile run is thousands of DES runs. The cap
     # is deliberately generous and the job is expected to use it.
     timeout-minutes: 720
     strategy:
       fail-fast: false
       matrix:
-        plant: [plant_a, plant_b]
+        plant: [plant_a]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -64,7 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plant: [plant_a, plant_b]
+        plant: [plant_a]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -94,21 +94,18 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen --group dev --group ml
 
-      - name: Simulate both plants
+      - name: Simulate the plant
         run: |
           uv run python -m offline.simulator.generate --config configs/plant_a.yaml
-          uv run python -m offline.simulator.generate --config configs/plant_b.yaml
 
       - name: Train
         run: |
           uv run python -m offline.ml.train --config configs/plant_a.yaml
-          uv run python -m offline.ml.train --config configs/plant_b.yaml
 
       - name: Rebuild the artifact
         run: |
           rm -f artifacts/pulsetwin.db
           uv run python -m offline.build_artifact --config configs/plant_a.yaml
-          uv run python -m offline.build_artifact --config configs/plant_b.yaml
 
       - name: Did the headline metrics move?
         # NOT a failure. A moved metric is a real result that needs a human to update the

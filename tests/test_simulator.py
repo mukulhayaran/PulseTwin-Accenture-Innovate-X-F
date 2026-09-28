@@ -137,7 +137,7 @@ def test_buffer_waits_are_non_negative(sim):
     assert (tel["buffer_wait_s"] >= 0).all()
 
 
-@pytest.mark.parametrize("plant", ["plant_a.yaml", "plant_b.yaml"])
+@pytest.mark.parametrize("plant", ["plant_a.yaml"])
 def test_bottleneck_shifts_between_day_types(plant):
     """The scenario spine, verified on BOTH plants (ADR-006 generalisation claim)."""
     cfg, _, result, _ = build(days=9, plant=plant)

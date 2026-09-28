@@ -58,16 +58,17 @@
   --color-line: #e6e6e6;
   --color-line-strong: #cccccc;
 
-  /* ---- the dark band ----------------------------------------------------
-         The ONE dark surface in the system, and it is a band, not a theme:
-         hero bands, the pre-footer CTA and the sidebar rail. Warm navy, never
-         pure black. Section rhythm must alternate light -> dark -> light; two
-         consecutive dark bands are a system violation. */
-  --color-surface-dark: #1a2129;
-  --color-surface-dark-2: #262e38;
-  --color-on-dark: #ffffff;
-  --color-on-dark-soft: #bbbbbb;
-  --color-line-on-dark: #39424e;
+  /* ---- the accent band (ADR-074: light theme only) -----------------------
+         Was a warm-navy band (#1a2129) under the rail, landing bands, tooltips
+         and chart tips; selected text vanished on it and it read as a second
+         theme. The token NAMES are kept so no call site changed, but every
+         value is now a light, cool blue-grey tint with ink text. A band is
+         told apart from the canvas by its tint and hairline, never by going dark. */
+  --color-surface-dark: #f3f6fb;
+  --color-surface-dark-2: #e9eef6;
+  --color-on-dark: #262626;
+  --color-on-dark-soft: #4a4a4a;
+  --color-line-on-dark: #dbe3ee;
 
   /* ---- ink: three weights, all AA or better on white --------------------
          #262626 13.9:1 · #4a4a4a 8.9:1 · #757575 4.6:1. The faint step carries
@@ -102,16 +103,14 @@
   --color-ai: #7c3aed;
   --color-ai-fg: #6d28d9;
 
-  /* ---- signals inside a dark band --------------------------------------
-         The `-fg` pair above is darkened for white and goes muddy on navy. The
-         dark band is a real surface in this system (sidebar rail, hero, tooltip,
-         chart tip), so it gets its own text-weight pair rather than call sites
-         reaching for a raw hex. All clear AA on #1a2129: 7.0-9.4:1. */
-  --color-ok-on-dark: #4ade80;
-  --color-danger-on-dark: #f87171;
-  --color-warn-on-dark: #fbbf24;
-  --color-info-on-dark: #8ab4f0;
-  --color-ai-on-dark: #b69dfa;
+  /* ---- signals inside the accent band ----------------------------------
+         Now that the band is light (ADR-074), these equal the `-fg` text values,
+         which clear AA on white and on the band's tint. */
+  --color-ok-on-dark: #166534;
+  --color-danger-on-dark: #b91c1c;
+  --color-warn-on-dark: #92400e;
+  --color-info-on-dark: #0653b6;
+  --color-ai-on-dark: #6d28d9;
 
   /* ---- the M tricolor ---------------------------------------------------
          Divider and badge only, never a CTA fill. Present so the `m-stripe`
@@ -168,8 +167,54 @@
 
   --ease-soft: cubic-bezier(0.2, 0.8, 0.25, 1);
 
+  /* Enter motion for the Radix overlays (Sheet, Dialog, Popover, DropdownMenu).
+     Enter only -- they close instantly. The global reduced-motion rule below
+     collapses all of these to 0.01ms. */
+  --animate-overlay-in: overlay-in 160ms ease-out both;
+  --animate-sheet-in-right: sheet-in-right 220ms var(--ease-soft) both;
+  --animate-sheet-in-left: sheet-in-left 220ms var(--ease-soft) both;
+  --animate-pop-in: pop-in 140ms var(--ease-soft) both;
+  @keyframes overlay-in { from { opacity: 0; } }
+  @keyframes sheet-in-right { from { transform: translateX(24px); opacity: 0; } }
+  @keyframes sheet-in-left { from { transform: translateX(-24px); opacity: 0; } }
+  @keyframes pop-in { from { transform: translateY(-4px); opacity: 0; } }
+
   /* Section rhythm: 80px, tighter than BMW M's 96px. */
   --spacing-section: 5rem;
+}
+
+/* ---- shadcn/ui vocabulary, aliased onto the palette above ------------------
+   shadcn primitives speak `bg-popover`, `text-muted-foreground`, `ring-ring`...
+   `@theme inline` makes those utilities exist while every value stays a var()
+   reference to an existing token -- ONE palette, no second design system. It is
+   emitted into `@layer theme`, so it is not an unlayered rule (see §8 / below).
+   No `.dark` block: the system is light-only (ADR-074). */
+@theme inline {
+  --color-background: var(--color-canvas);
+  --color-foreground: var(--color-ink);
+  --color-card: var(--color-surface);
+  --color-card-foreground: var(--color-ink);
+  --color-popover: var(--color-canvas);
+  --color-popover-foreground: var(--color-ink);
+  --color-primary-foreground: var(--color-on-primary);
+  --color-secondary: var(--color-surface-2);
+  --color-secondary-foreground: var(--color-ink);
+  --color-muted: var(--color-surface-2);
+  --color-muted-foreground: var(--color-ink-faint);
+  --color-accent: var(--color-surface-2);
+  --color-accent-foreground: var(--color-ink);
+  --color-destructive: var(--color-danger);
+  --color-border: var(--color-line);
+  --color-input: var(--color-line-strong);
+  --color-ring: var(--color-primary);
+  --radius: 0px;
+
+  /* Magic UI Marquee (components/magicui/marquee.tsx). INLINE on purpose: the value
+     reads --duration/--gap, which the marquee sets on its own element. Under plain
+     @theme it is a :root custom property, var() resolves there, --duration does not
+     exist, and the animation silently computes to `none` (measured). */
+  --animate-marquee: marquee var(--duration) infinite linear;
+  @keyframes marquee { to { transform: translateX(calc(-100% - var(--gap))); } }
 }
 
 /* ============================================================================
@@ -401,8 +446,8 @@
 }
 @utility tex-grid-dark {
   background-image:
-    linear-gradient(rgb(255 255 255 / 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(255 255 255 / 0.025) 1px, transparent 1px);
+    linear-gradient(rgb(28 105 212 / 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(28 105 212 / 0.05) 1px, transparent 1px);
   background-size: 40px 40px;
 }
 /* SVG fractal noise at ~2.5% -- stops large flat bands reading as sterile. */
@@ -412,11 +457,15 @@
   mix-blend-mode: overlay;
 }
 
-/* ---- the dark marketing band: graphite gradient, one cool bloom ---------- */
+/* ---- the accent marketing band: a light blue-grey gradient, one cool bloom
+       (ADR-074 -- was graphite; the name is kept so no call site changed). */
 @utility band-dark {
   background:
-    radial-gradient(circle at 20% 15%, rgb(28 105 212 / 0.09), transparent 38%),
-    linear-gradient(180deg, #1a2129, #151c24);
+    radial-gradient(circle at 18% 12%, rgb(28 105 212 / 0.10), transparent 42%),
+    radial-gradient(circle at 88% 90%, rgb(124 58 237 / 0.05), transparent 40%),
+    linear-gradient(180deg, #f7f9fd 0%, #eef3fa 100%);
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
 }
 
 @layer components {
@@ -582,7 +631,7 @@
   color: transparent;
 }
 @utility text-gradient-dark {
-  background: linear-gradient(95deg, #ffffff 0%, #cfe0fa 50%, #8ab4f0 100%);
+  background: linear-gradient(95deg, #5b6472 0%, #3d5f93 45%, var(--color-primary) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

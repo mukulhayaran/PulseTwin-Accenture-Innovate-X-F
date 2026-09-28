@@ -49,9 +49,9 @@ def test_unit_topics_round_trip():
 
 
 def test_control_dropout_topic_parses():
-    parsed = parse_topic(control_dropout_topic("plant_b"))
+    parsed = parse_topic(control_dropout_topic("plant_x"))
     assert parsed.kind == "dropout"
-    assert parsed.plant_id == "plant_b"
+    assert parsed.plant_id == "plant_x"
 
 
 def test_simulation_lifecycle_topic_parses():
@@ -75,7 +75,7 @@ def test_prediction_cutoff_matches_offline_config_schema():
     from ingestion.config_lite import prediction_cutoff_station
     from offline.config_schema import load_plant_config
 
-    for plant in ("plant_a", "plant_b"):
+    for plant in ("plant_a",):
         cfg = load_plant_config(f"{plant}.yaml")
         assert prediction_cutoff_station(plant) == cfg.prediction_cutoff_station()
 

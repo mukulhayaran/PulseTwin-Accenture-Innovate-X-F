@@ -10,11 +10,17 @@ basis, same discipline as `configs/economics.yaml`) — never an unsourced numbe
 |  | 1 Plant | 5 Plants | 20 Plants |
 |---|---|---|---|
 | Infrastructure (cloud, monthly) | ~$500 | ~$1,400 | ~$5,000 |
-| Sensor retrofit (one-time) | $6,000 | $30,000 | $120,000 |
+| Sensor retrofit (one-time) | $3,200 | $16,000 | $64,000 |
 | Implementation (one-time) | $350,000 | $590,000 | $1,490,000 |
 | Annual operations | $75,000 | $225,000 | $600,000 |
-| **Annual value (conservative)** | **$1.60M** | **$7.98M** | **$31.9M** |
-| Net ROI (year 1) | ~333% | ~1,211% | ~1,997% |
+| **Annual value (plant A measured, NOT conservative)** | **$10.27M** | **$51.35M** | **$205.4M** |
+| Net ROI (year 1) | ~2,811% | ~8,562% | ~13,641% |
+
+**Read this first.** These rows were priced on a second, harder plant (plant B, $1.60M a
+year) as the deliberately conservative basis. That plant was removed from the project
+(ADR-068), so the only measured economics left are plant A's, and the table now scales
+plant A's figure. A portfolio of real sites will not all look like plant A. Treat these
+numbers as an upper bound until Phase 1 Shadow mode measures each new site.
 
 Read the assumptions below before quoting any of these numbers — the ROI figures are large
 because the underlying per-defect cost figures in `configs/economics.yaml` are large
@@ -51,13 +57,11 @@ few of them. These are the actual rows, not an estimate:
 | Plant | Candidates evaluated | Total cost if all were installed | PROCEED | Retrofit cost actually recommended | Measured annual value |
 |---|---|---|---|---|---|
 | Plant A | 4 | $10,000 | 1 — S10 weld current monitor ($3,200) | **$3,200** | $30,792 (payback 1.2 months) |
-| Plant B | 8 | $20,000 | 2 — S13 weld current ($3,200), S28 torque ($2,800) | **$6,000** | $71,818 (payback 0.7 / 1.6 months) |
 
-The scaling table uses **$6,000 per plant** (Plant B's figure), matching the decision made
-below to scale on the harder plant's economics throughout rather than the flattering ones.
+The scaling table uses **$3,200 per plant**, plant A's measured figure.
 
 **What the planner saves is the interesting number.** Instrumenting every evaluated
-candidate would cost $10,000-$20,000 per plant; the plan recommends $3,200-$6,000. At
+candidate would cost $10,000 per plant; the plan recommends $3,200. At
 20 plants that is **$400,000 spent versus $120,000** — roughly **$280,000 of avoided
 capex for zero measured loss of model performance**, because the deferred stations score
 `delta_pr_auc = 0.0` exactly. `docs/DECISIONS.md` ADR-031 covers why three of plant A's
@@ -99,17 +103,12 @@ warranty_avoided − alarm_response_cost`, base scenario, i.e. catch-rate multip
 | Plant | Annual value (measured) | Why it differs |
 |---|---|---|
 | Plant A | **$10.27M** | Oracle PR-AUC 0.481 — an easier detection problem; the model captures 53% of a ceiling that itself leaves a lot of catchable signal |
-| Plant B | **$1.60M** | Oracle PR-AUC 0.075 (`docs/AUDIT.md` B34) — a much harder line by construction, not by a weaker model. Mode B fires on 13.6% of visits, diluting the hazard signal plant-wide |
 
-**The scaling table above uses Plant B's figure, not Plant A's**, for every multi-plant
-row. This is deliberate: a portfolio-level business case built on the easy plant's economics
-would overstate every subsequent site. Using the harder, more conservative measured number
-as the scaling baseline is the same discipline `docs/BUSINESS_PROPOSAL.md` §7 applies to
-PR-AUC — report the number that survives scrutiny, not the one that looks best in a deck.
-A real 20-plant portfolio would fall somewhere between $31.9M (all Plant-B-like) and
-$205.4M (all Plant-A-like); the true figure depends on how many sites look like which
-plant, which is exactly the kind of thing Phase 1 Shadow mode (`docs/BUSINESS_PROPOSAL.md`
-§5) at each new site is for finding out before committing capital.
+**The scaling table above scales plant A's figure**, the only measured plant left. A
+portfolio-level business case built on one easy line overstates every subsequent site;
+the true figure depends on how many sites look like plant A, which is exactly what
+Phase 1 Shadow mode (`docs/BUSINESS_PROPOSAL.md` §5) at each new site is for finding out
+before committing capital.
 
 ## Net ROI — derived, first-year, undiscounted
 
@@ -124,7 +123,7 @@ year-one payback-style figure, not a discounted multi-year NPV — see
 `configs/economics.yaml`'s 10% discount rate.
 
 **Sensor retrofit is deliberately not in that formula.** It is optional capex with its own
-separately measured payback (1-2 months, table above), and folding a $6,000 line into a
+separately measured payback (1-2 months, table above), and folding a $3,200 line into a
 $350,000 denominator would hide the one number a maintenance team actually needs. Adding
 it would move the 20-plant ROI by well under one percentage point either way.
 
@@ -135,8 +134,6 @@ rework + 10.1% × $8,500 warranty escape ≈ $4,700, less $286,000/year of super
 response cost at 8.5 alerts per shift — which lands on the $10.27M in the table above.
 The large number comes from the **cost per defect**, which `configs/economics.yaml`
 sources to IHS Markit and NHTSA data, not from an optimistic catch rate: recall at the
-operating threshold is 27.6% and is reported as exactly that everywhere. Plant B, the
-figure the scaling table actually uses, catches only ~360 defects a year on the same
-arithmetic — which is why it yields $1.60M rather than $10.27M. If a judge wants to
+operating threshold is 27.6% and is reported as exactly that everywhere. If a judge wants to
 attack these figures, the productive place is the per-defect cost constants, and those
 carry their sources.

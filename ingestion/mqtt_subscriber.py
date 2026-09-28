@@ -365,7 +365,7 @@ def main() -> int:
     port = int(os.environ.get("MQTT_PORT", "1883"))
     database_url = os.environ.get("DATABASE_URL")
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
-    plant_ids = os.environ.get("PULSETWIN_PLANTS", "plant_a,plant_b").split(",")
+    plant_ids = os.environ.get("PULSETWIN_PLANTS", "plant_a").split(",")
     if not database_url:
         raise SystemExit("DATABASE_URL is required for ingestion.mqtt_subscriber")
     run(broker, port, database_url, redis_url, [p.strip() for p in plant_ids if p.strip()])

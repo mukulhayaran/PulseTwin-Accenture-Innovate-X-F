@@ -30,6 +30,8 @@ class StartSimulationRequest(BaseModel):
     affected_lot: str | None = None
     incident_start_s: float = Field(default=0, ge=0, le=86400)
     max_events: int = Field(default=5000, ge=10, le=100000)
+    # ADR-069: every run routes watch firings to the Incident Commander.
+    commander: bool = True
 
 
 class IncidentRequest(BaseModel):
@@ -62,7 +64,7 @@ def start_simulation(req: StartSimulationRequest, request: Request,
         _manager(request).start,
         req.plant_id, req.seed, req.scenario, req.speed, req.severity,
         req.affected_station, req.affected_lot, req.max_events,
-        req.incident_start_s,
+        req.incident_start_s, req.commander,
     )
 
 

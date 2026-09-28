@@ -20,9 +20,9 @@ density across shift patterns and ambient cycles. All annual figures scale by a 
 3-shift year**. These two bases are stated separately and never conflated.
 
 **Throughput basis.** Every economic figure uses **achieved** simulated throughput
-(53.7 UPH plant A against a 55 UPH target, 45.3 UPH plant B against a 48 UPH target),
+(53.7 UPH against a 55 UPH target),
 never the nominal target. The original brief derived `downtime_cost_per_hour` from a
-nominal figure the station layout could not reach. The two achieved figures are read from
+nominal figure the station layout could not reach. The achieved figure is read from
 `plant_meta` in the committed artifact, not transcribed — see the correction note in
 `docs/STATE.md` for why that distinction is now enforced.
 
@@ -32,8 +32,7 @@ would have been reworked, and counting both would double-count.
 
 ## Physical
 
-**Cycle times 45–62 s (plant A), 45–70 s (plant B).** Takt at target is 65.45 s and 75 s
-respectively. A station slower than takt caps the line below its target and invalidates
+**Cycle times 45–62 s.** Takt at target is 65.45 s. A station slower than takt caps the line below its target and invalidates
 every figure derived from it, so the config validator rejects one.
 
 **S19 base cycle 55 s, EV multiplier 1.50.** An EV takes 82.5 s. What decides the
@@ -125,10 +124,9 @@ Two **different** definitions, deliberately:
   property of the line, not a 15-minute snapshot.
 
 Scoring a 15-minute argmax against a 15-minute argmax is circular and returns 100%. The
-first build did exactly that; the honest figures on the committed artifact are **85.9%**
-(plant A) and **90.2%** (plant B).
+first build did exactly that; the honest figure on the committed artifact is **85.9%**.
 
-These move between builds — an earlier run measured 87.9% / 79.1% with the same detector
+These move between builds — an earlier run measured 87.9% with the same detector
 and the same ground-truth definition, neither of which was touched. That spread is the
 honest character of the measurement on a stochastic simulation, which is why the number is
 always quoted against a specific artifact rather than asserted as a property of the method.
@@ -136,9 +134,6 @@ always quoted against a specific artifact rather than asserted as a property of 
 
 ## Known weaknesses
 
-- Plant B's realised difficulty is much higher than plant A's (oracle PR-AUC 0.075 vs
-  0.481). Its Mode B fires on 13.6% of visits, which dilutes the hazard. Reported as
-  measured; not retuned to flatter the result.
 - The simulation models continuous 24/7 operation, which no real plant runs. Annualisation
   corrects for this but the shift-pattern statistics are optimistic.
 - Ambient temperature and humidity follow smooth seasonal-free profiles; real plants see
@@ -176,3 +171,41 @@ modelled assumptions sit on top of that:
 | Severity from tool-wear evidence | abs(deviation %) / 22 (the full-wear deficit) | assumes achieved torque falls in proportion to tool health, which is how `tool_health` is modelled |
 | Severity from paint evidence | humidity excess over ambient / 22 pts | linear in the incident's own full-severity magnitude |
 | Severity from starvation evidence | the stalled share, capped at 0.8 for congestion | a detector still receiving events is not looking at a zero-capacity (deadlocked) buffer |
+| Congestion in the twin: the next station pulls slower | its cycle time × (1 + `CONGESTION_SLOWDOWN` × severity), `CONGESTION_SLOWDOWN = 1.0` (`offline/live_twin/incidents.py`) | a smaller output buffer alone never blocked the congested station: its downstream neighbour kept pace, it stayed starved, and every twin test of a congestion fix read exactly 0.0 (LOOP finding F5, measured 2026-09-28). The slowdown is what "downstream congestion" means physically; its size is chosen so the twin reproduces the observed symptom (S19 BLOCKED), not measured from a real conveyor. At severity 0.8, S19 is blocked 41% of the hour, and `increase_feed_buffer` brings that to 19% (3 paired seeds). |
+
+
+## Enterprise action assumptions (ADR-067)
+
+The Incident Commander prices options from sourced economics plus these stated assumptions
+(`configs/agentic.yaml` `actions.catalogue`):
+
+| Action | Downtime (min) | Technician hours |
+|---|---|---|
+| maintenance_work_order | 45 | 2.0 |
+| maintenance_inspection | 25 | 1.0 |
+| conveyor_buffer_adjustment | 25 | 1.5 |
+| sensor_calibration | 15 | 1.0 |
+| manual_inspection, quality_hold, increase_inspection, line_rebalance | 0 | 0.5 |
+| hvac_correction | 0 | 1.0 |
+
+- **Technician rate:** $95/h, fully loaded, a plant-engineering planning figure.
+  It is not in `configs/economics.yaml`, whose schema predates it.
+- **Option cost:** downtime/60 × `downtime_cost_per_hour` (economics.yaml) +
+  technician hours × rate. Every cost is labelled ESTIMATED with both sources.
+- **Failure probability before a window:** Poisson on the station's recorded
+  breakdown rate, with Laplace (+1) smoothing. The recorded day has no breakdowns,
+  so this is an upper-bound estimate, labelled ESTIMATED.
+- **Defect exposure while waiting:** twin-simulated when the twin responds to the
+  fault, otherwise observed excess rate × achieved UPH, extrapolated linearly and
+  labelled PROJECTED.
+
+## Induced defects in the live twin (ADR-067)
+
+A `torque_degradation` scenario records each unit that passes the affected station while
+the fault is active. At the gate such a unit is found defective with probability
+min(0.9, 0.9 × severity × remaining effect), drawn from stable per-unit noise so a replay
+reproduces it exactly.
+
+This is a scenario assumption: the replay stream's own labels cannot carry a fault injected
+after they were recorded. The cause is never written into the event, so the commander must
+find it by tracing.

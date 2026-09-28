@@ -29,7 +29,7 @@ from genai.api_client import PulseTwinAPI  # noqa: E402
 from genai.api_client import testclient_transport as _tc_transport  # noqa: E402
 from serve.main import app  # noqa: E402
 
-PLANTS = ["plant_a", "plant_b"]
+PLANTS = ["plant_a"]
 
 
 # ------------------------------------------------------------------ provider stubs

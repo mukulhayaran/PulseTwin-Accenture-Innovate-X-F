@@ -170,7 +170,7 @@ class LineWatch:
         takt = float(self.rules["takt_s"])
         # Mean CYCLE, not pace (cycle + time held blocked). Pace was tried (ADR-059): on
         # the twin, blocking cascades put a normal line's stations over takt routinely,
-        # and false alarms went from 3 to 59 a shift without catching plant B's partial
+        # and false alarms went from 3 to 59 a shift without catching partial
         # congestion. The replay stream never shows it -- it carries no blocked states.
         condition = (share >= float(self.rules["starvation"]["stalled_share"])
                      and mean_cycle > takt)

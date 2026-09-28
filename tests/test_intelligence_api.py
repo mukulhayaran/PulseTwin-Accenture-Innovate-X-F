@@ -24,7 +24,7 @@ if not (ROOT / "artifacts" / "pulsetwin.db").exists():
 from serve.main import app  # noqa: E402
 from serve.routers import intelligence as I  # noqa: E402
 
-PLANTS = ["plant_a", "plant_b"]
+PLANTS = ["plant_a"]
 SUPERVISOR = {"X-PulseTwin-Role": "supervisor"}
 MANAGER = {"X-PulseTwin-Role": "manager"}
 

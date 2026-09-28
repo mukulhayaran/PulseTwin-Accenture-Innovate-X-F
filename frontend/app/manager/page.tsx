@@ -17,10 +17,13 @@ import StaleDataIndicator from "@/components/shared/StaleDataIndicator";
 import { useAuditToast } from "@/components/shared/AuditToast";
 import {
   AppShell, Badge, ChartFrame, ChartLegend, ChartTooltip, DataTable, Kpi, Panel,
-  Select, Skeleton, SkeletonChart, SkeletonTable, Slider, Tooltip, type Column,
+  Select, Skeleton, SkeletonChart, SkeletonTable, Slider, Tabs, TabsContent, TabsList, TabsTrigger,
+  Tooltip, type Column,
 } from "@/components/ui";
 import CopilotDock from "@/components/copilot/CopilotDock";
-import ProposalInbox from "@/components/ops/ProposalInbox";
+import DecisionQueue from "@/components/decisions/DecisionQueue";
+import DecisionHistory from "@/components/decisions/DecisionHistory";
+import OutcomeLedger from "@/components/agents/OutcomeLedger";
 
 export default function ManagerPage() {
   const [plant, setPlant] = useState("plant_a");
@@ -41,6 +44,9 @@ export default function ManagerPage() {
   const [lastKnownAt, setLastKnownAt] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const { show, ToastElement } = useAuditToast();
+  // ADR-071: the manager's page is a Decision Queue first. Line analytics (the former main
+  // view) is one click away but no longer competes with what needs a decision.
+  const [tab, setTab] = useState<"queue" | "history" | "analytics">("queue");
 
   // Requires a live `manager` session, THEN locks this page to its own fixed persona --
   // see lib/usePersonaAccess.ts and the exact-match policy in lib/routeAccess.ts. Not a
@@ -180,7 +186,7 @@ export default function ManagerPage() {
 
   return (
     <AppShell
-      persona="Analysis"
+      persona={tab === "analytics" ? "Analysis" : "Decisions"}
       plant={plant}
       onPlantChange={setPlant}
       role={getRole()}
@@ -189,6 +195,17 @@ export default function ManagerPage() {
       onRetry={() => setRetryNonce((n) => n + 1)}
       status={<StaleDataIndicator timestamp={lastKnownAt} />}
     >
+      {/* Real tabs (ADR-075): these switch PANELS, so they get tablist/tab/tabpanel
+          semantics and arrow keys; SegmentedControl stays for value filters. */}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
+      <TabsList aria-label="Manager view" className="mb-4">
+        <TabsTrigger value="queue">Decision Queue</TabsTrigger>
+        <TabsTrigger value="history">Decision History</TabsTrigger>
+        <TabsTrigger value="analytics">Line analytics</TabsTrigger>
+      </TabsList>
+      <TabsContent value="queue"><DecisionQueue plant={plant} onAction={show} /></TabsContent>
+      <TabsContent value="history"><DecisionHistory plant={plant} /></TabsContent>
+      <TabsContent value="analytics">
       <div className="space-y-4">
         {/* ----------------------------------------------------------- KPI row */}
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -438,8 +455,10 @@ export default function ManagerPage() {
         </Panel>
       </div>
       <div className="mt-4 space-y-4">
-        <ProposalInbox plant={plant} onAction={show} />
+        <OutcomeLedger plant={plant} />
       </div>
+      </TabsContent>
+      </Tabs>
       {ToastElement}
       <CopilotDock plant={plant}
         onAction={show} />
